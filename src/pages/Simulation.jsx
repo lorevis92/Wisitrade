@@ -6,6 +6,7 @@ import { load, save } from '../lib/store.js'
 import { OPTIONS, STRATEGY_DEFAULTS, normalizeSettings, sizing, ORIGINAL_SYMBOLS, NEW_SYMBOLS, LOW_LIQ_SYMBOLS, LEV_SYMBOLS } from '@shared/opening.js'
 import { addDays } from '@shared/time.js'
 import { Select, RulesCard, PresetsCard, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
+import CalendarOverview from '../components/CalendarOverview.jsx'
 import TradeChart from '../components/TradeChart.jsx'
 import Analysis from '../components/Analysis.jsx'
 
@@ -157,9 +158,14 @@ function SimSetup({ r }) {
 function Results({ r, onTrade }) {
   const [shown, setShown] = useState(100)
   const [sym, setSym] = useState('')
+  const [selDay, setSelDay] = useState(null)
   const days = r.daily.filter(d => d.n > 0).slice().reverse()
+  // per la panoramica: capitale di inizio giornata = saldo a fine giornata meno il risultato del giorno
+  const calDays = useMemo(() => r.daily.map(d => ({ day: d.day, n: d.n, wins: d.wins, pnl: d.pnl, pct: d.pct, cap: d.balance - d.pnl })), [r])
+  const tradesRef = useRef(null)
+  const pickDay = d => { setSelDay(d); setShown(100); if (d) setTimeout(() => tradesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }
   const maxAbs = Math.max(1, ...days.map(d => Math.abs(d.pnl)))
-  const trades = useMemo(() => r.trades.filter(t => !sym || t.symbol === sym).slice().reverse(), [r, sym])
+  const trades = useMemo(() => r.trades.filter(t => (!sym || t.symbol === sym) && (!selDay || t.day === selDay)).slice().reverse(), [r, sym, selDay])
   const syms = useMemo(() => [...new Set(r.trades.map(t => t.symbol))].sort(), [r])
   const best = days.length ? days.reduce((a, b) => (b.pnl > a.pnl ? b : a)) : null
   const worst = days.length ? days.reduce((a, b) => (b.pnl < a.pnl ? b : a)) : null
@@ -167,6 +173,7 @@ function Results({ r, onTrade }) {
   return (
     <>
       <div className="lab section-title">Risultato · {dShort(r.firstDay)} → {dShort(r.lastDay)} · {r.days} giorni di borsa</div>
+      <CalendarOverview days={calDays} selDay={selDay} onDay={pickDay} />
       <div className="stat-grid">
         <div className="tile"><div className="lab">Risultato</div><div className={`mono big ${r.net >= 0 ? 'up' : 'down'}`}>{fmtSigned(r.net)} USDT</div><div className={`note ${r.net >= 0 ? 'up' : 'down'}`}>{fmtSigned(r.pct)}% · saldo {fmtUsd(r.final)}</div></div>
         <div className="tile"><div className="lab">Trade vinti</div><div className="mono big">{r.wins} su {r.n}</div><div className="note">{r.n ? Math.round(r.wins / r.n * 100) : 0}% · {r.daysUp} giorni su {r.daysWithTrades} in guadagno</div></div>
@@ -217,8 +224,8 @@ function Results({ r, onTrade }) {
         </div>
       ) : <div className="card note">Nessuna operazione nel periodo.</div>}
 
-      <div className="lab section-title row">
-        <span>Trade · {trades.length}{r.tradesCut ? ` (solo gli ultimi, ${r.tradesCut} più vecchi non mostrati)` : ''}</span>
+      <div className="lab section-title row" ref={tradesRef}>
+        <span>Trade · {trades.length}{selDay ? ` del ${dShort(selDay)}` : ''}{r.tradesCut ? ` (solo gli ultimi, ${r.tradesCut} più vecchi non mostrati)` : ''}{selDay && <button className="chip" style={{ marginLeft: 8 }} onClick={() => setSelDay(null)}>× tutti i giorni</button>}</span>
         <select className="mini-select" value={sym} onChange={e => { setSym(e.target.value); setShown(100) }}>
           <option value="">tutti i titoli</option>
           {syms.map(x => <option key={x} value={x}>{x}</option>)}

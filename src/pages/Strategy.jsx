@@ -5,6 +5,7 @@ import { load, save } from '../lib/store.js'
 import { OPTIONS, exitLevel, normalizeSettings, sizing } from '@shared/opening.js'
 import { Select, RulesCard, PresetsCard, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
 import Simulation from './Simulation.jsx'
+import CalendarOverview from '../components/CalendarOverview.jsx'
 
 // Capitale dedicato: valore attuale, partenza, risultato, limiti di perdita e storico delle modifiche
 function DedicatedCapital({ c, s, set, mode }) {
@@ -111,6 +112,7 @@ export default function Strategy() {
   const [resetBal, setResetBal] = useState('')
   const [armReset, setArmReset] = useState(false)
   const [armStart, setArmStart] = useState(false)
+  const [selDay, setSelDay] = useState(null) // giorno scelto nella panoramica: filtra le operazioni chiuse
   const [draftFrom, setDraftFrom] = useState(null) // { name, presetId, settings }: impostazione salvata caricata nella bozza
 
   const refresh = useCallback(() => mode === 'sim' ? Promise.resolve() : get(`/api/strategy?mode=${mode}`)
@@ -176,6 +178,7 @@ export default function Strategy() {
   const avgPct = days.length ? days.reduce((a, d) => a + (d.pct || 0), 0) / days.length : null
   const maxAbs = Math.max(1, ...days.map(d => Math.abs(d.pnl)))
   const skips = Object.entries(t.skips || {})
+  const shownTrades = selDay ? view.trades.filter(p => p.day === selDay) : view.trades
 
   return (
     <>
@@ -331,6 +334,8 @@ export default function Strategy() {
 
       {/* Giorno per giorno */}
       <div className="lab section-title">Giorno per giorno · {days.length} giorni con operazioni</div>
+      {days.length > 0 && <CalendarOverview days={days.map(d => ({ day: d.day, n: d.n, wins: d.wins, pnl: d.pnl, pct: d.pct, cap: d.capital }))} selDay={selDay}
+        onDay={d => { setSelDay(d); if (d) setTimeout(() => document.getElementById('closed-trades')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }} />}
       {days.length ? (
         <>
           <div className="stat-grid">
@@ -358,12 +363,15 @@ export default function Strategy() {
       {mode === 'live' && view.slippage && <Slippage sl={view.slippage} />}
 
       {/* Operazioni */}
-      <div className="lab section-title">Operazioni chiuse · ultime {view.trades.length}</div>
-      {view.trades.length ? (
+      <div className="lab section-title row" id="closed-trades">
+        <span>Operazioni chiuse · {selDay ? `${shownTrades.length} del ${dayFmt(selDay, { weekday: 'short', day: '2-digit', month: '2-digit' })}` : `ultime ${view.trades.length}`}</span>
+        {selDay && <button className="chip" onClick={() => setSelDay(null)}>× tutti i giorni</button>}
+      </div>
+      {shownTrades.length ? (
         <div className="table-wrap">
           <table className="tbl">
             <thead><tr><th>Titolo</th><th>Tipo</th><th>Giorno</th><th>Entrata</th><th>Uscita</th><th>Motivo</th><th>Risultato</th><th>%</th></tr></thead>
-            <tbody>{view.trades.map(p => {
+            <tbody>{shownTrades.map(p => {
               const pct = p.pnl / (p.entry * p.qty) * 100
               return (
                 <tr key={p.id}>
