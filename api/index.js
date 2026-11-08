@@ -281,7 +281,10 @@ async function route(req, url) {
     const loadMs = Date.now() - t0
     const r = runSimulation(days, s, { from: body.from, to: body.to, capital, limits, mindex })
     const MAX_TRADES = 4000
-    return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: s, ms: { load: loadMs, run: Date.now() - t0 - loadMs } }
+    // titoli scelti che hanno davvero dati nel periodo (senza decomprimere niente)
+    const inPeriod = Object.keys(days).filter(d => d >= body.from && d <= body.to)
+    const withData = s.symbols.filter(sym => inPeriod.some(d => sym in days[d]))
+    return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: s, symbolsWithData: withData, ms: { load: loadMs, run: Date.now() - t0 - loadMs } }
   }
 
   // ---- Spread e profondità registrati alle 9:30–9:35 (mediana per titolo degli ultimi giorni di borsa) ----

@@ -48,6 +48,29 @@ I gruppi di titoli sono descritti in `docs/titoli-bitunix.md`.
    - intanto il controllo ogni minuto registra lo spread vero alle 9:30–9:35. Dopo 2–3 settimane si può sostituire la soglia di volume con una soglia di spread e rifare questo confronto con lo slittamento misurato.
 3. **Tenere esclusi** bassa liquidità ed ETF a leva.
 
+## Come riprodurre i numeri nell'app
+
+1. Nella Simulazione apri **Impostazioni salvate** e carica **"Attuale · originali + nuovi"**: è la configurazione Attuale con 115 titoli (i 32 originali e gli 83 nuovi, senza bassa liquidità ed ETF a leva), margine 10%, leva 5x, commissione 0,06%, slittamento 0,05% e funding 0,01%.
+2. Metti **capitale iniziale 300 USDT** e lascia la dimensione dei trade su **"% saldo", al 100%**. È l'interesse composto usato nel documento.
+3. Lancia la simulazione. Nei risultati, il riquadro **"Titoli usati"** mostra quanti titoli sono stati usati, di quali gruppi, quanti hanno dati nel periodo e quale dimensione dei trade è stata usata.
+
+Risultati attesi. Sono stati verificati con lo stesso codice dell'app, eseguito sul database vero, e coincidono con il calcolo del documento:
+
+| Periodo | % saldo (come nel documento) | Cifra fissa 300 USDT (senza interesse composto) | Trade |
+|---|---|---|---|
+| 1 mese (08.10 – 06.11) | **+60,4%** (+181 USDT) | +49,7% (+149 USDT) | 176 |
+| 3 mesi (08.08 – 06.11) | **+152,4%** (+457 USDT) | +98,9% (+297 USDT) | 512 |
+| Dal 1° agosto (01.08 – 06.11) | **+161,1%** (+483 USDT) | +102,3% (+307 USDT) | 552 |
+| Tutto (09.03 – 06.11) | **+441,9%** (+1.326 USDT) | +186,6% (+560 USDT) | 1.214 |
+
+Se la dimensione è su **"Cifra"** ogni trade ha sempre la stessa grandezza, quindi i guadagni non fanno crescere i trade successivi. Più il periodo è lungo, più il risultato resta sotto quello del documento.
+
+Le altre differenze possibili sono tutte nelle impostazioni della pagina:
+
+- **titoli in più o in meno:** per esempio il pulsante "tutti" aggiunge anche bassa liquidità ed ETF a leva;
+- **ordine dei titoli diverso:** conta solo quando due segnali arrivano nello stesso minuto e il limite di posizioni al giorno è pieno;
+- **costi diversi:** slittamento, commissione o funding.
+
 ## Titoli con dati per mese
 
 | Gruppo | Titoli | mar | apr | mag | giu | lug | ago | set | ott | nov |

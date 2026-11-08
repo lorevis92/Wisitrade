@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { get, post, fmtPrice, fmtUsd, fmtSigned } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
-import { OPTIONS, STRATEGY_DEFAULTS, normalizeSettings, sizing } from '@shared/opening.js'
+import { OPTIONS, STRATEGY_DEFAULTS, normalizeSettings, sizing, ORIGINAL_SYMBOLS, NEW_SYMBOLS, LOW_LIQ_SYMBOLS, LEV_SYMBOLS } from '@shared/opening.js'
 import { addDays } from '@shared/time.js'
 import { Select, RulesCard, PresetsCard, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
 import TradeChart from '../components/TradeChart.jsx'
@@ -101,6 +101,33 @@ function Equity({ daily, capital }) {
   )
 }
 
+// Con quali titoli e con quale dimensione dei trade è stata fatta la simulazione
+const GROUP_OF = Object.fromEntries([...ORIGINAL_SYMBOLS.map(x => [x, 'orig']), ...NEW_SYMBOLS.map(x => [x, 'new']), ...LOW_LIQ_SYMBOLS.map(x => [x, 'low']), ...LEV_SYMBOLS.map(x => [x, 'lev'])])
+const GROUP_NAME = { orig: 'originali', new: 'nuovi', low: 'bassa liquidità', lev: 'ETF a leva' }
+function SimSetup({ r }) {
+  const s = r.settings || {}
+  const syms = (s.symbols || []).filter(x => GROUP_OF[x])
+  const withData = new Set(r.symbolsWithData || syms)
+  const groups = Object.keys(GROUP_NAME).map(g => {
+    const list = syms.filter(x => GROUP_OF[x] === g)
+    return { g, n: list.length, data: list.filter(x => withData.has(x)).length }
+  }).filter(x => x.n)
+  const compound = s.capitalMode === 'percent'
+  return (
+    <div className="card" style={{ padding: '10px 14px' }}>
+      <div className="row"><span className="lab">Titoli usati</span><span className="mono">{syms.length}</span></div>
+      {groups.map(x => (
+        <div key={x.g} className="kv"><span className="sec">{GROUP_NAME[x.g]}</span><span className="mono">{x.n}{x.data < x.n ? ` · ${x.data} con dati nel periodo` : ''}</span></div>
+      ))}
+      {r.symbolsWithData && withData.size < syms.length && <div className="note">Titoli con dati nel periodo: {withData.size} su {syms.length} (gli altri sono quotati su Bitunix dopo l'inizio del periodo).</div>}
+      <div className="kv" style={{ marginTop: 6 }}><span className="sec">Dimensione dei trade</span>
+        <span className="mono">{compound ? `${num(s.capitalPct)}% del saldo · margine ${s.marginPct}% · ${s.leverage}x` : `${num(s.capitalFixed)} USDT fissi · margine ${s.marginPct}% · ${s.leverage}x`}</span></div>
+      <div className="note">{compound ? 'Interesse composto: ogni trade si calcola sul saldo del momento, quindi i guadagni fanno crescere i trade successivi.' : 'Senza interesse composto: ogni trade ha la stessa dimensione, qualunque sia il saldo. Su periodi lunghi il risultato in % è più basso che con "% saldo".'}</div>
+      <div className="kv"><span className="sec">Commissione · slittamento · funding</span><span className="mono">{num(s.fee)}% · {num(s.slip)}% · {num(s.funding)}%</span></div>
+    </div>
+  )
+}
+
 function Results({ r, onTrade }) {
   const [shown, setShown] = useState(100)
   const [sym, setSym] = useState('')
@@ -122,6 +149,7 @@ function Results({ r, onTrade }) {
         <div className="tile"><div className="lab">Giorno peggiore</div><div className={`mono big ${!r.worstDay || r.worstDay.pct >= 0 ? '' : 'down'}`}>{r.worstDay ? `${fmtSigned(r.worstDay.pct)}%` : '—'}</div><div className="note">{r.worstDay ? `${fmtSigned(r.worstDay.pnl)} USDT · ${dShort(r.worstDay.day)}` : 'nessuna operazione'}</div></div>
         <div className="tile"><div className="lab">Liquidazioni</div><div className={`mono big ${r.liquidations ? 'down' : ''}`}>{r.liquidations ?? 0}</div><div className="note">{r.liquidations ? 'margine perso per intero' : 'nessun trade liquidato'}</div></div>
       </div>
+      <SimSetup r={r} />
       <div className="card" style={{ padding: '10px 14px' }}>
         <div className="row"><span className="lab">Costi</span><span className="mono down">−{fmtUsd(r.costs ?? r.fees)} USDT</span></div>
         <div className="kv"><span className="sec">Commissioni (entrata e uscita, sul valore della posizione)</span><span className="mono">{fmtUsd(r.fees)}</span></div>
