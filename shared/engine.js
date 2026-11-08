@@ -320,13 +320,15 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     let stopNew = halted ? 'strategia ferma (perdita massima totale)' : null // motivo per non aprire altri trade oggi
     const lastPx = {}
     const dayPnlNow = () => dayTrades.reduce((a, t) => a + t.pnl, 0)
-    const event = (type, m, extra = {}) => limitEvents.push({ day, type, min: m, dayPnl: dayPnlNow(), dayPct: startBal > 0 ? dayPnlNow() / startBal * 100 : 0, ...extra })
+    // capitale di riferimento dei limiti: quello usato a inizio giornata (con "% saldo" = saldo, con "Cifra" = la cifra), come in Prova e Reale
+    const dayRef = sizing(s, startBal).capital
+    const event = (type, m, extra = {}) => limitEvents.push({ day, type, min: m, dayPnl: dayPnlNow(), dayPct: dayRef > 0 ? dayPnlNow() / dayRef * 100 : 0, ...extra })
     const checkAfterClose = m => {
-      const L = lossCheck(s, { dayRef: startBal, dayPnl: dayPnlNow(), totalRef: capital, balance })
+      const L = lossCheck(s, { dayRef, dayPnl: dayPnlNow(), totalRef: capital, balance })
       if (L.halt && !halted) { halted = day; event('totale', m); stopNew = 'strategia ferma (perdita massima totale)' }
       if (L.dayStop && !stopNew) { event('giornaliero', m); stopNew = 'perdita massima giornaliera' }
       // freno superato già solo con i trade chiusi (nessuna posizione aperta da chiudere): niente nuovi trade
-      if (L.brake && !open.length && stopNew !== 'freno di mercato' && !halted) { event('freno', m, { lossAtTrigger: dayPnlNow(), lossPct: startBal > 0 ? dayPnlNow() / startBal * 100 : 0 }); stopNew = 'freno di mercato' }
+      if (L.brake && !open.length && stopNew !== 'freno di mercato' && !halted) { event('freno', m, { lossAtTrigger: dayPnlNow(), lossPct: dayRef > 0 ? dayPnlNow() / dayRef * 100 : 0 }); stopNew = 'freno di mercato' }
     }
     for (let m = OPEN_MIN; m < closeMin - 1; m++) {
       // uscite sulla candela chiusa del minuto m
@@ -341,11 +343,18 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
       // freno di mercato: perdita del giorno (chiusi + aperti al prezzo di chiusura del minuto) oltre la soglia → chiude tutto
       if (s.brakePct > 0 && open.length) {
         let openPnl = 0
-        for (const pos of open) { const b = lastPx[pos.symbol]; if (b) openPnl += openPnlOf(pos, b.c) }
-        if (lossCheck(s, { dayRef: startBal, dayPnl: dayPnlNow(), openPnl }).brake) {
+        for (const pos of open) { const b = lastPx[pos.symbol]; if (b) openPnl += openPnlOf(pos, b.c) } // solo candele chiuse fino al minuto m
+        if (lossCheck(s, { dayRef, dayPnl: dayPnlNow(), openPnl }).brake) {
           const loss = dayPnlNow() + openPnl
-          for (const pos of [...open]) { const b = lastPx[pos.symbol] || byMin[pos.symbol].get(m); close(pos, b ? b.c : pos.entry, 'freno di mercato', (b ? b.t : pos.opened_at) + MIN) }
-          event('freno', m, { lossAtTrigger: loss, lossPct: startBal > 0 ? loss / startBal * 100 : 0 })
+          // si chiude come dal vivo: dopo la chiusura del minuto m, all'apertura della candela successiva di ogni titolo (più lo slittamento in close)
+          for (const pos of [...open]) {
+            let nx = null
+            for (let k = m + 1; k < closeMin; k++) { nx = byMin[pos.symbol].get(k); if (nx) break }
+            const b = lastPx[pos.symbol] || byMin[pos.symbol].get(m)
+            if (nx) close(pos, nx.o, 'freno di mercato', nx.t)
+            else close(pos, b ? b.c : pos.entry, 'freno di mercato', (b ? b.t : pos.opened_at) + MIN)
+          }
+          event('freno', m, { lossAtTrigger: loss, lossPct: dayRef > 0 ? loss / dayRef * 100 : 0 })
           if (!stopNew || stopNew === 'perdita massima giornaliera') stopNew = 'freno di mercato'
         }
       }

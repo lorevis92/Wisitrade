@@ -1,5 +1,7 @@
 # Freno di mercato, limite giornaliero e scelta tra segnali contemporanei
 
+> **Aggiornamento:** per il freno valgono i risultati di `docs/freno-robustezza.md`. Questo documento usava un prezzo di chiusura del freno un po' ottimista (chiusura dello stesso minuto) e il saldo come riferimento; il motore ora chiude all'apertura del minuto dopo e usa il capitale di inizio giornata. La conclusione cambia: il freno non migliora il rendimento in modo stabile, riduce solo il rischio.
+
 Test sugli ultimi 6 mesi (dal 09.05.2026 al 06.11.2026), con lo stesso motore di Prova, Reale e Simulazione. Condizioni:
 
 - titoli: 115, cioè i 32 originali e gli 83 nuovi;
