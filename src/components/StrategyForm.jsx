@@ -46,6 +46,13 @@ export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (P
         <Select label="Metà subito: a guadagno" value={s.halfAt} options={OPTIONS.halfAt} fmt={v => lab('halfAt', v) || `+${num(v)} unità`} onChange={v => set('halfAt', v)}
           hint="chiudi metà posizione e porta lo stop del resto al prezzo d'entrata" />
       </div>
+      <div className="lab" style={{ marginTop: 14 }}>Indice di attività del mercato · spento di default</div>
+      <div className="grid2" style={{ marginTop: 6, alignItems: 'start' }}>
+        <Select label="Regola dell'indice" value={s.idxMode} options={OPTIONS.idxMode} fmt={v => lab('idxMode', v)} onChange={v => set('idxMode', v)}
+          hint="indice da 0 a 100 alle 9:35 di New York; con la regola attiva si entra dalle 9:35" />
+        {s.idxMode !== 'off' && <Select label={s.idxMode === 'min' ? 'Opera solo se l\'indice è almeno' : 'Sotto questo indice'} value={s.idxMin} options={OPTIONS.idxMin} fmt={v => String(v)} onChange={v => set('idxMin', v)} />}
+        {s.idxMode === 'reduce' && <Select label="…usa solo" value={s.idxPos} options={OPTIONS.idxPos} fmt={v => `${v} ${v === 1 ? 'posizione' : 'posizioni'}`} onChange={v => set('idxPos', v)} />}
+      </div>
       <div className="lab" style={{ marginTop: 14 }}>Liquidazione · margine isolato</div>
       <div className="grid2" style={{ marginTop: 6, alignItems: 'start' }}>
         <Select label="Stop oltre la liquidazione" value={s.liqGuard ? 'on' : 'off'} options={['on', 'off']} fmt={v => (v === 'on' ? 'non aprire il trade' : 'apri comunque')}

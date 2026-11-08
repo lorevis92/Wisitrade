@@ -55,13 +55,15 @@ export function prepFromBars(bars, today) {
 // ---------- Entrata ----------
 // bars = candele da 1 minuto di oggi (con .min), dalle 9:30 e prima della fine della finestra d'entrata.
 // Restituisce null (nessun segnale per ora), { skip } (titolo scartato per oggi) o il segnale.
-export function findEntry(bars, s, prep) {
+// fromMin: primo minuto in cui si può entrare (9:35 con la regola dell'indice: se il prezzo è già oltre la soglia si entra all'apertura di quella candela)
+export function findEntry(bars, s, prep, fromMin = OPEN_MIN) {
   if (!prep.ok) return { skip: prep.why || 'dati insufficienti' }
   if (!bars.length) return null
   if (bars[0].min !== OPEN_MIN) return { skip: 'manca la candela delle 9:30' }
   const open = bars[0].o, X = s.movePct / 100, cu = open * (1 + 1.25 * X), cd = open * (1 - 1.25 * X)
   let k = null, side = 0, entry = 0
   for (const b of bars) {
+    if (b.min < fromMin) continue
     const path = pathOf(b)
     for (let i = 0; i < path.length; i++) {
       const prev = i ? path[i - 1] : path[0], cur = path[i]
@@ -83,6 +85,17 @@ export function findEntry(bars, s, prep) {
 export function riskFor(lim, notional, s) {
   const t = tierFor(lim, notional)
   return { mmr: t ? t.mmr : s.mmr / 100, maxLev: t ? t.maxLev : (lim?.maxLev || null), fromBitunix: !!t }
+}
+
+// ---------- Regola dell'indice di attività del mercato ----------
+// L'indice si conosce alle 9:35 di New York: con la regola attiva le entrate partono da lì. Se l'indice non c'è (storico corto) si opera normalmente.
+export const INDEX_FROM = OPEN_MIN + 5
+export function indexRule(s, idx) {
+  if (s.idxMode === 'off') return { active: false, ok: true, maxPos: s.maxPos, from: OPEN_MIN }
+  const base = { active: true, ok: true, maxPos: s.maxPos, from: INDEX_FROM }
+  if (idx === null || idx === undefined || !Number.isFinite(idx) || idx >= s.idxMin) return base
+  if (s.idxMode === 'min') return { ...base, ok: false, why: `indice di attività ${Math.round(idx)} sotto ${s.idxMin}` }
+  return { ...base, maxPos: s.maxPos > 0 ? Math.min(s.maxPos, s.idxPos) : s.idxPos, reduced: true }
 }
 
 // Nuova posizione a partire dal segnale e dalla dimensione calcolata (con il prezzo di liquidazione in margine isolato)
@@ -154,7 +167,7 @@ export function stepBar(p, s, b, dayBars, prep) {
 // funding stimato (s.funding) a ogni orario del funding di Bitunix con la posizione aperta, pagato sempre (stima prudente).
 // Come dal vivo: il segnale nella candela del minuto m viene preso al controllo successivo (dopo le uscite di quel minuto),
 // la candela d'entrata viene già controllata per l'uscita, e alle 15:59 si chiude tutto all'apertura di quel minuto.
-export function runSimulation(days, s, { from, to, capital, limits = {} }) {
+export function runSimulation(days, s, { from, to, capital, limits = {}, mindex = {} }) {
   const slip = (s.slip || 0) / 100
   const mmrFrom = {}
   const allDates = Object.keys(days).sort()
@@ -193,13 +206,17 @@ export function runSimulation(days, s, { from, to, capital, limits = {} }) {
     }
     const syms = Object.keys(today)
     if (!syms.length) continue
-    const ctx = dayContext(days, allDates, day, s.symbols, info)
+    const mi = mindex[day] || null
+    const ctx = { ...(dayContext(days, allDates, day, s.symbols, info) || {}), mindex: mi?.idx ?? null, mindexPcts: mi?.pcts ?? null }
+    const rule = indexRule(s, mi?.idx ?? null)
+    if (!rule.ok) skips['giorni con indice sotto il minimo'] = (skips['giorni con indice sotto il minimo'] || 0) + 1
+    if (rule.reduced) skips['giorni con meno posizioni (indice basso)'] = (skips['giorni con meno posizioni (indice basso)'] || 0) + 1
     // segnali di entrata
     const sigs = []
-    for (const sym of syms) {
+    for (const sym of rule.ok ? syms : []) {
       const openTs = today[sym][0].t - (today[sym][0].min - OPEN_MIN) * MIN
       const prep = prepFor(sym, day, openTs)
-      const sig = findEntry(today[sym].filter(b => b.min < ENTRY_UNTIL), s, prep)
+      const sig = findEntry(today[sym].filter(b => b.min < ENTRY_UNTIL), s, prep, rule.from)
       if (!sig) continue
       if (sig.skip) { const why = sig.skip.replace(/^solo \d+ giorni.*/, 'storico insufficiente'); skips[why] = (skips[why] || 0) + 1; continue }
       sigs.push({ sym, sig, prep })
@@ -249,7 +266,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {} }) {
       // entrate scattate nel minuto m
       while (si < sigs.length && sigs[si].sig.k.min <= m) {
         const { sym, sig, prep } = sigs[si++]
-        if (s.maxPos > 0 && taken >= s.maxPos) { skips['limite posizioni al giorno'] = (skips['limite posizioni al giorno'] || 0) + 1; continue }
+        if (rule.maxPos > 0 && taken >= rule.maxPos) { skips['limite posizioni al giorno'] = (skips['limite posizioni al giorno'] || 0) + 1; continue }
         const size = sizing(s, balance)
         if (!(size.margin >= 1)) { skips['capitale insufficiente'] = (skips['capitale insufficiente'] || 0) + 1; continue }
         // entrata a mercato: slittamento contro di te; lo stop si calcola dal prezzo eseguito, come nel Reale

@@ -6,6 +6,7 @@ import { nyInfo } from './session.js'
 import { scan, getPairs } from './scanner.js'
 import { runStrategy } from './strategy.js'
 import { fillArchive } from './archive.js'
+import { ensureIndex } from './mindex.js'
 
 export async function tick() {
   const t0 = Date.now()
@@ -42,6 +43,9 @@ export async function tick() {
         if (left > 15000) {
           const r = await fillArchive({ budgetMs: Math.min(30000, left - 5000), source: 'auto' })
           out.archive = r.busy ? { busy: true } : { saved: r.saved, remaining: r.remaining, ...(r.errors.length ? { errors: r.errors.slice(0, 2) } : {}) }
+          // valori dell'indice di attività per i giorni appena archiviati
+          const left2 = 50000 - (Date.now() - t0)
+          if (!r.busy && left2 > 10000 && (r.saved > 0 || info.minutes % 30 === 0)) out.index = await ensureIndex({ budgetMs: left2 - 8000 }).catch(e => ({ error: e.message }))
         }
       } catch (e) { out.archive = { error: e.message } }
     }

@@ -32,6 +32,10 @@ export const STRATEGY_DEFAULTS = {
   npMin: 0,               // "Nessun progresso": dopo questi minuti dall'entrata (0 = spenta)...
   npUnits: 0.25,          // ...se il guadagno massimo non ha raggiunto queste unità di volatilità, chiudi
   halfAt: 0,              // "Metà subito": a +queste unità chiudi metà posizione e sposta lo stop al prezzo d'entrata (0 = spenta)
+  // Indice di attività del mercato (alle 9:35 di New York): off | min = opera solo se l'indice è almeno idxMin | reduce = sotto idxMin usa solo idxPos posizioni
+  idxMode: 'off',
+  idxMin: 50,
+  idxPos: 2,
 }
 
 const steps = (from, to, step) => Array.from({ length: Math.round((to - from) / step) + 1 }, (_, i) => +(from + i * step).toFixed(4))
@@ -54,6 +58,9 @@ export const OPTIONS = {
   npMin: [0, 5, 10, 15, 20, 30, 45, 60, 90],
   npUnits: [0.1, 0.25, 0.5, 0.75, 1],
   halfAt: [0, 0.5, 0.75, 1, 1.25, 1.5, 2, 3],
+  idxMode: ['off', 'min', 'reduce'],
+  idxMin: [20, 30, 40, 50, 60, 70, 80],
+  idxPos: [1, 2, 3, 4, 5, 6],
 }
 
 const n2 = v => String(v).replace('.', ',')
@@ -68,13 +75,17 @@ export const LABELS = {
   stale: { run: 'lascia correre', half: 'dimezza lo stop', close: 'chiudi se in perdita' },
   npMin: { 0: 'spenta' },
   halfAt: { 0: 'spenta' },
+  idxMode: { off: 'spento', min: 'opera solo se l\'indice è almeno…', reduce: 'sotto la soglia meno posizioni' },
 }
 
 export function normalizeSettings(s = {}) {
   const out = { ...STRATEGY_DEFAULTS }
   for (const k of Object.keys(STRATEGY_DEFAULTS)) if (s[k] !== undefined && s[k] !== null) out[k] = s[k]
   out.symbols = Array.isArray(out.symbols) ? out.symbols.filter(x => ORB_SYMBOLS.includes(x)) : ORB_SYMBOLS
-  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt']) out[k] = Number(out[k])
+  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt', 'idxMin', 'idxPos']) out[k] = Number(out[k])
+  if (!['off', 'min', 'reduce'].includes(out.idxMode)) out.idxMode = 'off'
+  out.idxMin = Math.min(Math.max(out.idxMin || 0, 0), 100)
+  out.idxPos = Math.min(Math.max(Math.round(out.idxPos) || 1, 1), 50)
   out.npMin = Math.min(Math.max(out.npMin || 0, 0), 390)
   out.npUnits = Math.min(Math.max(out.npUnits || 0, 0), 10)
   out.halfAt = Math.min(Math.max(out.halfAt || 0, 0), 20)

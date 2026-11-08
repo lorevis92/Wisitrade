@@ -2,7 +2,7 @@
 // Tutti i valori sono calcolati sul server con i soli dati noti in quel minuto (shared/analysis.js).
 import { useMemo, useState } from 'react'
 import { fmtSigned } from '../lib/api.js'
-import { MOMENTS, quartiles, toCsv } from '@shared/analysis.js'
+import { MOMENTS, INDEX_PARTS, quartiles, toCsv } from '@shared/analysis.js'
 
 const n2 = (v, d = 2) => (v === null || v === undefined || !Number.isFinite(v) ? '—' : v.toFixed(d).replace('.', ','))
 const pctOf = (a, b) => (b ? Math.round(a / b * 100) : 0)
@@ -12,6 +12,7 @@ const GAIN_BANDS = [['sotto −0,5', g => g < -0.5], ['da −0,5 a 0', g => g >=
 const MAE_BANDS = [['meno di −0,25', x => x > -0.25], ['da −0,25 a −0,5', x => x <= -0.25 && x > -0.5], ['da −0,5 a −1', x => x <= -0.5 && x > -1], ['oltre −1', x => x <= -1]]
 
 const DAY_IND = [
+  ['mindex', 'Indice di attività del mercato', v => n2(v, 0)],
   ['breadth', 'Titoli nella stessa direzione', v => `${n2(v, 0)}%`],
   ['absMove', 'Movimento medio dei titoli', v => `${n2(v)}%`],
   ['vol5', 'Volume primi 5 minuti / normale', v => `${n2(v)}×`],
@@ -62,7 +63,8 @@ function download(name, text) {
 
 const dayCols = [
   ['giorno', d => d.day], ['operazioni', d => d.n], ['vinte', d => d.wins], ['risultato_usdt', d => d.pnl], ['risultato_pct', d => d.pct], ['saldo', d => d.balance],
-  ...DAY_IND.map(([k]) => [k, d => d.ctx?.[k]]), ['direzione_prevalente', d => (d.ctx ? (d.ctx.breadthDir > 0 ? 'su' : 'giù') : null)],
+  ...DAY_IND.map(([k]) => [k, d => d.ctx?.[k]]), ['direzione_prevalente', d => (d.ctx?.breadthDir ? (d.ctx.breadthDir > 0 ? 'su' : 'giù') : null)],
+  ...INDEX_PARTS.map(([k]) => [`indice_percentile_${k}`, d => d.ctx?.mindexPcts?.[k]]),
 ]
 const tradeCols = [
   ['id', t => t.id], ['giorno', t => t.day], ['titolo', t => t.symbol], ['tipo', t => (t.side > 0 ? 'long' : 'short')],
@@ -109,6 +111,18 @@ export default function Analysis({ r }) {
         <div className="lab" style={{ marginTop: 10 }}>Massima perdita toccata fino a quel momento</div>
         <Tbl head={['Fascia', 'Trade', 'Vincono alla fine', 'Risultato medio', '% medio']}
           rows={MAE_BANDS.map(([l, f]) => [l, ...tradeCells(atMom.filter(t => f(t.states[mom].mae)))])} />
+      </details>
+
+      <details className="card" open>
+        <summary className="lab" style={{ cursor: 'pointer' }}>Indice di attività del mercato · alle 9:35 di New York</summary>
+        <p className="note" style={{ marginTop: 8 }}>Media dei percentili, rispetto ai 60 giorni di borsa precedenti, di: gap medio dalla chiusura di ieri, movimento medio nei primi 5 minuti, volume dei primi 5 minuti rispetto al normale, volume di SPY rispetto al normale, volatilità 5 giorni / 20 giorni. 0 = il giorno più calmo, 100 = il più attivo.</p>
+        <Tbl head={['Indice', 'Giorni', 'Medio per trade', 'Giorni positivi', 'Trade']}
+          rows={[['sotto 30', v => v < 30], ['da 30 a 50', v => v >= 30 && v < 50], ['da 50 a 70', v => v >= 50 && v < 70], ['70 e oltre', v => v >= 70]]
+            .map(([l, f]) => [l, days.filter(d => d.ctx?.mindex !== null && d.ctx?.mindex !== undefined && f(d.ctx.mindex))])
+            .concat([['non disponibile', days.filter(d => d.ctx?.mindex === null || d.ctx?.mindex === undefined)]])
+            .filter(([l, list]) => list.length || l !== 'non disponibile')
+            .map(([l, list]) => [l, ...dayCells(list)])} />
+        <div className="note" style={{ marginTop: 6 }}>Non disponibile = meno di 20 giorni di storico prima di quel giorno.</div>
       </details>
 
       <details className="card">

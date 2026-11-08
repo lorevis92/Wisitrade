@@ -4,9 +4,10 @@
 // Gira ogni minuto dentro /api/cron/tick con le candele da 1 minuto già scaricate.
 import { ASSET_MAP } from '../shared/assets.js'
 import { normalizeSettings, sizing, exitLevel, exitReason, pnlOf, closeMinute, isTradingDay, liqPriceOf, stopPastLiq } from '../shared/opening.js'
-import { prepFromBars, findEntry, newPosition, stepBar, riskFor, liqBlocks, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
+import { prepFromBars, findEntry, newPosition, stepBar, riskFor, liqBlocks, indexRule, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
 import { klinesBack, account, setIsolated, setLeverage, openMarket, openPositions, closePosition, closePartial, positionHistory, hasKeys, roundQty, tickers } from './bitunix.js'
 import { getLimits } from './limits.js'
+import { todayIndex, INDEX_READY_MIN } from './mindex.js'
 import { db, q, getMeta, setMeta } from './db.js'
 import { notifyTrades } from './push.js'
 import { ny, OPEN_MIN } from './session.js'
@@ -243,13 +244,17 @@ async function entries(ctx, active, dayPos) {
     const s = acc.s, mode = acc.mode
     if (mode === 'live' && !liveAllowed()) continue
     const taken = dayPos.filter(p => p.mode === mode)
+    // indice di attività del mercato: con la regola attiva si aspetta le 9:35
+    if (s.idxMode !== 'off' && ctx.nowMin < INDEX_READY_MIN) continue
+    const rule = indexRule(s, ctx.mindex?.idx ?? null)
+    if (!rule.ok) { for (const sym of s.symbols) if (!taken.some(p => p.symbol === sym) && !skips[mode]?.[sym]) skip(mode, sym, rule.why); continue }
     for (const sym of s.symbols) {
       if (taken.some(p => p.symbol === sym) || skips[mode]?.[sym]) continue
-      if (s.maxPos > 0 && taken.length >= s.maxPos) break
+      if (rule.maxPos > 0 && taken.length >= rule.maxPos) break
       const prep = preps[sym]
       if (!prep) continue
       const bars = (series[sym]?.['1m'] || []).map(b => ({ ...b, ...ny(b.t) })).filter(b => b.date === today && b.min >= OPEN_MIN && b.min < ENTRY_UNTIL)
-      const sig = findEntry(bars, s, prep)
+      const sig = findEntry(bars, s, prep, rule.from)
       if (!sig) continue
       if (sig.skip) { skip(mode, sym, sig.skip); continue }
       const { k, side } = sig
@@ -325,6 +330,10 @@ export async function runStrategy(series, info) {
 
   for (const p of openPos) {
     try { await manage(p, ctx) } catch (e) { (log.errors ||= []).push(`${p.symbol}: ${e.message}`) }
+  }
+  // indice di attività del mercato di oggi (dalle 9:35 di New York, una volta al giorno)
+  if (info.minutes >= INDEX_READY_MIN && info.minutes <= ENTRY_UNTIL) {
+    try { ctx.mindex = await todayIndex(today); log.mindex = ctx.mindex.idx === null ? null : Math.round(ctx.mindex.idx) } catch (e) { (log.errors ||= []).push(`indice: ${e.message}`) }
   }
   if (info.minutes >= OPEN_MIN && info.minutes <= ENTRY_UNTIL && active.length) {
     const dayPos = await q(db().from('wt_positions').select('*').eq('day', today))

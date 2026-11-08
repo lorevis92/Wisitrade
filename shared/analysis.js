@@ -146,3 +146,37 @@ export function toCsv(cols, rows) {
   }
   return [cols.map(c => c[0]).join(';'), ...rows.map(r => cols.map(c => cell(c[1](r))).join(';'))].join('\n')
 }
+
+// ---------- Indice di attività del mercato (alle 9:35 di New York) ----------
+// Cinque valori del giorno, calcolati su tutti i titoli della strategia; ognuno diventa il percentile rispetto
+// ai 60 giorni di borsa precedenti (solo giorni passati) e l'indice è la media dei percentili (0–100).
+export const INDEX_PARTS = [['gap', 'gap medio'], ['absMove', 'movimento primi 5 min'], ['vol5', 'volume primi 5 min'], ['spyVol', 'volume SPY'], ['volat', 'volatilità 5/20 giorni']]
+export const INDEX_LOOKBACK = 60
+export const INDEX_MIN_HISTORY = 20
+
+// Valori grezzi del giorno (usa dayContext: solo candele fino alle 9:34 e giorni precedenti)
+export function indexRaw(days, dates, date, symbols, info) {
+  const c = dayContext(days, dates, date, symbols, info)
+  if (!c) return null
+  return { gap: c.gap, absMove: c.absMove, vol5: c.vol5, spyVol: c.spyVol, volat: c.volat, nSym: c.nSym }
+}
+
+// raw = { 'YYYY-MM-DD': valori grezzi }. Restituisce { idx, pcts } oppure null se lo storico non basta.
+export function marketIndex(raw, day) {
+  const today = raw[day]
+  if (!today) return null
+  const prev = Object.keys(raw).filter(d => d < day).sort().slice(-INDEX_LOOKBACK)
+  const pcts = {}
+  for (const [k] of INDEX_PARTS) {
+    const x = today[k]
+    if (x === null || x === undefined || !Number.isFinite(x)) continue
+    const vals = prev.map(d => raw[d]?.[k]).filter(v => v !== null && v !== undefined && Number.isFinite(v))
+    if (vals.length < INDEX_MIN_HISTORY) continue
+    let lt = 0, eq = 0
+    for (const v of vals) { if (v < x) lt++; else if (v === x) eq++ }
+    pcts[k] = (lt + eq / 2) / vals.length * 100
+  }
+  const v = Object.values(pcts)
+  if (v.length < 3) return null
+  return { idx: mean(v), pcts }
+}

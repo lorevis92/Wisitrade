@@ -18,7 +18,7 @@ export const ARCHIVE_SYMBOLS = [...ORB_SYMBOLS, ...EXTRA_SYMBOLS]
 const startOf = sym => (sym === 'BTC' ? 480 : START_MIN)
 const FLOOR_DAY = '2026-03-09' // l'archivio non va più indietro di così (i titoli Bitunix partono a marzo 2026)
 const READY_MIN = 992          // un giorno è completo dalle 16:32 di New York
-const LISTING_KEY = 'archive:listing'
+export const LISTING_KEY = 'archive:listing'
 const LOCK_KEY = 'lock:archive'
 const DONE_KEY = 'archive:done'
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -91,7 +91,7 @@ async function findListing(perp) {
 }
 
 // ---------- Stato ----------
-async function existing() {
+export async function existing() {
   const rows = []
   for (let from = 0; ; from += 1000) {
     const page = await q(db().from('wt_bars').select('symbol, day, n').order('symbol').order('day').range(from, from + 999))
@@ -102,14 +102,14 @@ async function existing() {
 }
 
 // Ultimo giorno di borsa completo (oggi solo dopo le 16:32 di New York)
-function lastReadyDay(now = Date.now()) {
+export function lastReadyDay(now = Date.now()) {
   const n = ny(now)
   let d = n.min >= READY_MIN ? n.date : addDays(n.date, -1)
   while (!isTradingDay(d, weekdayOf(d))) d = addDays(d, -1)
   return d
 }
 
-function tradingDays(from, to) {
+export function tradingDays(from, to) {
   const out = []
   for (let d = from; d <= to; d = addDays(d, 1)) if (isTradingDay(d, weekdayOf(d))) out.push(d)
   return out

@@ -117,6 +117,11 @@ export default function Strategy() {
         <div className="grid2" style={{ marginTop: 10 }}>
           <div className="tile"><div className="lab">Oggi</div><div className="mono" style={{ marginTop: 4 }}>{t.tradingDay ? `${t.prepared}/${s.symbols.length} titoli pronti` : 'borsa chiusa'}</div></div>
           <div className="tile"><div className="lab">Ultimo controllo</div><div className="mono" style={{ marginTop: 4 }}>{st.lastTick?.at ? ago(st.lastTick.at) : '—'}</div></div>
+          <div className="tile">
+            <div className="lab">Indice di attività</div>
+            <div className="mono" style={{ marginTop: 4 }}>{!t.tradingDay ? '—' : t.mindex ? (t.mindex.idx === null ? 'non disponibile' : `${Math.round(t.mindex.idx)} / 100`) : 'dalle 9:35 NY'}</div>
+            {view.settings.idxMode !== 'off' && t.mindex?.idx !== null && t.mindex?.idx !== undefined && t.mindex.idx < view.settings.idxMin && <div className="note" style={{ color: 'var(--warn)' }}>{view.settings.idxMode === 'min' ? 'sotto la soglia: oggi niente trade' : `sotto la soglia: massimo ${view.settings.idxPos} posizioni`}</div>}
+          </div>
         </div>
         <button className={`btn ${view.enabled ? 'ghost' : ''}`} style={{ marginTop: 10 }} disabled={busy || (mode === 'live' && !view.enabled && !st.liveAllowed)} onClick={toggleEnabled}>
           {view.enabled ? 'Ferma la strategia' : armStart ? 'Confermi? Userà soldi veri' : 'Avvia la strategia'}

@@ -14,6 +14,7 @@ import { sendPush } from '../server/push.js'
 import { tick } from '../server/tick.js'
 import { closeManual, liveAllowed } from '../server/strategy.js'
 import { getLimits } from '../server/limits.js'
+import { ensureIndex, getIndexRaw, indexOf } from '../server/mindex.js'
 
 const TF = {
   '1m': { bx: '1m', n: 400, ttl: 20 },
@@ -66,8 +67,9 @@ async function strategyView(mode) {
   ])
   const prices = open.length ? await tickers(open.map(p => ASSET_MAP[p.symbol].perp)) : {}
   const n = nyInfo()
-  const [skips, last, prepRows] = await Promise.all([
+  const [skips, mindex, last, prepRows] = await Promise.all([
     getMeta(`orbskip:${n.date}`),
+    getMeta(`mindex:${n.date}`),
     getMeta('last:tick'),
     q(db().from('wt_prep').select('symbol, data').eq('day', n.date)),
   ])
@@ -84,7 +86,7 @@ async function strategyView(mode) {
     trades: closed.slice(0, 300),
     days: dailySummary(closed),
     totals: { n: closed.length, wins, net: gp - gl, pf: gl > 0 ? gp / gl : null },
-    today: { date: n.date, tradingDay: isTradingDay(n.date, n.isWeekday), minutes: n.minutes, skips: skips?.[mode] || {}, prepared: prepRows.filter(r => r.data?.ok).length, prepTotal: prepRows.length },
+    today: { date: n.date, tradingDay: isTradingDay(n.date, n.isWeekday), minutes: n.minutes, skips: skips?.[mode] || {}, mindex: mindex || null, prepared: prepRows.filter(r => r.data?.ok).length, prepTotal: prepRows.length },
     status: { liveTrading: process.env.LIVE_TRADING === 'on', keys: hasKeys(), liveAllowed: liveAllowed(), lastTick: last },
   }
 }
@@ -253,6 +255,7 @@ async function route(req, url) {
   if (path === '/sim/fill' && m === 'POST') {
     requireAdmin(req)
     const r = await fillArchive({ budgetMs: 150000, source: 'manual' })
+    if (!r.busy) r.index = await ensureIndex({ budgetMs: 60000 }).catch(e => ({ error: e.message }))
     return { ...r, status: r.busy ? null : await archiveStatus() }
   }
 
@@ -269,8 +272,13 @@ async function route(req, url) {
     // QQQ, SPY e BTC servono solo per l'Analisi.
     const days = await loadDays([...s.symbols, ...EXTRA_SYMBOLS], addDays(body.from, -40), body.to)
     const limits = await getLimits().catch(() => ({})) // margine di mantenimento e orari del funding di Bitunix
+    // indice di attività del mercato di ogni giorno (calcola i giorni che mancano)
+    await ensureIndex({ budgetMs: 90000 }).catch(() => null)
+    const raw = await getIndexRaw()
+    const mindex = {}
+    for (const d of Object.keys(days)) { const x = indexOf(raw, d); if (x) mindex[d] = x }
     const loadMs = Date.now() - t0
-    const r = runSimulation(days, s, { from: body.from, to: body.to, capital, limits })
+    const r = runSimulation(days, s, { from: body.from, to: body.to, capital, limits, mindex })
     const MAX_TRADES = 4000
     return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: s, ms: { load: loadMs, run: Date.now() - t0 - loadMs } }
   }
