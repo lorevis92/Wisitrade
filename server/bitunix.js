@@ -165,6 +165,12 @@ export async function positionHistory(symbol, positionId) {
   return { closePrice: n(p.closePrice), fee: n(p.fee), funding: n(p.funding), realizedPNL: n(p.realizedPNL), liqQty: n(p.liqQty), liqPrice: n(p.liqPrice), raw: p }
 }
 
+// Chiusura a mercato di una parte della posizione (side = direzione dell'ordine: -1 vende, 1 compra)
+export const closePartial = ({ symbol, positionId, side, qty }) =>
+  signed('POST', '/api/v1/futures/trade/place_order', {
+    body: { symbol, qty: String(qty), side: side > 0 ? 'BUY' : 'SELL', tradeSide: 'CLOSE', positionId, orderType: 'MARKET' },
+  })
+
 // Chiusura immediata a mercato di tutta la posizione
 export const closePosition = positionId =>
   signed('POST', '/api/v1/futures/trade/flash_close_position', { body: { positionId } })

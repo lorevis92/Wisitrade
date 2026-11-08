@@ -4,7 +4,7 @@ import { ASSETS, ASSET_MAP, TYPE_LABEL } from '../shared/assets.js'
 import { normalizeSettings, sizing, isTradingDay, ORB_SYMBOLS, STRATEGY_DEFAULTS } from '../shared/opening.js'
 import { runSimulation } from '../shared/engine.js'
 import { addDays } from '../shared/time.js'
-import { archiveStatus, fillArchive, loadDays, dayBars } from '../server/archive.js'
+import { archiveStatus, fillArchive, loadDays, dayBars, EXTRA_SYMBOLS } from '../server/archive.js'
 import { db, q, getMeta } from '../server/db.js'
 import { klinesBack, account, hasKeys, tickers } from '../server/bitunix.js'
 import { nyInfo } from '../server/session.js'
@@ -78,7 +78,8 @@ async function strategyView(mode) {
     sizing: sizing(s, platform.balance ?? 0),
     open: open.map(p => {
       const px = prices[ASSET_MAP[p.symbol].perp]?.last ?? null
-      return { ...p, price: px, upnl: px ? p.side * (px - p.entry) * p.qty : null }
+      const hq = p.half_done && p.half_qty > 0 ? p.half_qty : 0 // con "Metà subito" una metà è già chiusa
+      return { ...p, price: px, upnl: px ? p.side * (px - p.entry) * (p.qty - hq) + (hq ? p.side * (p.half_px - p.entry) * hq : 0) : null }
     }),
     trades: closed.slice(0, 300),
     days: dailySummary(closed),
@@ -264,8 +265,9 @@ async function route(req, url) {
     const s = normalizeSettings(body.settings || {})
     if (!s.symbols.length) throw new HttpError(400, 'Scegli almeno un titolo')
     const t0 = Date.now()
-    // 20 giorni prima dell'inizio servono per la preparazione (livelli, volatilità, volume normale)
-    const days = await loadDays(s.symbols, addDays(body.from, -20), body.to)
+    // 40 giorni prima dell'inizio: preparazione (livelli, volatilità, volume normale) e Analisi (volatilità a 20 giorni).
+    // QQQ, SPY e BTC servono solo per l'Analisi.
+    const days = await loadDays([...s.symbols, ...EXTRA_SYMBOLS], addDays(body.from, -40), body.to)
     const limits = await getLimits().catch(() => ({})) // margine di mantenimento e orari del funding di Bitunix
     const loadMs = Date.now() - t0
     const r = runSimulation(days, s, { from: body.from, to: body.to, capital, limits })

@@ -12,6 +12,11 @@ import { db, q, getMeta, setMeta } from './db.js'
 const MIN = 60000
 export const START_MIN = 540   // 9:00 New York
 export const SPAN = 450        // fino alle 16:30
+// Oltre ai titoli della strategia: QQQ e SPY (mercato) e BTC (per l'Analisi). BTC dalle 8:00 per avere l'ora prima delle 9:35.
+export const EXTRA_SYMBOLS = ['QQQ', 'SPY', 'BTC']
+export const ARCHIVE_SYMBOLS = [...ORB_SYMBOLS, ...EXTRA_SYMBOLS]
+const startOf = sym => (sym === 'BTC' ? 480 : START_MIN)
+const FLOOR_DAY = '2026-03-09' // l'archivio non va più indietro di così (i titoli Bitunix partono a marzo 2026)
 const READY_MIN = 992          // un giorno è completo dalle 16:32 di New York
 const LISTING_KEY = 'archive:listing'
 const LOCK_KEY = 'lock:archive'
@@ -55,8 +60,8 @@ async function kl(perp, endTime) {
 }
 
 // Bitunix ignora startTime quando c'è endTime: si scorre all'indietro con endTime (3 richieste per giornata)
-export async function fetchDay(perp, day) {
-  const t0 = nyTs(day, START_MIN), end = t0 + SPAN * MIN
+export async function fetchDay(perp, day, startMin = START_MIN) {
+  const t0 = nyTs(day, startMin), end = t0 + SPAN * MIN
   const got = new Map()
   let e = end - 1
   for (let i = 0; i < 4; i++) {
@@ -117,7 +122,7 @@ export async function archiveStatus() {
   const by = {}
   for (const r of rows) (by[r.symbol] ||= []).push(r)
   let missingTotal = 0
-  const symbols = ORB_SYMBOLS.map(sym => {
+  const symbols = ARCHIVE_SYMBOLS.map(sym => {
     const info = L[sym] || null
     const have = by[sym] || []
     const days = have.filter(r => r.n > 0)
@@ -155,13 +160,13 @@ export async function fillArchive({ budgetMs = 240000, source = 'manual' } = {})
   try {
     // 1. primo giorno disponibile per ogni titolo (una volta sola; i titoli non disponibili si ricontrollano ogni settimana)
     const listing = (await getMeta(LISTING_KEY)) || {}
-    for (const sym of ORB_SYMBOLS) {
+    for (const sym of ARCHIVE_SYMBOLS) {
       const info = listing[sym]
       if (info && (!info.unavailable || t0 - info.checked < 7 * 864e5)) continue
       if (Date.now() > deadline - 15000) break
       try {
         const first = await findListing(ASSET_MAP[sym].perp)
-        listing[sym] = first ? { first, checked: Date.now() } : { unavailable: true, checked: Date.now() }
+        listing[sym] = first ? { first: first < FLOOR_DAY ? FLOOR_DAY : first, checked: Date.now() } : { unavailable: true, checked: Date.now() }
       } catch (e) {
         if (e.unavailable) listing[sym] = { unavailable: true, checked: Date.now() }
         else { out.errors.push(`${sym}: ${e.message}`); continue }
@@ -174,7 +179,7 @@ export async function fillArchive({ budgetMs = 240000, source = 'manual' } = {})
     const have = new Set((await existing()).map(r => `${r.symbol}|${r.day}`))
     const last = lastReadyDay()
     const todo = []
-    for (const sym of ORB_SYMBOLS) {
+    for (const sym of ARCHIVE_SYMBOLS) {
       const info = listing[sym]
       if (!info?.first) continue
       for (const d of tradingDays(info.first, last)) if (!have.has(`${sym}|${d}`)) todo.push({ sym, day: d })
@@ -187,7 +192,7 @@ export async function fillArchive({ budgetMs = 240000, source = 'manual' } = {})
       while (i < todo.length && Date.now() < deadline - 8000) {
         const job = todo[i++]
         try {
-          const { t0: start, bars } = await fetchDay(ASSET_MAP[job.sym].perp, job.day)
+          const { t0: start, bars } = await fetchDay(ASSET_MAP[job.sym].perp, job.day, startOf(job.sym))
           const { n, data } = encodeDay(bars, start)
           pending.push({ symbol: job.sym, day: job.day, t0: start, n, data, created_at: Date.now() })
           if (n) out.saved++; else out.empty++
@@ -197,8 +202,8 @@ export async function fillArchive({ budgetMs = 240000, source = 'manual' } = {})
     }
     await Promise.all(Array.from({ length: 6 }, worker))
     await flush()
-    out.remaining = Math.max(0, todo.length - out.saved - out.empty) + ORB_SYMBOLS.filter(x => !listing[x]).length
-    out.unlisted = ORB_SYMBOLS.filter(x => !listing[x]).length
+    out.remaining = Math.max(0, todo.length - out.saved - out.empty) + ARCHIVE_SYMBOLS.filter(x => !listing[x]).length
+    out.unlisted = ARCHIVE_SYMBOLS.filter(x => !listing[x]).length
     if (!out.remaining && !out.unlisted && !out.errors.length) await setMeta(DONE_KEY, { day: last, at: Date.now() })
     out.ms = Date.now() - t0
     out.errors = out.errors.slice(0, 5)

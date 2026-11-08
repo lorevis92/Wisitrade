@@ -38,6 +38,14 @@ export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (P
         <Select label="Trade fermi dopo 60 min" value={s.stale} options={OPTIONS.stale} fmt={v => lab('stale', v)} onChange={v => set('stale', v)} />
         {showFee && <Select label={feeLabel} value={s.fee} options={OPTIONS.fee} fmt={v => `${num(v)}%`} onChange={v => set('fee', v)} />}
       </div>
+      <div className="lab" style={{ marginTop: 14 }}>Uscite da testare · spente di default</div>
+      <div className="grid2" style={{ marginTop: 6, alignItems: 'start' }}>
+        <Select label="Nessun progresso: dopo" value={s.npMin} options={OPTIONS.npMin} fmt={v => lab('npMin', v) || `${v} minuti`} onChange={v => set('npMin', v)}
+          hint="chiudi se il trade non ha mai raggiunto il guadagno minimo" />
+        {s.npMin > 0 && <Select label="Guadagno minimo" value={s.npUnits} options={OPTIONS.npUnits} fmt={v => `${num(v)} unità`} onChange={v => set('npUnits', v)} />}
+        <Select label="Metà subito: a guadagno" value={s.halfAt} options={OPTIONS.halfAt} fmt={v => lab('halfAt', v) || `+${num(v)} unità`} onChange={v => set('halfAt', v)}
+          hint="chiudi metà posizione e porta lo stop del resto al prezzo d'entrata" />
+      </div>
       <div className="lab" style={{ marginTop: 14 }}>Liquidazione · margine isolato</div>
       <div className="grid2" style={{ marginTop: 6, alignItems: 'start' }}>
         <Select label="Stop oltre la liquidazione" value={s.liqGuard ? 'on' : 'off'} options={['on', 'off']} fmt={v => (v === 'on' ? 'non aprire il trade' : 'apri comunque')}

@@ -7,6 +7,7 @@ import { OPTIONS, STRATEGY_DEFAULTS, normalizeSettings, sizing } from '@shared/o
 import { addDays } from '@shared/time.js'
 import { Select, RulesCard, PresetsCard, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
 import TradeChart from '../components/TradeChart.jsx'
+import Analysis from '../components/Analysis.jsx'
 
 const PERIODS = [['1w', '1 settimana', 7], ['1m', '1 mese', 30], ['3m', '3 mesi', 91], ['6m', '6 mesi', 182], ['all', 'tutto'], ['custom', 'date a scelta']]
 const dShort = d => (d ? dayFmt(d, { day: '2-digit', month: 'short', year: '2-digit' }) : '—')
@@ -198,6 +199,8 @@ function Results({ r, onTrade }) {
           {r.skips.map(x => <div key={x.why} className="kv"><span className="sec">{x.why}</span><span className="mono">{x.n}</span></div>)}
         </details>
       )}
+
+      <Analysis r={r} />
     </>
   )
 }

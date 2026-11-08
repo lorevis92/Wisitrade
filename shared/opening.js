@@ -28,6 +28,10 @@ export const STRATEGY_DEFAULTS = {
   liqFee: 0.1,            // commissione di liquidazione in % del valore della posizione
   funding: 0.01,          // funding medio per periodo, in % del valore della posizione (solo Simulazione)
   slip: 0.05,             // slittamento per lato sugli ordini a mercato, in % (solo Simulazione)
+  // Uscite da testare (spente di default)
+  npMin: 0,               // "Nessun progresso": dopo questi minuti dall'entrata (0 = spenta)...
+  npUnits: 0.25,          // ...se il guadagno massimo non ha raggiunto queste unità di volatilità, chiudi
+  halfAt: 0,              // "Metà subito": a +queste unità chiudi metà posizione e sposta lo stop al prezzo d'entrata (0 = spenta)
 }
 
 const steps = (from, to, step) => Array.from({ length: Math.round((to - from) / step) + 1 }, (_, i) => +(from + i * step).toFixed(4))
@@ -47,6 +51,9 @@ export const OPTIONS = {
   liqFee: [0, 0.05, 0.1, 0.2, 0.5, 1],
   funding: [0, 0.005, 0.01, 0.02, 0.03, 0.05, 0.1],
   slip: [0, 0.01, 0.02, 0.03, 0.05, 0.1, 0.15, 0.2, 0.3],
+  npMin: [0, 5, 10, 15, 20, 30, 45, 60, 90],
+  npUnits: [0.1, 0.25, 0.5, 0.75, 1],
+  halfAt: [0, 0.5, 0.75, 1, 1.25, 1.5, 2, 3],
 }
 
 const n2 = v => String(v).replace('.', ',')
@@ -59,13 +66,18 @@ export const LABELS = {
   room: { 0: 'nessun controllo', 0.25: 'almeno un quarto del movimento', 0.5: 'almeno metà del movimento', 0.75: 'almeno 3/4 del movimento', 1: 'almeno tutto il movimento', 1.5: 'almeno 1,5 volte il movimento' },
   maxPos: { 0: 'nessun limite' },
   stale: { run: 'lascia correre', half: 'dimezza lo stop', close: 'chiudi se in perdita' },
+  npMin: { 0: 'spenta' },
+  halfAt: { 0: 'spenta' },
 }
 
 export function normalizeSettings(s = {}) {
   const out = { ...STRATEGY_DEFAULTS }
   for (const k of Object.keys(STRATEGY_DEFAULTS)) if (s[k] !== undefined && s[k] !== null) out[k] = s[k]
   out.symbols = Array.isArray(out.symbols) ? out.symbols.filter(x => ORB_SYMBOLS.includes(x)) : ORB_SYMBOLS
-  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip']) out[k] = Number(out[k])
+  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt']) out[k] = Number(out[k])
+  out.npMin = Math.min(Math.max(out.npMin || 0, 0), 390)
+  out.npUnits = Math.min(Math.max(out.npUnits || 0, 0), 10)
+  out.halfAt = Math.min(Math.max(out.halfAt || 0, 0), 20)
   for (const k of ['fee', 'liqFee', 'funding', 'slip']) out[k] = Math.min(Math.max(out[k] || 0, 0), 5)
   out.mmr = Math.min(Math.max(out.mmr || 1, 0.1), 50)
   out.liqGuard = out.liqGuard !== false
@@ -118,22 +130,37 @@ export function walk(p, s, pts, gap = false) {
       if (gap && i === 0) return liq !== null && past(liq) ? { px: liq, liq: true } : { px: pt, liq: false }
       return { px: lvl, liq: false }
     }
+    // "Metà subito": al primo tocco di +halfAt unità chiude metà a quel livello e porta lo stop al prezzo d'entrata
+    if (s.halfAt > 0 && !p.half_done && p.side * (pt - p.entry) >= s.halfAt * p.unit) {
+      p.half_done = true
+      p.half_px = p.entry + p.side * s.halfAt * p.unit
+      p.half_qty = p.qty / 2
+      p.init_stop = p.side > 0 ? Math.max(p.init_stop, p.entry) : Math.min(p.init_stop, p.entry)
+    }
     p.best = p.side > 0 ? Math.max(p.best, pt) : Math.min(p.best, pt)
   }
   return null
 }
 
-export const exitReason = (p, px) => ((p.side > 0 ? px > p.entry : px < p.entry) ? 'ritracciamento' : (p.halved ? 'stop ridotto' : 'stop loss'))
+export const exitReason = (p, px) => ((p.side > 0 ? px > p.entry : px < p.entry) ? 'ritracciamento'
+  : p.half_done && Math.abs(px - p.entry) <= p.entry * 1e-9 ? 'pareggio dopo metà' : (p.halved ? 'stop ridotto' : 'stop loss'))
 
 // Risultato di una chiusura. Commissioni sul valore della posizione (prezzo × quantità) in entrata e in uscita.
 // Nessun trade perde più del suo margine sul prezzo; con la liquidazione si perde tutto il margine
 // (dentro ci sono margine di mantenimento e commissione di liquidazione) più la commissione d'entrata già pagata.
+// Con "Metà subito" la metà già chiusa (half_qty a half_px) entra nel risultato.
 export const pnlOf = (p, exit, feePct, { liq = false, funding = 0 } = {}) => {
-  const entryFee = p.entry * p.qty * (feePct / 100)
-  if (liq) return { pnl: -(p.margin || 0) - entryFee - funding, fees: entryFee, gross: -(p.margin || 0) }
-  let gross = p.side * (exit - p.entry) * p.qty
+  const f = feePct / 100
+  const hq = p.half_done && p.half_qty > 0 ? p.half_qty : 0, rq = p.qty - hq
+  const halfGross = hq ? p.side * (p.half_px - p.entry) * hq : 0
+  const entryFee = p.entry * p.qty * f, halfFee = hq ? p.half_px * hq * f : 0
+  if (liq) {
+    const gross = halfGross - (p.margin || 0) * (rq / p.qty)
+    return { pnl: gross - entryFee - halfFee - funding, fees: entryFee + halfFee, gross }
+  }
+  let gross = halfGross + p.side * (exit - p.entry) * rq
   if (p.margin > 0) gross = Math.max(gross, -p.margin)
-  const fees = entryFee + exit * p.qty * (feePct / 100)
+  const fees = entryFee + halfFee + exit * rq * f
   return { pnl: gross - fees - funding, fees, gross }
 }
 

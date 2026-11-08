@@ -5,7 +5,7 @@
 import { ASSET_MAP } from '../shared/assets.js'
 import { normalizeSettings, sizing, exitLevel, exitReason, pnlOf, closeMinute, isTradingDay, liqPriceOf, stopPastLiq } from '../shared/opening.js'
 import { prepFromBars, findEntry, newPosition, stepBar, riskFor, liqBlocks, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
-import { klinesBack, account, setIsolated, setLeverage, openMarket, openPositions, closePosition, positionHistory, hasKeys, roundQty, tickers } from './bitunix.js'
+import { klinesBack, account, setIsolated, setLeverage, openMarket, openPositions, closePosition, closePartial, positionHistory, hasKeys, roundQty, tickers } from './bitunix.js'
 import { getLimits } from './limits.js'
 import { db, q, getMeta, setMeta } from './db.js'
 import { notifyTrades } from './push.js'
@@ -19,12 +19,18 @@ const sgn = v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}`
 const modeName = m => (m === 'live' ? 'Reale' : 'Prova')
 
 // Colonne aggiunte con la migrazione della liquidazione: se schema.sql non è ancora stato rilanciato si salva senza
-const NEW_COLS = ['liq_price', 'entry_bar', 'funding']
+const NEW_COLS = ['liq_price', 'entry_bar', 'funding', 'half_done', 'half_px', 'half_qty', 'np_done']
 const missingCol = e => /column|schema cache/i.test(e?.message || '') && NEW_COLS.some(c => (e.message || '').includes(c))
 const strip = o => Object.fromEntries(Object.entries(o).filter(([k]) => !NEW_COLS.includes(k)))
 async function updatePos(id, patch) {
   try { await q(db().from('wt_positions').update(patch).eq('id', id)) }
   catch (e) { if (!missingCol(e)) throw e; await q(db().from('wt_positions').update(strip(patch)).eq('id', id)) }
+}
+// Le colonne nuove esistono? (senza, "Metà subito" non si può ricordare tra un controllo e l'altro)
+let colsOk = null
+async function newColsOk() {
+  if (colsOk === null) colsOk = await db().from('wt_positions').select('half_done, np_done, liq_price, entry_bar').limit(1).then(r => !r.error, () => false)
+  return colsOk
 }
 async function insertPos(pos) {
   try { return await q(db().from('wt_positions').insert(pos).select()) }
@@ -81,6 +87,29 @@ async function closeLive(p, fallbackPrice) {
   return { closedByExchange: false, price: fallbackPrice }
 }
 
+// Chiusura di metà posizione a mercato ("Metà subito"). Controlla su Bitunix che la quantità sia davvero scesa;
+// se l'ordine avesse aperto una posizione opposta la richiude subito.
+async function closeHalfLive(p) {
+  const a = ASSET_MAP[p.symbol]
+  const pair = (await getPairs()).find(x => x.symbol === a.perp)
+  const qty = roundQty(p.qty / 2, pair?.basePrecision ?? 3)
+  if (!(qty > 0) || qty < (pair?.minQty || 0)) throw new Error('metà posizione sotto la quantità minima')
+  const list0 = await openPositions(a.perp)
+  const pos0 = list0.find(x => (p.exchange?.positionId ? x.positionId === p.exchange.positionId : x.side === p.side))
+  if (!pos0) throw new Error('posizione non trovata')
+  for (const dir of [-p.side, p.side]) {
+    try { await closePartial({ symbol: a.perp, positionId: pos0.positionId, side: dir, qty }) } catch { continue }
+    await new Promise(r => setTimeout(r, 500))
+    const list = await openPositions(a.perp)
+    const stray = list.find(x => !list0.some(y => y.positionId === x.positionId))
+    if (stray) await closePosition(stray.positionId).catch(() => {})
+    const cur = list.find(x => x.positionId === pos0.positionId)
+    if (cur && cur.qty < pos0.qty - qty / 2) return { qty: pos0.qty - cur.qty }
+    if (!cur) throw new Error('la posizione risulta chiusa per intero')
+  }
+  throw new Error('ordine rifiutato')
+}
+
 // Dati veri della posizione chiusa su Bitunix (prezzo, commissioni, funding, liquidazione), se l'API li fornisce
 async function liveClosed(p) {
   if (!p.exchange?.positionId) return null
@@ -119,12 +148,13 @@ async function closePos(p, exit, reason, accounts, notes, { liq = false } = {}) 
     // Reale: commissioni e funding veri di Bitunix (funding con segno: negativo = pagato)
     if (real.fee !== null) fees = Math.abs(real.fee)
     funding = real.funding
-    const gross = liq ? -(p.margin || 0) : Math.max(p.side * (exit - p.entry) * p.qty, -(p.margin || Infinity))
+    const gross = pnlOf(p, exit, 0, { liq }).gross // comprende la metà già chiusa con "Metà subito"
     pnl = gross - fees + (funding || 0)
   }
   await updatePos(p.id, {
     status: 'closed', exit, reason, pnl, fees, closed_at: Date.now(), best: p.best, last_bar: p.last_bar,
     init_stop: p.init_stop, halved: p.halved, stale_done: p.stale_done, confirmed: p.confirmed, volx: p.volx,
+    half_done: !!p.half_done, half_px: p.half_px ?? null, half_qty: p.half_qty ?? null, np_done: !!p.np_done,
     ...(funding !== null ? { funding } : {}), ...(note ? { note } : {}),
   })
   if (p.mode === 'paper') {
@@ -153,6 +183,7 @@ async function manage(p, ctx) {
   if (p.day < today) { if (px) await closePos(p, px, 'chiusura', accounts, notes); return }
 
   let exit = null, reason = null, liq = false
+  const halfBefore = !!p.half_done, stopBefore = p.init_stop, halvedBefore = !!p.halved
   for (const b of todayBars) {
     if (b.t <= (p.last_bar ?? 0) || b.t + MIN > now) continue // solo candele chiuse e non ancora controllate
     const r = stepBar(p, s, b, todayBars, preps[p.symbol])
@@ -167,9 +198,32 @@ async function manage(p, ctx) {
   // fine giornata: chiudi tutto un minuto prima della chiusura della borsa
   if (exit === null && nowMin >= closeMin - 1 && px) { exit = px; reason = 'chiusura' }
 
+  // "Metà subito" appena scattata: nel Reale chiude davvero metà posizione su Bitunix
+  if (!halfBefore && p.half_done && !(await newColsOk())) {
+    // schema.sql non ancora rilanciato: la metà non si può salvare, quindi non si chiude niente
+    p.half_done = false; p.half_qty = null; p.half_px = null
+    if (!!p.halved === halvedBefore) p.init_stop = stopBefore
+  }
+  if (!halfBefore && p.half_done) {
+    let msg = `metà chiusa a ${fmt(p.half_px)}, stop al prezzo d'entrata`
+    if (p.mode === 'live') {
+      try {
+        const r = await closeHalfLive(p)
+        p.half_qty = r.qty
+        if (px) p.half_px = px
+        msg = `metà chiusa a ${fmt(p.half_px)} su Bitunix, stop al prezzo d'entrata`
+      } catch (e) {
+        p.half_qty = 0 // la posizione resta intera; lo stop resta comunque al prezzo d'entrata
+        msg = `metà non chiusa su Bitunix (${e.message}), stop al prezzo d'entrata`
+      }
+    }
+    notes.push({ title: `½ ${p.symbol}: ${msg}`, body: modeName(p.mode), url: `/strategia?mode=${p.mode}`, tag: `pos-${p.id}-half` })
+  }
+
   if (exit !== null) return closePos(p, exit, reason, accounts, notes, { liq })
   await updatePos(p.id, {
     best: p.best, last_bar: p.last_bar, init_stop: p.init_stop, halved: p.halved, stale_done: p.stale_done, confirmed: p.confirmed, volx: p.volx,
+    half_done: !!p.half_done, half_px: p.half_px ?? null, half_qty: p.half_qty ?? null, np_done: !!p.np_done,
   })
 }
 

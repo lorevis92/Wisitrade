@@ -3,6 +3,7 @@
 // Qui non c'è nessun accesso a database o a Bitunix: solo calcoli.
 import { sizing, pathOf, walk, exitReason, pnlOf, closeMinute, isTradingDay, HOLIDAYS, tierFor, liqPriceOf, stopPastLiq } from './opening.js'
 import { ny, weekdayOf } from './time.js'
+import { makeInfo, dayContext, tradeContext, tradeStates } from './analysis.js'
 
 export const MIN = 60000
 export const OPEN_MIN = 570                // 9:30 New York
@@ -111,6 +112,11 @@ export function stepBar(p, s, b, dayBars, prep) {
   const hit = walk(p, s, pathOf(b), gap)
   p.last_bar = b.t
   if (hit !== null) return { exit: hit.px, reason: hit.liq ? 'liquidazione' : exitReason(p, hit.px), liq: hit.liq }
+  // "Nessun progresso": passati npMin minuti dall'entrata senza aver mai raggiunto npUnits unità di guadagno
+  if (s.npMin > 0 && !p.np_done && b.t + MIN - (p.entry_bar ?? p.opened_at) >= s.npMin * MIN) {
+    p.np_done = true
+    if (p.side * (p.best - p.entry) < s.npUnits * p.unit) return { exit: b.c, reason: 'nessun progresso' }
+  }
   // a ogni chiusura di una candela da 15 minuti
   if ((b.min + 1 - OPEN_MIN) % 15 !== 0) return null
   const slot = b.min - 14
@@ -169,6 +175,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {} }) {
     return prepFromBars(arr.filter(b => b.t >= start && b.t < openTs), day)
   }
 
+  const info = makeInfo(days) // per l'Analisi: solo dati fino al minuto considerato
   let balance = capital, peak = capital, maxDD = 0, maxDDPct = 0
   const trades = [], dayRows = [], reasons = {}, skips = {}
   let fundingTot = 0, slipTot = 0, liqs = 0
@@ -186,6 +193,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {} }) {
     }
     const syms = Object.keys(today)
     if (!syms.length) continue
+    const ctx = dayContext(days, allDates, day, s.symbols, info)
     // segnali di entrata
     const sigs = []
     for (const sym of syms) {
@@ -222,7 +230,8 @@ export function runSimulation(days, s, { from, to, capital, limits = {} }) {
         id: ++tradeId, symbol: pos.symbol, day, side: pos.side, entry: pos.entry, exit, stop: pos.stop0, stopEnd: pos.init_stop,
         level: pos.level, opened_at: pos.opened_at, closed_at: at, reason, pnl, fees, qty: pos.qty, margin: pos.margin,
         leverage: pos.leverage, pct: pnl / (pos.entry * pos.qty) * 100, balance, liq: pos.liq_price, funding, slip: slipCost,
-        signal: pos.signal,
+        signal: pos.signal, half: pos.half_done ? { px: pos.half_px, qty: pos.half_qty } : null, unit: pos.unit,
+        states: tradeStates(pos, byMin[pos.symbol], at), ctx: pos.ctx,
       }
       trades.push(tr); dayTrades.push(tr)
       open = open.filter(x => x !== pos)
@@ -249,7 +258,8 @@ export function runSimulation(days, s, { from, to, capital, limits = {} }) {
         mmrFrom[sym] = risk.fromBitunix ? 'bitunix' : 'impostato'
         const pos = newPosition({ mode: 'sim', day, symbol: sym, sig: { ...sig, entry: fill }, s, prep, size, risk })
         if (s.liqGuard && liqBlocks(pos)) { skips['stop oltre la liquidazione'] = (skips['stop oltre la liquidazione'] || 0) + 1; continue }
-        pos.prep = prep; pos.stop0 = pos.init_stop; pos.signal = sig.entry
+        pos.prep = prep; pos.stop0 = pos.init_stop; pos.signal = sig.entry; pos.kmin = sig.k.min
+        pos.ctx = tradeContext(days, allDates, day, sym, sig, s.symbols, info)
         pos.slipIn = Math.abs(fill - sig.entry) * pos.qty
         taken++; open.push(pos)
         const r = stepBar(pos, s, sig.k, today[sym], prep)
@@ -265,8 +275,8 @@ export function runSimulation(days, s, { from, to, capital, limits = {} }) {
     }
     if (dayTrades.length) {
       const pnl = dayTrades.reduce((a, t) => a + t.pnl, 0)
-      dayRows.push({ day, n: dayTrades.length, wins: dayTrades.filter(t => t.pnl > 0).length, pnl, pct: startBal > 0 ? pnl / startBal * 100 : null, balance })
-    } else dayRows.push({ day, n: 0, wins: 0, pnl: 0, pct: 0, balance })
+      dayRows.push({ day, n: dayTrades.length, wins: dayTrades.filter(t => t.pnl > 0).length, pnl, pct: startBal > 0 ? pnl / startBal * 100 : null, balance, ctx })
+    } else dayRows.push({ day, n: 0, wins: 0, pnl: 0, pct: 0, balance, ctx })
   }
 
   let gp = 0, gl = 0, wins = 0, fees = 0

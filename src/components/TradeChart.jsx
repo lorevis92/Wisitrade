@@ -45,6 +45,7 @@ export default function TradeChart({ trade, onClose }) {
     pl(trade.stop, C.down, 'stop', LineStyle.Dotted)
     if (trade.stopEnd && Math.abs(trade.stopEnd - trade.stop) > 1e-9) pl(trade.stopEnd, C.warn, 'stop ridotto', LineStyle.Dotted)
     if (trade.level) pl(trade.level.p, C.line, trade.level.t, LineStyle.Dotted)
+    if (trade.half) pl(trade.half.px, C.warn, 'metà chiusa', LineStyle.Dashed)
     if (trade.liq) pl(trade.liq, '#FF5C7A', 'liquidazione', LineStyle.LargeDashed)
 
     const barAt = ts => { let k = 0; for (let i = 0; i < bars.length; i++) if (bars[i].t <= ts) k = i; return t[k] }

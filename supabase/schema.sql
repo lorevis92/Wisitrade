@@ -156,3 +156,9 @@ alter table wt_presets enable row level security;
 alter table wt_positions add column if not exists liq_price double precision;  -- prezzo di liquidazione in margine isolato
 alter table wt_positions add column if not exists entry_bar bigint;            -- candela da 1 min del segnale d'entrata
 alter table wt_positions add column if not exists funding double precision;    -- funding vero di Bitunix (Reale; negativo = pagato)
+
+-- ---------- Uscite "Nessun progresso" e "Metà subito" (non distruttivo) ----------
+alter table wt_positions add column if not exists half_done boolean;           -- metà posizione già chiusa
+alter table wt_positions add column if not exists half_px double precision;    -- prezzo della metà chiusa
+alter table wt_positions add column if not exists half_qty double precision;   -- quantità chiusa (0 = non riuscita su Bitunix)
+alter table wt_positions add column if not exists np_done boolean;             -- controllo "nessun progresso" già fatto
