@@ -36,7 +36,14 @@ export function encodeDay(bars, t0) {
   return { n, data: zlib.deflateSync(Buffer.from(a.buffer), { level: 9 }).toString('base64') }
 }
 
-const r7 = x => +x.toPrecision(7) // Float32 → prezzo originale (i prezzi Bitunix hanno al massimo 7 cifre)
+// Float32 → prezzo originale (i prezzi Bitunix hanno al massimo 7 cifre). toPrecision è lento: i valori si ripetono
+// moltissimo, quindi si tiene il risultato in una cache (stesso risultato, molto più veloce)
+const r7memo = new Map()
+const r7 = x => {
+  let v = r7memo.get(x)
+  if (v === undefined) { v = +x.toPrecision(7); if (r7memo.size >= 2e6) r7memo.clear(); r7memo.set(x, v) }
+  return v
+}
 // withMin: aggiunge il minuto di New York (min) a ogni candela, così la simulazione non deve ricalcolarlo né copiare le candele
 export function decodeDay(data, t0, opts) {
   return decodeBuf(Buffer.from(data, 'base64'), t0, opts)

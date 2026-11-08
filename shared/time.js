@@ -4,6 +4,7 @@ export const NY_FMT = NY
 
 // Data e minuto NY di un timestamp qualsiasi (con cache dell'offset per ora)
 const off = new Map()
+const dates = new Map() // giorno (in giorni dal 1970) → 'YYYY-MM-DD'
 export function ny(t) {
   const h = Math.floor(t / 3600000)
   let o = off.get(h)
@@ -13,7 +14,10 @@ export function ny(t) {
     off.set(h, o)
   }
   const l = t + o
-  return { date: new Date(l).toISOString().slice(0, 10), min: Math.floor((l % 864e5) / 60000) }
+  const di = Math.floor(l / 864e5)
+  let date = dates.get(di)
+  if (date === undefined) { date = new Date(di * 864e5).toISOString().slice(0, 10); dates.set(di, date) }
+  return { date, min: Math.floor((l % 864e5) / 60000) }
 }
 
 // Timestamp di un minuto NY di una data (es. nyTs('2026-04-15', 540) = 9:00 di New York)
@@ -28,5 +32,6 @@ export function nyTs(date, min) {
   return t
 }
 
-export const weekdayOf = d => { const w = new Date(d + 'T12:00:00Z').getUTCDay(); return w > 0 && w < 6 }
+const wd = new Map()
+export const weekdayOf = d => { let r = wd.get(d); if (r === undefined) { const w = new Date(d + 'T12:00:00Z').getUTCDay(); r = w > 0 && w < 6; if (wd.size < 100000) wd.set(d, r) } return r }
 export const addDays = (d, n) => new Date(Date.parse(d + 'T12:00:00Z') + n * 864e5).toISOString().slice(0, 10)

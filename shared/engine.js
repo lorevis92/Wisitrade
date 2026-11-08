@@ -170,8 +170,10 @@ export function stepBar(p, s, b, dayBars, prep) {
 // la candela d'entrata viene già controllata per l'uscita, e alle 15:59 si chiude tutto all'apertura di quel minuto.
 // cache (facoltativa): oggetto riusato tra simulazioni sugli stessi `days` (ottimizzazione): preparazione e candele
 // si calcolano una volta sola; i risultati sono identici. analysis = false salta i valori dell'Analisi (più veloce).
-export function runSimulation(days, s, { from, to, capital, limits = {}, mindex = {}, cache = null, analysis = true }) {
-  const slip = (s.slip || 0) / 100
+// slipBy (facoltativo): slittamento per lato in % per singolo titolo, al posto di s.slip (per le analisi, es. dallo spread misurato)
+export function runSimulation(days, s, { from, to, capital, limits = {}, mindex = {}, cache = null, analysis = true, slipBy = null }) {
+  const slip0 = (s.slip || 0) / 100
+  const slipOf = sym => (slipBy && slipBy[sym] !== undefined ? slipBy[sym] / 100 : slip0)
   const mmrFrom = {}
   const C = cache || {}
   const allDates = C.allDates ||= Object.keys(days).sort()
@@ -249,7 +251,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     const dayTrades = []
     const close = (pos, raw, reason, at, liq = false) => {
       // uscita a mercato: slittamento contro di te (non con la liquidazione, che chiude Bitunix)
-      const exit = liq ? raw : raw * (1 - pos.side * slip)
+      const exit = liq ? raw : raw * (1 - pos.side * slipOf(pos.symbol))
       const slipCost = pos.slipIn + Math.abs(raw - exit) * pos.qty
       const P = (limits[pos.symbol]?.fundingH || 8) * 3600000
       const nF = Math.max(0, Math.ceil(at / P) - Math.ceil(pos.opened_at / P)) // orari del funding con la posizione aperta
@@ -290,7 +292,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
         const size = sizing(s, balance)
         if (!(size.margin >= 1)) { skips['capitale insufficiente'] = (skips['capitale insufficiente'] || 0) + 1; continue }
         // entrata a mercato: slittamento contro di te; lo stop si calcola dal prezzo eseguito, come nel Reale
-        const fill = sig.entry * (1 + sig.side * slip)
+        const fill = sig.entry * (1 + sig.side * slipOf(sym))
         const risk = riskFor(limits[sym], size.notional, s)
         mmrFrom[sym] = risk.fromBitunix ? 'bitunix' : 'impostato'
         const pos = newPosition({ mode: 'sim', day, symbol: sym, sig: { ...sig, entry: fill }, s, prep, size, risk })
