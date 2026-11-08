@@ -1,9 +1,9 @@
 // Wisi Trade — tutte le API in una sola funzione Vercel (vercel.json riscrive /api/* qui).
 import crypto from 'node:crypto'
 import { ASSETS, ASSET_MAP, TYPE_LABEL } from '../shared/assets.js'
-import { normalizeSettings, sizing, isTradingDay, ORB_SYMBOLS, STRATEGY_DEFAULTS } from '../shared/opening.js'
+import { normalizeSettings, sizing, isTradingDay, STRATEGY_SYMBOLS, STRATEGY_DEFAULTS } from '../shared/opening.js'
 import { runSimulation } from '../shared/engine.js'
-import { addDays } from '../shared/time.js'
+import { addDays, weekdayOf } from '../shared/time.js'
 import { archiveStatus, fillArchive, loadDays, dayBars, EXTRA_SYMBOLS } from '../server/archive.js'
 import { db, q, getMeta } from '../server/db.js'
 import { klinesBack, account, hasKeys, tickers } from '../server/bitunix.js'
@@ -15,6 +15,7 @@ import { tick } from '../server/tick.js'
 import { closeManual, liveAllowed } from '../server/strategy.js'
 import { getLimits } from '../server/limits.js'
 import { ensureIndex, getIndexRaw, indexOf } from '../server/mindex.js'
+import { spreadSummary } from '../server/spreads.js'
 
 const TF = {
   '1m': { bx: '1m', n: 400, ttl: 20 },
@@ -283,10 +284,19 @@ async function route(req, url) {
     return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: s, ms: { load: loadMs, run: Date.now() - t0 - loadMs } }
   }
 
+  // ---- Spread e profondità registrati alle 9:30–9:35 (mediana per titolo degli ultimi giorni di borsa) ----
+  if (path === '/spreads' && m === 'GET') {
+    requireAdmin(req)
+    const n = Math.min(Math.max(+url.searchParams.get('days') || 20, 1), 120)
+    const dates = []
+    for (let d = nyInfo().date; dates.length < n && d > '2026-11-01'; d = addDays(d, -1)) if (isTradingDay(d, weekdayOf(d))) dates.push(d)
+    return { days: dates, symbols: await spreadSummary(dates) }
+  }
+
   if (path === '/sim/day' && m === 'GET') {
     requireAdmin(req)
     const sym = url.searchParams.get('symbol'), day = url.searchParams.get('day') || ''
-    if (!ORB_SYMBOLS.includes(sym) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new HttpError(400, 'Parametri non validi')
+    if (!STRATEGY_SYMBOLS.includes(sym) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new HttpError(400, 'Parametri non validi')
     return { symbol: sym, day, bars: await dayBars(sym, day) }
   }
 

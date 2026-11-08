@@ -4,7 +4,7 @@
 // Lo scaricamento è a blocchi con un tempo massimo e riparte da dove si era fermato (scarica solo i giorni mancanti).
 import zlib from 'node:zlib'
 import { ASSET_MAP } from '../shared/assets.js'
-import { ORB_SYMBOLS, isTradingDay } from '../shared/opening.js'
+import { STRATEGY_SYMBOLS, isTradingDay } from '../shared/opening.js'
 import { ny, nyTs, weekdayOf, addDays } from '../shared/time.js'
 import { klines } from './bitunix.js'
 import { db, q, getMeta, setMeta } from './db.js'
@@ -14,7 +14,7 @@ export const START_MIN = 540   // 9:00 New York
 export const SPAN = 450        // fino alle 16:30
 // Oltre ai titoli della strategia: QQQ e SPY (mercato) e BTC (per l'Analisi). BTC dalle 8:00 per avere l'ora prima delle 9:35.
 export const EXTRA_SYMBOLS = ['QQQ', 'SPY', 'BTC']
-export const ARCHIVE_SYMBOLS = [...ORB_SYMBOLS, ...EXTRA_SYMBOLS]
+export const ARCHIVE_SYMBOLS = [...new Set([...STRATEGY_SYMBOLS, ...EXTRA_SYMBOLS])]
 const startOf = sym => (sym === 'BTC' ? 480 : START_MIN)
 const FLOOR_DAY = '2026-03-09' // l'archivio non va più indietro di così (i titoli Bitunix partono a marzo 2026)
 const READY_MIN = 992          // un giorno è completo dalle 16:32 di New York
@@ -37,13 +37,20 @@ export function encodeDay(bars, t0) {
 }
 
 const r7 = x => +x.toPrecision(7) // Float32 → prezzo originale (i prezzi Bitunix hanno al massimo 7 cifre)
-export function decodeDay(data, t0) {
-  const buf = zlib.inflateSync(Buffer.from(data, 'base64'))
+// withMin: aggiunge il minuto di New York (min) a ogni candela, così la simulazione non deve ricalcolarlo né copiare le candele
+export function decodeDay(data, t0, opts) {
+  return decodeBuf(Buffer.from(data, 'base64'), t0, opts)
+}
+function decodeBuf(z, t0, { withMin = false } = {}) {
+  const buf = zlib.inflateSync(z)
   const a = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
   const out = []
+  const m0 = withMin ? ny(t0).min : 0
   for (let i = 0; i < SPAN; i++) {
     if (Number.isNaN(a[i])) continue
-    out.push({ t: t0 + i * MIN, o: r7(a[i]), h: r7(a[SPAN + i]), l: r7(a[2 * SPAN + i]), c: r7(a[3 * SPAN + i]), v: r7(a[4 * SPAN + i]) })
+    const b = { t: t0 + i * MIN, o: r7(a[i]), h: r7(a[SPAN + i]), l: r7(a[2 * SPAN + i]), c: r7(a[3 * SPAN + i]), v: r7(a[4 * SPAN + i]) }
+    if (withMin) b.min = m0 + i
+    out.push(b)
   }
   return out
 }
@@ -214,30 +221,44 @@ export async function fillArchive({ budgetMs = 240000, source = 'manual' } = {})
 }
 
 // ---------- Lettura per la simulazione ----------
-// Cache in memoria: la stessa istanza Vercel riusa i giorni già decompressi tra una simulazione e l'altra
-const cache = new Map()
-const CACHE_MAX = 7000
+// In memoria restano solo i dati compressi (~4,5 KB per titolo e giorno): le candele si decomprimono quando il motore
+// le chiede, e solo le ultime usate restano decompresse. Così anche 180 titoli per 8 mesi stanno nella memoria di Vercel.
+// La stessa istanza riusa i dati già scaricati tra una simulazione e l'altra.
+const store = new Map() // `${sym}|${day}` → { v, t0, z }
+const STORE_MAX = 45000
 
-export async function loadDays(symbols, from, to) {
+export async function loadDays(symbols, from, to, { decodeMax = 8000 } = {}) {
   const days = {}
-  const queue = [...symbols]
+  const lru = new Map()
+  const barsOf = (key, e) => {
+    let b = lru.get(key)
+    if (b) { lru.delete(key); lru.set(key, b); return b }
+    b = decodeBuf(e.z, e.t0, { withMin: true })
+    lru.set(key, b)
+    if (lru.size > decodeMax) lru.delete(lru.keys().next().value)
+    return b
+  }
+  const queue = [...new Set(symbols)]
   const worker = async () => {
     while (queue.length) {
       const sym = queue.shift()
-      // prima chiede solo l'elenco dei giorni, poi scarica i dati di quelli non in cache
+      // prima chiede solo l'elenco dei giorni, poi scarica i dati di quelli non ancora in memoria
       const list = await q(db().from('wt_bars').select('day, created_at').eq('symbol', sym).gte('day', from).lte('day', to).gt('n', 0).order('day').limit(2000))
-      const need = list.filter(r => cache.get(`${sym}|${r.day}`)?.v !== r.created_at).map(r => r.day)
+      const need = list.filter(r => store.get(`${sym}|${r.day}`)?.v !== r.created_at).map(r => r.day)
       for (let k = 0; k < need.length; k += 120) {
         const part = need.slice(k, k + 120)
         const rows = await q(db().from('wt_bars').select('day, t0, data, created_at').eq('symbol', sym).in('day', part))
         for (const r of rows) {
-          if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value)
-          cache.set(`${sym}|${r.day}`, { v: r.created_at, bars: decodeDay(r.data, r.t0) })
+          const key = `${sym}|${r.day}`
+          store.delete(key)
+          if (store.size >= STORE_MAX) store.delete(store.keys().next().value)
+          store.set(key, { v: r.created_at, t0: +r.t0, z: Buffer.from(r.data, 'base64') })
         }
       }
       for (const r of list) {
-        const c = cache.get(`${sym}|${r.day}`)
-        if (c) (days[r.day] ||= {})[sym] = c.bars
+        const key = `${sym}|${r.day}`, e = store.get(key)
+        if (!e) continue
+        Object.defineProperty(days[r.day] ||= {}, sym, { get: () => barsOf(key, e), enumerable: true, configurable: true })
       }
     }
   }

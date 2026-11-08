@@ -1,7 +1,7 @@
 // Limiti di Bitunix per i perpetual della strategia: leva massima, scaglioni con il margine di mantenimento
 // e intervallo del funding. Dati pubblici, salvati in wt_meta e aggiornati una volta al giorno.
 import { ASSET_MAP } from '../shared/assets.js'
-import { ORB_SYMBOLS } from '../shared/opening.js'
+import { STRATEGY_SYMBOLS } from '../shared/opening.js'
 import { tradingPairs, positionTiers, fundingRates } from './bitunix.js'
 import { getMeta, setMeta } from './db.js'
 
@@ -9,7 +9,7 @@ const KEY = 'bitunix:limits'
 const TTL = 24 * 3600000
 let mem = null
 
-const fresh = c => c && Date.now() - c.at < TTL && ORB_SYMBOLS.every(s => s in (c.data || {}))
+const fresh = c => c && Date.now() - c.at < TTL && STRATEGY_SYMBOLS.every(s => s in (c.data || {}))
 
 // { SYM: { maxLev, tiers: [{ start, end, lev, mmr }], fundingH } } (tiers null se Bitunix non li fornisce)
 export async function getLimits() {
@@ -20,7 +20,7 @@ export async function getLimits() {
     const [pairs, fr] = await Promise.all([tradingPairs().catch(() => []), fundingRates().catch(() => ({}))])
     const bySym = Object.fromEntries(pairs.map(p => [p.symbol, p]))
     const data = {}
-    const queue = [...ORB_SYMBOLS]
+    const queue = [...STRATEGY_SYMBOLS]
     const worker = async () => {
       while (queue.length) {
         const sym = queue.shift(), perp = ASSET_MAP[sym]?.perp

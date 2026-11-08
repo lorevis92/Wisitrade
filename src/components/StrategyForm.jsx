@@ -1,7 +1,8 @@
 // Parti della pagina Strategia usate da Prova, Reale e Simulazione: regole e impostazioni salvate.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { get, post } from '../lib/api.js'
-import { OPTIONS, LABELS, ORB_SYMBOLS, normalizeSettings } from '@shared/opening.js'
+import { OPTIONS, LABELS, ORIGINAL_SYMBOLS, NEW_SYMBOLS, LOW_LIQ_SYMBOLS, LEV_SYMBOLS, normalizeSettings } from '@shared/opening.js'
+import { ASSET_MAP } from '@shared/assets.js'
 
 export const TOP10 = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NFLX', 'NVDA', 'META', 'TSLA', 'AMD', 'PLTR']
 export const num = v => String(v).replace('.', ',')
@@ -22,10 +23,66 @@ export function Select({ label, value, options, onChange, fmt, hint }) {
   )
 }
 
+// Scelta dei titoli: tre gruppi (originali, nuovi, bassa liquidità), pulsanti di gruppo e ricerca per simbolo o nome
+const GROUPS = [
+  { key: 'orig', title: 'Originali', list: ORIGINAL_SYMBOLS },
+  { key: 'new', title: 'Nuovi', list: NEW_SYMBOLS },
+  { key: 'low', title: 'Bassa liquidità', list: LOW_LIQ_SYMBOLS, note: 'volume medio sotto 100.000 USDT al giorno: slittamento probabilmente più alto' },
+  { key: 'lev', title: 'ETF a leva', list: LEV_SYMBOLS, note: 'ETF 2x, 3x, inversi e VIX: si muovono 2–3 volte il titolo di riferimento, quindi la soglia del movimento scatta molto più facilmente; sono doppioni dei titoli originali' },
+]
+const ALL_SYMBOLS = GROUPS.flatMap(g => g.list)
+const nameOf = x => ASSET_MAP[x]?.name || x
+const norm = t => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+
+export function SymbolPicker({ symbols, onChange }) {
+  const [query, setQuery] = useState('')
+  const sel = useMemo(() => new Set(symbols), [symbols])
+  const q = norm(query.trim())
+  const match = x => !q || norm(x).includes(q) || norm(nameOf(x)).includes(q)
+  const toggle = x => onChange(sel.has(x) ? symbols.filter(y => y !== x) : [...symbols, x])
+  const shown = ALL_SYMBOLS.filter(match)
+  const count = list => list.filter(x => sel.has(x)).length
+  const chip = x => (
+    <button key={x} title={nameOf(x)} className={`chip ${sel.has(x) ? 'active' : ''} ${LOW_LIQ_SYMBOLS.includes(x) || LEV_SYMBOLS.includes(x) ? 'low' : ''}`} onClick={() => toggle(x)}>{x}</button>
+  )
+  return (
+    <>
+      <div className="lab" style={{ marginTop: 14 }}>Titoli · {count(ALL_SYMBOLS)} scelti su {ALL_SYMBOLS.length}</div>
+      <div className="chips" style={{ marginTop: 6 }}>
+        <button className="chip" onClick={() => onChange(ALL_SYMBOLS)}>tutti</button>
+        <button className="chip" onClick={() => onChange([])}>nessuno</button>
+        <button className="chip" onClick={() => onChange(ORIGINAL_SYMBOLS)}>i {ORIGINAL_SYMBOLS.length} originali</button>
+        <button className="chip" onClick={() => onChange(NEW_SYMBOLS)}>solo i nuovi</button>
+        <button className="chip" onClick={() => onChange(LOW_LIQ_SYMBOLS)}>solo bassa liquidità</button>
+        <button className="chip" onClick={() => onChange(LEV_SYMBOLS)}>solo ETF a leva</button>
+        <button className="chip" onClick={() => onChange(TOP10)}>i 10 principali</button>
+      </div>
+      <div className="field" style={{ marginTop: 8 }}>
+        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Cerca per simbolo o nome, es. NVDA o Nvidia" style={{ fontFamily: 'var(--font-ui)' }} />
+      </div>
+      {q && <div className="chips" style={{ marginTop: 6 }}>
+        <span className="note" style={{ alignSelf: 'center' }}>{shown.length} trovati</span>
+        {shown.length > 0 && <button className="chip" onClick={() => onChange([...new Set([...symbols, ...shown])])}>aggiungi questi</button>}
+        {shown.length > 0 && <button className="chip" onClick={() => onChange(symbols.filter(x => !shown.includes(x)))}>togli questi</button>}
+      </div>}
+      {GROUPS.map(g => {
+        const list = g.list.filter(match)
+        if (!list.length) return null
+        return (
+          <details key={g.key} className="symgroup" open={!!q || g.key === 'orig'}>
+            <summary><span>{g.title}</span> <span className="note">{count(g.list)}/{g.list.length} scelti</span></summary>
+            {g.note && <div className="note" style={{ margin: '2px 0 6px' }}>{g.note}</div>}
+            <div className="chips">{list.map(chip)}</div>
+          </details>
+        )
+      })}
+      {q && !shown.length && <div className="note" style={{ marginTop: 6 }}>Nessun titolo trovato.</div>}
+    </>
+  )
+}
+
 // Regole della strategia (sezione richiudibile)
 export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (Prova)' }) {
-  const symSet = new Set(s.symbols)
-  const toggleSym = x => set('symbols', symSet.has(x) ? s.symbols.filter(y => y !== x) : [...s.symbols, x])
   return (
     <details className="card">
       <summary className="lab" style={{ cursor: 'pointer' }}>Regole della strategia · tocca per modificare</summary>
@@ -63,15 +120,7 @@ export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (P
         <Select label="Commissione di liquidazione" value={s.liqFee} options={OPTIONS.liqFee} fmt={v => `${num(v)}%`} onChange={v => set('liqFee', v)}
           hint="del valore della posizione" />
       </div>
-      <div className="lab" style={{ marginTop: 14 }}>Titoli · {s.symbols.length} scelti</div>
-      <div className="chips" style={{ marginTop: 6 }}>
-        {ORB_SYMBOLS.map(x => <button key={x} className={`chip ${symSet.has(x) ? 'active' : ''}`} onClick={() => toggleSym(x)}>{x}</button>)}
-      </div>
-      <div className="chips" style={{ marginTop: 8 }}>
-        <button className="chip" onClick={() => set('symbols', ORB_SYMBOLS)}>tutti</button>
-        <button className="chip" onClick={() => set('symbols', [])}>nessuno</button>
-        <button className="chip" onClick={() => set('symbols', TOP10)}>i 10 principali</button>
-      </div>
+      <SymbolPicker symbols={s.symbols} onChange={v => set('symbols', v)} />
       <p className="note" style={{ marginTop: 10 }}>Unità di volatilità = la più grande tra l'ATR delle candele da 15 minuti e l'escursione media della prima candela dei giorni precedenti. Finché il guadagno non supera mezza unità resta solo lo stop loss.</p>
     </details>
   )

@@ -187,7 +187,10 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     }
   }
   C.b15done = true
-  const prepC = C.prep ||= {}, todayC = C.today ||= {}, byMinC = C.byMin ||= {}, ctxC = C.ctx ||= {}
+  const prepC = C.prep ||= {}, ctxC = C.ctx ||= {}
+  // candele di oggi e indice per minuto: tenute tra una simulazione e l'altra solo con la cache (ottimizzazione);
+  // senza cache si rifanno ogni giorno, così la memoria non cresce con il numero di titoli
+  let todayC = cache ? (C.today ||= {}) : {}, byMinC = cache ? (C.byMin ||= {}) : {}
   const prepFor = (sym, day, openTs) => {
     const key = sym + '|' + day
     if (prepC[key]) return prepC[key]
@@ -207,11 +210,13 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     const closeMin = closeMinute(day)
     const startBal = balance
     const today = {}
+    if (!cache) { todayC = {}; byMinC = {} }
     for (const sym of s.symbols) {
       const raw = days[day][sym]
       if (!raw?.length) continue
       const key = sym + '|' + day
-      today[sym] = todayC[key] ||= raw.map(b => ({ ...b, min: ny(b.t).min })).filter(b => b.min >= OPEN_MIN)
+      // le candele dell'archivio hanno già il minuto di New York (min); altrimenti si calcola
+      today[sym] = todayC[key] ||= raw[0].min !== undefined ? raw.filter(b => b.min >= OPEN_MIN) : raw.map(b => ({ ...b, min: ny(b.t).min })).filter(b => b.min >= OPEN_MIN)
     }
     const syms = Object.keys(today)
     if (!syms.length) continue

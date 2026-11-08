@@ -9,11 +9,13 @@ const OPEN = 570
 const mean = a => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null)
 
 // Informazioni di un titolo in un giorno (memorizzate): candele per minuto NY, apertura, chiusura, escursione, volumi
-export function makeInfo(days) {
+// max: quanti titoli-giorno tenere pronti (i più vecchi si ricalcolano se servono di nuovo: stesso risultato, meno memoria)
+export function makeInfo(days, { max = 6000 } = {}) {
   const memo = new Map()
   return (sym, date) => {
     const key = sym + '|' + date
     if (memo.has(key)) return memo.get(key)
+    if (memo.size >= max) memo.delete(memo.keys().next().value)
     const raw = days[date]?.[sym]
     let out = null
     if (raw?.length) {

@@ -4,7 +4,7 @@ import { ASSET_MAP } from '../shared/assets.js'
 import { ORB_SYMBOLS } from '../shared/opening.js'
 import { addDays, nyTs } from '../shared/time.js'
 import { makeInfo, indexRaw, marketIndex } from '../shared/analysis.js'
-import { existing, lastReadyDay, tradingDays, loadDays, LISTING_KEY, ARCHIVE_SYMBOLS } from './archive.js'
+import { existing, lastReadyDay, tradingDays, loadDays, LISTING_KEY } from './archive.js'
 import { klines } from './bitunix.js'
 import { getMeta, setMeta } from './db.js'
 
@@ -22,7 +22,8 @@ export async function ensureIndex({ budgetMs = 60000 } = {}) {
   const L = listing || {}
   const first = Object.values(L).map(x => x.first).filter(Boolean).sort()[0]
   if (!first) return { computed: 0, missing: 0 }
-  const complete = d => ARCHIVE_SYMBOLS.every(s => !L[s]?.first || L[s].first > d || have.has(`${s}|${d}`)) && ARCHIVE_SYMBOLS.every(s => L[s])
+  // l'indice usa solo i titoli originali e SPY: un giorno è pronto quando ci sono quelli (i titoli aggiunti non contano)
+  const complete = d => SYMS.every(s => !L[s]?.first || L[s].first > d || have.has(`${s}|${d}`)) && SYMS.every(s => L[s])
   const todo = tradingDays(first, lastReadyDay()).filter(d => !raw[d] && complete(d))
   let computed = 0
   for (let i = 0; i < todo.length && Date.now() - t0 < budgetMs; i += 20) {

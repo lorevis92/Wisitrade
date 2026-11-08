@@ -62,6 +62,13 @@ export async function tickers(symbols) {
   return out
 }
 
+// Libro ordini (migliori livelli): { bids: [[prezzo, quantità]], asks: [...] }
+export async function depth(symbol, limit = 50) {
+  const d = await getJson(`/api/v1/futures/market/depth?symbol=${symbol}&limit=${limit}`)
+  const lv = a => (a || []).map(x => [+x[0], +x[1]]).filter(x => x[0] > 0 && x[1] > 0)
+  return { bids: lv(d?.bids), asks: lv(d?.asks) }
+}
+
 // Coppie disponibili con precisione e quantità minima (servono per gli ordini)
 export async function tradingPairs() {
   const data = await getJson('/api/v1/futures/market/trading_pairs')

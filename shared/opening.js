@@ -4,7 +4,16 @@
 // In perdita chiude solo lo stop loss; in guadagno escono lo stop che segue, la protezione guadagno,
 // il livello se non lo supera o la mancata conferma di volume e VWAP; altrimenti alla chiusura della borsa.
 
+import { NEW_SYMBOLS, LOW_LIQ_SYMBOLS, LEV_SYMBOLS } from './universe.js'
+
+// Titoli originali della strategia (MA e BA non hanno il perpetual su Bitunix: restano qui ma non operano mai)
 export const ORB_SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NFLX', 'NVDA', 'META', 'TSLA', 'AMD', 'AVGO', 'ORCL', 'CRM', 'ADBE', 'INTC', 'PLTR', 'COIN', 'MSTR', 'HOOD', 'UBER', 'SHOP', 'PYPL', 'BABA', 'JPM', 'V', 'MA', 'DIS', 'WMT', 'COST', 'MCD', 'BA', 'LLY', 'UNH', 'ARM', 'MU']
+
+export const ORIGINAL_SYMBOLS = ORB_SYMBOLS.filter(s => s !== 'MA' && s !== 'BA') // i 32 originali disponibili su Bitunix
+export { NEW_SYMBOLS, LOW_LIQ_SYMBOLS, LEV_SYMBOLS }
+// Tutti i titoli selezionabili: originali, nuovi (volume sufficiente), a bassa liquidità ed ETF a leva o inversi
+export const STRATEGY_SYMBOLS = [...new Set([...ORB_SYMBOLS, ...NEW_SYMBOLS, ...LOW_LIQ_SYMBOLS, ...LEV_SYMBOLS])]
+const STRATEGY_SET = new Set(STRATEGY_SYMBOLS)
 
 // Configurazione migliore trovata nei test (17 giorni, 34 titoli): +40% su 300 USDT, 75% vinti, profit factor 2,28
 export const STRATEGY_DEFAULTS = {
@@ -83,7 +92,7 @@ export const LABELS = {
 export function normalizeSettings(s = {}) {
   const out = { ...STRATEGY_DEFAULTS }
   for (const k of Object.keys(STRATEGY_DEFAULTS)) if (s[k] !== undefined && s[k] !== null) out[k] = s[k]
-  out.symbols = Array.isArray(out.symbols) ? out.symbols.filter(x => ORB_SYMBOLS.includes(x)) : ORB_SYMBOLS
+  out.symbols = Array.isArray(out.symbols) ? [...new Set(out.symbols.filter(x => STRATEGY_SET.has(x)))] : ORB_SYMBOLS
   for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt', 'idxMin', 'idxPos', 'entryWin']) out[k] = Number(out[k])
   out.entryWin = Math.min(Math.max(Math.round(out.entryWin) || 30, 1), 30)
   if (!['off', 'min', 'reduce'].includes(out.idxMode)) out.idxMode = 'off'

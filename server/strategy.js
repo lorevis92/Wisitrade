@@ -305,6 +305,37 @@ async function entries(ctx, active, dayPos) {
   if (skipsChanged) await setMeta(skipKey, skips)
 }
 
+// ---------- Titoli che servono in questo controllo ----------
+// Le candele da 1 minuto servono solo per le posizioni aperte e, nella finestra d'entrata, per i titoli scelti
+// nelle modalità attive che oggi non sono ancora stati presi o scartati (e hanno la preparazione pronta).
+// Così il controllo resta nei tempi anche con molti titoli selezionati.
+export async function strategyNeeds(info) {
+  const today = info.date, nowMin = info.minutes
+  if (!isTradingDay(today, info.isWeekday)) return []
+  const [accRows, openPos] = await Promise.all([
+    q(db().from('wt_accounts').select('mode, enabled, settings')),
+    q(db().from('wt_positions').select('symbol').eq('status', 'open')),
+  ])
+  const need = new Set(openPos.map(p => p.symbol))
+  if (nowMin < OPEN_MIN || nowMin > ENTRY_UNTIL) return [...need]
+  const active = accRows.filter(a => a.enabled && (a.mode !== 'live' || liveAllowed())).map(a => ({ mode: a.mode, s: normalizeSettings(a.settings) }))
+  if (!active.length) return [...need]
+  const [dayPos, skips, prepRows] = await Promise.all([
+    q(db().from('wt_positions').select('mode, symbol').eq('day', today)),
+    getMeta(`orbskip:${today}`),
+    q(db().from('wt_prep').select('symbol, data').eq('day', today)),
+  ])
+  const prepOk = new Set(prepRows.filter(r => r.data?.ok).map(r => r.symbol))
+  for (const a of active) {
+    if (nowMin > entryUntil(a.s)) continue                                // finestra d'entrata finita
+    if (a.s.idxMode !== 'off' && nowMin < INDEX_READY_MIN) continue      // con la regola dell'indice si aspetta le 9:35
+    const taken = dayPos.filter(p => p.mode === a.mode)
+    if (a.s.maxPos > 0 && taken.length >= a.s.maxPos) continue           // posizioni del giorno già tutte usate
+    for (const sym of a.s.symbols) if (prepOk.has(sym) && !taken.some(p => p.symbol === sym) && !skips?.[a.mode]?.[sym]) need.add(sym)
+  }
+  return [...need]
+}
+
 // ---------- Punto d'ingresso dal controllo ogni minuto ----------
 export async function runStrategy(series, info) {
   const today = info.date

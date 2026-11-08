@@ -1,3 +1,5 @@
+import { UNIVERSE } from './universe.js'
+
 // Lista asset monitorati. "kind": crypto (dati Bitunix) o stock (dati Alpaca, sottostante USA).
 // "perp": simbolo del perpetual su Bitunix. La disponibilità reale viene verificata a runtime
 // dal Worker (endpoint trading_pairs): se un perp non esiste, l'asset viene comunque monitorato
@@ -25,7 +27,11 @@ export const STOCKS = [
 ].map(([symbol, name, tier]) => ({ symbol, name, tier, kind: 'stock', perp: `${symbol}USDT`, ref: symbol === 'QQQ' ? null : 'QQQ' }))
 
 export const ASSETS = [...CRYPTO, ...STOCKS]
-export const ASSET_MAP = Object.fromEntries(ASSETS.map(a => [a.symbol, a]))
+// Titoli in più solo per la strategia Apertura USA (non nello scanner): vedi shared/universe.js
+const inScanner = new Set(ASSETS.map(a => a.symbol))
+export const STRATEGY_ONLY = UNIVERSE.filter(u => !inScanner.has(u.s))
+  .map(u => ({ symbol: u.s, name: u.name, tier: 2, kind: 'stock', perp: `${u.s}USDT`, ref: 'QQQ', strategyOnly: true, lowLiq: u.g === 'low' }))
+export const ASSET_MAP = Object.fromEntries([...ASSETS, ...STRATEGY_ONLY].map(a => [a.symbol, a]))
 
 // Soglie alert
 export const ALERT = {
