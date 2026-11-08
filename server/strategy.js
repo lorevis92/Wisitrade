@@ -4,7 +4,7 @@
 // Gira ogni minuto dentro /api/cron/tick con le candele da 1 minuto già scaricate.
 import { ASSET_MAP } from '../shared/assets.js'
 import { normalizeSettings, settingsFor, sizing, exitLevel, exitReason, pnlOf, closeMinute, isTradingDay, liqPriceOf, stopPastLiq } from '../shared/opening.js'
-import { prepFromBars, findEntry, newPosition, stepBar, riskFor, liqBlocks, indexRule, entryUntil, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
+import { prepFromBars, findEntry, newPosition, stepBar, riskFor, liqBlocks, indexRule, entryUntil, signalRank, bySignal, lossCheck, openPnlOf, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
 import * as bx from './bitunix.js'
 import { klinesBack, account, openPositions, positionHistory, hasKeys, tickers } from './bitunix.js'
 import { openLive as openLiveSafe, closeOurs, closePart, LiveSkip, CLIENT_PREFIX } from './live.js'
@@ -184,6 +184,39 @@ async function haltAccount(mode, why, notes) {
   notes.push({ title: `⛔ Strategia ${modeName(mode)} fermata`, body: `${why}. Le posizioni aperte vengono comunque gestite fino alla chiusura. Riavviala tu dalla pagina Strategia.`, url: `/strategia?mode=${mode}`, tag: `halt-${mode}` })
 }
 
+// ---------- Freno di mercato ----------
+// Per ogni modalità con il freno attivo: perdita di oggi = trade chiusi + posizioni aperte al prezzo attuale, in % del capitale
+// di inizio giornata (capitale dedicato, altrimenti quello usato dal primo trade di oggi). Superata la soglia: chiude subito
+// tutte le posizioni della strategia di quella modalità, niente nuovi trade fino a domani, notifica.
+async function brakeCheck(ctx, accRows) {
+  const { today, series, lastPrice, accounts, notes } = ctx
+  const key = `brake:${today}`
+  const state = (await getMeta(key)) || {}
+  const out = { paper: !!state.paper, live: !!state.live }
+  const modes = accRows.map(a => ({ mode: a.mode, s: settingsFor(a.mode, a.settings) })).filter(x => x.s.brakePct > 0 && !out[x.mode])
+  if (!modes.length) return out
+  const dayPos = await q(db().from('wt_positions').select('*').eq('day', today))
+  let changed = false
+  for (const { mode, s } of modes) {
+    const mine = dayPos.filter(p => p.mode === mode)
+    if (!mine.length) continue
+    const dayPnl = mine.filter(p => p.status === 'closed').reduce((a, p) => a + (p.pnl || 0), 0)
+    const open = mine.filter(p => p.status === 'open')
+    const pxOf = p => series[p.symbol]?.['1m']?.at(-1)?.c ?? lastPrice[p.symbol] ?? null
+    const openPnl = open.reduce((a, p) => { const px = pxOf(p); return a + (px ? openPnlOf(p, px) : 0) }, 0)
+    let dayRef = mine.slice().sort((a, b) => a.opened_at - b.opened_at)[0]?.capital ?? null
+    if (s.capitalMode === 'dedicated') { const st = await getCapital(mode); if (st) dayRef = st.current - dayPnl }
+    if (!lossCheck(s, { dayRef, dayPnl, openPnl }).brake) continue
+    const loss = dayPnl + openPnl
+    for (const p of open) { const px = pxOf(p); if (px) await closePos(p, px, 'freno di mercato', accounts, notes).catch(() => {}) }
+    state[mode] = { at: Date.now(), loss, pct: dayRef ? loss / dayRef * 100 : null }
+    out[mode] = true; changed = true
+    notes.push({ title: `🛑 Freno di mercato: ${modeName(mode)}`, body: `Perdita del giorno ${loss.toFixed(2)} USDT (${(loss / dayRef * 100).toFixed(1)}%, soglia ${s.brakePct}%): chiuse ${open.length} posizioni, niente nuovi trade fino a domani.`, url: `/strategia?mode=${mode}`, tag: `brake-${mode}-${today}` })
+  }
+  if (changed) await setMeta(key, state)
+  return out
+}
+
 // ---------- Gestione delle posizioni aperte ----------
 async function manage(p, ctx) {
   const { series, today, nowMin, closeMin, accounts, preps, notes, lastPrice } = ctx
@@ -258,12 +291,28 @@ async function entries(ctx, active, dayPos) {
     const s = acc.s, mode = acc.mode
     if (mode === 'live' && !liveAllowed()) continue
     const taken = dayPos.filter(p => p.mode === mode)
+    const skipAll = why => { for (const sym of s.symbols) if (!taken.some(p => p.symbol === sym) && !skips[mode]?.[sym]) skip(mode, sym, why) }
+    // freno di mercato già scattato oggi: niente nuovi trade fino a domani
+    if (ctx.braked?.[mode]) { skipAll('freno di mercato: niente nuovi trade fino a domani'); continue }
+    const dayPnl = taken.filter(p => p.status === 'closed').reduce((a, p) => a + (p.pnl || 0), 0)
     // capitale dedicato e limiti di perdita (in % del capitale dedicato)
     let ded = null
+    if (s.capitalMode !== 'dedicated') {
+      // senza capitale dedicato: limite giornaliero sul capitale usato dal primo trade di oggi (la perdita totale vale solo con il capitale dedicato)
+      const dayRef = taken.slice().sort((a, b) => a.opened_at - b.opened_at)[0]?.capital ?? null
+      if (dayRef && lossCheck(s, { dayRef, dayPnl }).dayStop) {
+        const k = `daystop:${mode}:${today}`
+        if (!(await getMeta(k))) {
+          await setMeta(k, { at: Date.now() })
+          notes.push({ title: `⏸ ${modeName(mode)}: niente nuovi trade fino a domani`, body: `perdita massima giornaliera superata: ${dayPnl.toFixed(2)} USDT oggi (limite ${s.maxDayLoss}% di ${dayRef.toFixed(2)})`, url: `/strategia?mode=${mode}`, tag: `daystop-${mode}-${today}` })
+        }
+        skipAll('perdita massima giornaliera superata')
+        continue
+      }
+    }
     if (s.capitalMode === 'dedicated') {
       ded = await getCapital(mode)
-      if (!ded || !(ded.current > 0)) { for (const sym of s.symbols) if (!taken.some(p => p.symbol === sym) && !skips[mode]?.[sym]) skip(mode, sym, 'capitale dedicato non impostato'); continue }
-      const dayPnl = taken.filter(p => p.status === 'closed').reduce((a, p) => a + (p.pnl || 0), 0)
+      if (!ded || !(ded.current > 0)) { skipAll('capitale dedicato non impostato'); continue }
       const lim = checkLimits(ded, s, dayPnl, today)
       if (!lim.ok) {
         if (lim.total && lim.fresh) await haltAccount(mode, lim.why, notes)
@@ -271,7 +320,7 @@ async function entries(ctx, active, dayPos) {
           await markDayStop(mode, today)
           notes.push({ title: `⏸ ${modeName(mode)}: niente nuovi trade fino a domani`, body: lim.why, url: `/strategia?mode=${mode}`, tag: `daystop-${mode}-${today}` })
         }
-        for (const sym of s.symbols) if (!taken.some(p => p.symbol === sym) && !skips[mode]?.[sym]) skip(mode, sym, lim.total ? 'strategia fermata: perdita massima totale' : 'perdita massima giornaliera superata')
+        skipAll(lim.total ? 'strategia fermata: perdita massima totale' : 'perdita massima giornaliera superata')
         continue
       }
     }
@@ -279,15 +328,21 @@ async function entries(ctx, active, dayPos) {
     if (s.idxMode !== 'off' && ctx.nowMin < INDEX_READY_MIN) continue
     const rule = indexRule(s, ctx.mindex?.idx ?? null)
     if (!rule.ok) { for (const sym of s.symbols) if (!taken.some(p => p.symbol === sym) && !skips[mode]?.[sym]) skip(mode, sym, rule.why); continue }
-    for (const sym of s.symbols) {
-      if (taken.some(p => p.symbol === sym) || skips[mode]?.[sym]) continue
-      if (rule.maxPos > 0 && taken.length >= rule.maxPos) break
+    // segnali di questo controllo: per minuto del segnale, poi secondo la regola di scelta tra segnali contemporanei
+    const cands = []
+    s.symbols.forEach((sym, idx) => {
+      if (taken.some(p => p.symbol === sym) || skips[mode]?.[sym]) return
       const prep = preps[sym]
-      if (!prep) continue
+      if (!prep) return
       const bars = (series[sym]?.['1m'] || []).map(b => ({ ...b, ...ny(b.t) })).filter(b => b.date === today && b.min >= OPEN_MIN && b.min < entryUntil(s))
       const sig = findEntry(bars, s, prep, rule.from)
-      if (!sig) continue
-      if (sig.skip) { skip(mode, sym, sig.skip); continue }
+      if (!sig) return
+      if (sig.skip) { skip(mode, sym, sig.skip); return }
+      cands.push({ sym, sig, prep, idx, rank: signalRank(s, { sig, prep, bars, idx }) })
+    })
+    cands.sort((a, b) => bySignal(a, b) || a.idx - b.idx)
+    for (const { sym, sig, prep } of cands) {
+      if (rule.maxPos > 0 && taken.length >= rule.maxPos) { skip(mode, sym, 'limite posizioni al giorno'); continue }
       const { k, side } = sig
       // nel Reale si entra solo se il segnale è appena scattato (niente entrate in ritardo a prezzi peggiori)
       if (mode === 'live' && now - (k.t + MIN) > 2 * MIN) { skip(mode, sym, 'segnale scattato mentre il controllo era fermo'); continue }
@@ -411,6 +466,8 @@ export async function runStrategy(series, info) {
   for (const p of openPos) {
     try { await manage(p, ctx) } catch (e) { (log.errors ||= []).push(`${p.symbol}: ${e.message}`) }
   }
+  // freno di mercato "chiudi tutto": perdita del giorno (chiusi + aperti) oltre la soglia → chiude tutte le posizioni della strategia
+  try { ctx.braked = await brakeCheck(ctx, accRows) ; if (Object.values(ctx.braked).some(Boolean)) log.brake = ctx.braked } catch (e) { (log.errors ||= []).push(`freno: ${e.message}`) }
   // indice di attività del mercato di oggi (dalle 9:35 di New York, una volta al giorno)
   if (info.minutes >= INDEX_READY_MIN && info.minutes <= ENTRY_UNTIL) {
     try { ctx.mindex = await todayIndex(today); log.mindex = ctx.mindex.idx === null ? null : Math.round(ctx.mindex.idx) } catch (e) { (log.errors ||= []).push(`indice: ${e.message}`) }

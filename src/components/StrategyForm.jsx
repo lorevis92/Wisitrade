@@ -82,7 +82,7 @@ export function SymbolPicker({ symbols, onChange }) {
 }
 
 // Regole della strategia (sezione richiudibile)
-export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (Prova)' }) {
+export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (Prova)', sim = false }) {
   return (
     <details className="card">
       <summary className="lab" style={{ cursor: 'pointer' }}>Regole della strategia · tocca per modificare</summary>
@@ -95,6 +95,19 @@ export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (P
         <Select label="Finestra d'entrata" value={s.entryWin} options={OPTIONS.entryWin} fmt={v => `primi ${v} minuti`} onChange={v => set('entryWin', v)} />
         <Select label="Trade fermi dopo 60 min" value={s.stale} options={OPTIONS.stale} fmt={v => lab('stale', v)} onChange={v => set('stale', v)} />
         {showFee && <Select label={feeLabel} value={s.fee} options={OPTIONS.fee} fmt={v => `${num(v)}%`} onChange={v => set('fee', v)} />}
+      </div>
+      <div className="grid2" style={{ marginTop: 6, alignItems: 'start' }}>
+        <Select label="Segnali nello stesso minuto" value={s.pick} options={OPTIONS.pick} fmt={v => lab('pick', v)} onChange={v => set('pick', v)}
+          hint="quale titolo prendere quando i posti liberi del giorno non bastano" />
+      </div>
+      <div className="lab" style={{ marginTop: 14 }}>Limiti di perdita e freno · in % del capitale</div>
+      <div className="grid2" style={{ marginTop: 6, alignItems: 'start' }}>
+        <Select label="Perdita massima giornaliera" value={s.maxDayLoss} options={OPTIONS.maxDayLoss} fmt={v => (v ? `${num(v)}%` : 'spenta')} onChange={v => set('maxDayLoss', v)}
+          hint="trade chiusi di oggi: superata, niente nuovi trade fino a domani (le posizioni aperte restano)" />
+        <Select label="Freno di mercato: chiudi tutto" value={s.brakePct} options={OPTIONS.brakePct} fmt={v => (v ? `oltre il ${num(v)}%` : 'spento')} onChange={v => set('brakePct', v)}
+          hint="trade chiusi + posizioni aperte di oggi: superata, chiude subito tutte le posizioni e niente nuovi trade fino a domani" />
+        <Select label="Perdita massima totale" value={s.maxTotalLoss} options={OPTIONS.maxTotalLoss} fmt={v => (v ? `${num(v)}% dalla partenza` : 'spenta')} onChange={v => set('maxTotalLoss', v)}
+          hint={sim ? 'superata, la simulazione non apre più trade fino alla fine' : 'superata, la strategia si ferma finché non la riavvii (con capitale dedicato)'} />
       </div>
       <div className="lab" style={{ marginTop: 14 }}>Uscite da testare · spente di default</div>
       <div className="grid2" style={{ marginTop: 6, alignItems: 'start' }}>
@@ -133,6 +146,7 @@ export function PresetsCard({ current, onLoad }) {
   const [msg, setMsg] = useState(null)
   const [busy, setBusy] = useState(false)
   const [armDel, setArmDel] = useState(null)
+  const [exists, setExists] = useState(null) // { name, activeIn }: stesso nome già salvato, serve conferma
 
   const refresh = useCallback(() => get('/api/presets').then(setData).catch(e => setMsg(e.message)), [])
   useEffect(() => { refresh() }, [refresh])
@@ -152,8 +166,23 @@ export function PresetsCard({ current, onLoad }) {
           <input value={name} maxLength={60} onChange={e => setName(e.target.value)} placeholder="Nome, es. stop 1,25 leva 8x" style={{ fontFamily: 'var(--font-ui)' }} />
         </div>
         <button className="btn" style={{ width: 'auto' }} disabled={busy || !name.trim()}
-          onClick={() => act(() => post('/api/presets', { name: name.trim(), settings: current }).then(() => setName('')), 'Impostazioni salvate.')}>Salva</button>
+          onClick={() => act(async () => {
+            const r = await post('/api/presets', { name: name.trim(), settings: current })
+            if (r.exists) { setExists({ name: name.trim(), activeIn: r.activeIn || [] }); return }
+            setName('')
+          }, null)}>Salva</button>
       </div>
+      {exists && (
+        <div className="warn">
+          Esiste già un'impostazione salvata "{exists.name}".
+          {exists.activeIn.length > 0 && <> <b>È quella attiva in {exists.activeIn.join(' e ')}.</b> Sovrascriverla non cambia {exists.activeIn.join(' né ')}: cambiano solo se premi Salva nella loro pagina.</>}
+          {' '}Vuoi sovrascriverla?
+          <div className="chips" style={{ marginTop: 6 }}>
+            <button className="chip" disabled={busy} onClick={() => act(() => post('/api/presets', { name: exists.name, settings: current, overwrite: true }).then(() => { setName(''); setExists(null) }), `"${exists.name}" sovrascritta.`)}>Sì, sovrascrivi</button>
+            <button className="chip" onClick={() => setExists(null)}>No</button>
+          </div>
+        </div>
+      )}
       <button className="btn ghost" style={{ marginTop: 8 }} disabled={busy || !data}
         onClick={() => { onLoad(data.defaults, 'default'); setMsg(data.defaultId ? 'Caricate le impostazioni di default (la versione scelta come default).' : 'Caricate le impostazioni di default.') }}>
         Ripristina impostazioni di default
@@ -162,8 +191,8 @@ export function PresetsCard({ current, onLoad }) {
       {list.length > 0 && <div style={{ marginTop: 10 }}>
         {list.map(p => (
           <div key={p.id} className="preset">
-            <button className="preset-main" disabled={busy} onClick={() => { onLoad(normalizeSettings(p.settings), p.name); setMsg(`Caricata "${p.name}".`) }}>
-              <b>{p.name}</b>{p.is_default && <span className="pill long" style={{ marginLeft: 6 }}>default</span>}{same(p) && <span className="pill neutral" style={{ marginLeft: 6 }}>in uso</span>}
+            <button className="preset-main" disabled={busy} onClick={() => { onLoad(normalizeSettings(p.settings), p.name, p.id); setMsg(`Caricata "${p.name}".`) }}>
+              <b>{p.name}</b>{p.is_default && <span className="pill long" style={{ marginLeft: 6 }}>default</span>}{data?.active?.live?.presetId === p.id && <span className="pill short" style={{ marginLeft: 6 }}>attiva nel Reale</span>}{same(p) && <span className="pill neutral" style={{ marginLeft: 6 }}>in uso</span>}
               <span className="note" style={{ display: 'block' }}>{new Date(p.created_at).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })} · leva {p.settings.leverage}x · stop {num(p.settings.sl)} · segue {num(p.settings.trail)} · {p.settings.symbols?.length ?? 0} titoli{p.settings.slip !== undefined ? ` · slitt. ${num(p.settings.slip)}%` : ''}</span>
             </button>
             <div className="preset-actions">
@@ -174,7 +203,7 @@ export function PresetsCard({ current, onLoad }) {
           </div>
         ))}
       </div>}
-      <p className="note" style={{ marginTop: 8 }}>Tocca una versione per caricarla. Le versioni sono le stesse in Prova, Reale e Simulazione; in Prova e Reale diventano attive solo dopo Salva.</p>
+      <p className="note" style={{ marginTop: 8 }}>Tocca una versione per caricarla in questa scheda. Simulazione, Prova e Reale hanno impostazioni separate: caricare o cambiare una versione salvata non cambia Prova o Reale finché non premi Salva nella loro pagina.</p>
     </details>
   )
 }

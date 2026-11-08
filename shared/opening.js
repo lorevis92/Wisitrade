@@ -24,14 +24,16 @@ export const STRATEGY_DEFAULTS = {
   capitalFixed: 300,
   capitalPct: 100,
   capitalDedicated: 0,    // capitale dedicato: cifra di partenza (cambiandola si riparte da lì)
-  maxDayLoss: 10,         // con capitale dedicato: perdita massima giornaliera in % (0 = spenta): superata, niente nuovi trade fino a domani
-  maxTotalLoss: 30,       // con capitale dedicato: perdita massima totale in % (0 = spenta): superata, la strategia si ferma
+  maxDayLoss: 10,         // perdita massima giornaliera in % del capitale (0 = spenta): superata, niente nuovi trade fino a domani
+  maxTotalLoss: 30,       // perdita massima totale in % (0 = spenta): superata, la strategia si ferma (Reale/Prova: con capitale dedicato)
+  brakePct: 0,            // freno di mercato "chiudi tutto": perdita del giorno (chiusi + aperti) in % del capitale; superata, chiude tutto e niente nuovi trade fino a domani (0 = spento)
+  pick: 'list',           // segnali nello stesso minuto con posti insufficienti: list = ordine della lista | move = movimento più forte | volume = più liquido | volat = più volatile
   movePct: 1,             // segnale: movimento dall'apertura (entrata a 1,25 × questo valore)
   sl: 1.5,                // stop loss in unità di volatilità
   trail: 1,               // in guadagno: stop che segue a questa distanza
   giveback: 0.4,          // protezione guadagno: esce se restituisce questa quota
   room: 1,                // spazio minimo dal livello più vicino, in multipli del movimento già fatto
-  maxPos: 8,              // posizioni al giorno
+  maxPos: 10,             // posizioni al giorno
   stale: 'run',           // trade fermi dopo 60 min: run | half | close
   fee: 0.06,              // commissione per lato in % (Prova e Simulazione; nel Reale quella vera di Bitunix)
   // Liquidazione (margine isolato) e costi
@@ -64,6 +66,8 @@ export const OPTIONS = {
   maxPos: [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 0],
   maxDayLoss: [0, 3, 5, 7.5, 10, 15, 20, 30],
   maxTotalLoss: [0, 10, 15, 20, 25, 30, 40, 50],
+  brakePct: [0, 3, 5, 8, 10, 15],
+  pick: ['list', 'move', 'volume', 'volat'],
   stale: ['run', 'half', 'close'],
   fee: [0.06, 0.05, 0.042, 0.03, 0.02, 0.014, 0],
   mmr: [0.5, 1, 1.5, 2, 2.5, 3, 5],
@@ -91,6 +95,8 @@ export const LABELS = {
   stale: { run: 'lascia correre', half: 'dimezza lo stop', close: 'chiudi se in perdita' },
   npMin: { 0: 'spenta' },
   halfAt: { 0: 'spenta' },
+  pick: { list: 'ordine della lista', move: 'movimento più forte', volume: 'più liquido (volume)', volat: 'più volatile' },
+  brakePct: { 0: 'spento' },
   idxMode: { off: 'spento', min: 'opera solo se l\'indice è almeno…', reduce: 'sotto la soglia meno posizioni' },
 }
 
@@ -98,7 +104,7 @@ export function normalizeSettings(s = {}) {
   const out = { ...STRATEGY_DEFAULTS }
   for (const k of Object.keys(STRATEGY_DEFAULTS)) if (s[k] !== undefined && s[k] !== null) out[k] = s[k]
   out.symbols = Array.isArray(out.symbols) ? [...new Set(out.symbols.filter(x => STRATEGY_SET.has(x)))] : ORB_SYMBOLS
-  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt', 'idxMin', 'idxPos', 'entryWin', 'capitalDedicated', 'maxDayLoss', 'maxTotalLoss']) out[k] = Number(out[k])
+  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt', 'idxMin', 'idxPos', 'entryWin', 'capitalDedicated', 'maxDayLoss', 'maxTotalLoss', 'brakePct']) out[k] = Number(out[k])
   out.entryWin = Math.min(Math.max(Math.round(out.entryWin) || 30, 1), 30)
   if (!['off', 'min', 'reduce'].includes(out.idxMode)) out.idxMode = 'off'
   out.idxMin = Math.min(Math.max(out.idxMin || 0, 0), 100)
@@ -117,6 +123,8 @@ export function normalizeSettings(s = {}) {
   out.capitalDedicated = Math.max(out.capitalDedicated || 0, 0)
   out.maxDayLoss = Math.min(Math.max(out.maxDayLoss || 0, 0), 100)
   out.maxTotalLoss = Math.min(Math.max(out.maxTotalLoss || 0, 0), 100)
+  out.brakePct = Math.min(Math.max(out.brakePct || 0, 0), 100)
+  if (!['list', 'move', 'volume', 'volat'].includes(out.pick)) out.pick = 'list'
   if (!['run', 'half', 'close'].includes(out.stale)) out.stale = 'run'
   return out
 }

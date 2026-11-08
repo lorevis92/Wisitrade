@@ -6,7 +6,7 @@ import { getCapital, syncCapitalSetting, restartCapital } from '../server/capita
 import { runSimulation } from '../shared/engine.js'
 import { addDays, weekdayOf } from '../shared/time.js'
 import { archiveStatus, fillArchive, loadDays, dayBars, EXTRA_SYMBOLS } from '../server/archive.js'
-import { db, q, getMeta } from '../server/db.js'
+import { db, q, getMeta, setMeta } from '../server/db.js'
 import { klinesBack, account, hasKeys, tickers } from '../server/bitunix.js'
 import { nyInfo } from '../server/session.js'
 import { durationStats, durationText, getPairs } from '../server/scanner.js'
@@ -69,11 +69,14 @@ async function strategyView(mode) {
   ])
   const prices = open.length ? await tickers(open.map(p => ASSET_MAP[p.symbol].perp)) : {}
   const n = nyInfo()
-  const [skips, mindex, last, prepRows] = await Promise.all([
+  const [skips, mindex, last, prepRows, brake, daystop, active] = await Promise.all([
     getMeta(`orbskip:${n.date}`),
     getMeta(`mindex:${n.date}`),
     getMeta('last:tick'),
     q(db().from('wt_prep').select('symbol, data').eq('day', n.date)),
+    getMeta(`brake:${n.date}`),
+    getMeta(`daystop:${mode}:${n.date}`),
+    getMeta(`active:${mode}`),
   ])
   let gp = 0, gl = 0, wins = 0
   for (const p of closed) { if (p.pnl > 0) { gp += p.pnl; wins++ } else gl -= p.pnl || 0 }
@@ -110,6 +113,8 @@ async function strategyView(mode) {
   }
   return {
     mode, enabled: acc.enabled, settings: s, platform, capital, slippage,
+    // configurazione attiva: nome (impostazione salvata da cui viene, o "personalizzata") e data dell'ultima modifica
+    active: { name: active?.name || (Object.keys(acc.settings || {}).length ? 'personalizzata' : 'default dell\'app'), presetId: active?.presetId ?? null, edited: !!active?.edited, at: active?.at || acc.updated_at || null },
     sizing: sizing(s, sizeBase, s.capitalMode === 'dedicated' ? (cap?.current ?? 0) : undefined),
     open: open.map(p => {
       const px = prices[ASSET_MAP[p.symbol].perp]?.last ?? null
@@ -119,7 +124,7 @@ async function strategyView(mode) {
     trades: closed.slice(0, 300),
     days: dailySummary(closed),
     totals: { n: closed.length, wins, net: gp - gl, pf: gl > 0 ? gp / gl : null },
-    today: { date: n.date, tradingDay: isTradingDay(n.date, n.isWeekday), minutes: n.minutes, skips: skips?.[mode] || {}, mindex: mindex || null, prepared: prepRows.filter(r => r.data?.ok).length, prepTotal: prepRows.length },
+    today: { date: n.date, tradingDay: isTradingDay(n.date, n.isWeekday), minutes: n.minutes, skips: skips?.[mode] || {}, mindex: mindex || null, brake: brake?.[mode] || null, dayStop: !!daystop, prepared: prepRows.filter(r => r.data?.ok).length, prepTotal: prepRows.length },
     status: { liveTrading: process.env.LIVE_TRADING === 'on', keys: hasKeys(), liveAllowed: liveAllowed(), lastTick: last },
   }
 }
@@ -262,7 +267,12 @@ async function route(req, url) {
     if (typeof body.enabled === 'boolean') patch.enabled = body.enabled
     await q(db().from('wt_accounts').update(patch).eq('mode', mode))
     // capitale dedicato: una cifra nuova diventa il nuovo punto di partenza (con storico); riavvio dopo lo stop per perdita
-    if (patch.settings) await syncCapitalSetting(mode, patch.settings)
+    if (patch.settings) {
+      await syncCapitalSetting(mode, patch.settings)
+      // nome della configurazione attiva in questa scheda (solo quando si preme Salva in questa scheda)
+      const name = String(body.name || '').trim().slice(0, 80) || 'personalizzata'
+      await setMeta(`active:${mode}`, { name, presetId: body.presetId ?? null, edited: !!body.edited, at: Date.now() })
+    }
     if (body.enabled === true) await restartCapital(mode)
     return strategyView(mode)
   }
@@ -343,15 +353,25 @@ async function route(req, url) {
     requireAdmin(req)
     const rows = await q(db().from('wt_presets').select('*').order('created_at', { ascending: false }))
     const def = rows.find(r => r.is_default)
-    return { presets: rows, defaults: def ? normalizeSettings(def.settings) : normalizeSettings(STRATEGY_DEFAULTS), defaultId: def?.id ?? null }
+    const [aLive, aPaper] = await Promise.all([getMeta('active:live'), getMeta('active:paper')])
+    return { presets: rows, defaults: def ? normalizeSettings(def.settings) : normalizeSettings(STRATEGY_DEFAULTS), defaultId: def?.id ?? null, active: { live: aLive || null, paper: aPaper || null } }
   }
 
   if (path === '/presets' && m === 'POST') {
     requireAdmin(req)
     const name = String(body.name || '').trim().slice(0, 60)
     if (!name) throw new HttpError(400, 'Dai un nome alle impostazioni')
-    await q(db().from('wt_presets').insert({ name, settings: normalizeSettings(body.settings || {}), created_at: Date.now() }))
-    return { ok: true }
+    // stesso nome: si sovrascrive solo con conferma (overwrite). Sovrascrivere non cambia mai Prova o Reale:
+    // le loro impostazioni sono una copia, che cambia solo premendo Salva nella loro pagina.
+    const same = await q(db().from('wt_presets').select('id').eq('name', name))
+    if (same.length && body.overwrite !== true) {
+      const [aLive, aPaper] = await Promise.all([getMeta('active:live'), getMeta('active:paper')])
+      const ids = same.map(x => x.id)
+      return { exists: true, id: ids[0], activeIn: [...(ids.includes(aLive?.presetId) || aLive?.name === name ? ['Reale'] : []), ...(ids.includes(aPaper?.presetId) || aPaper?.name === name ? ['Prova'] : [])] }
+    }
+    if (same.length) await q(db().from('wt_presets').update({ settings: normalizeSettings(body.settings || {}), created_at: Date.now() }).eq('id', same[0].id))
+    else await q(db().from('wt_presets').insert({ name, settings: normalizeSettings(body.settings || {}), created_at: Date.now() }))
+    return { ok: true, overwritten: !!same.length }
   }
 
   if (path === '/presets/delete' && m === 'POST') {

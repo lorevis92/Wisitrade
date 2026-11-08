@@ -160,6 +160,42 @@ export function stepBar(p, s, b, dayBars, prep) {
   return null
 }
 
+// ---------- Scelta tra segnali dello stesso minuto ----------
+// Quando più titoli danno il segnale nello stesso minuto e i posti liberi non bastano, l'ordine è (s.pick):
+// list = ordine della lista | move = movimento più forte dall'apertura | volume = più liquido (USDT scambiati da 9:30 al segnale)
+// | volat = più volatile (unità di volatilità in % del prezzo). Solo dati noti nel momento dell'entrata: il prezzo d'entrata e
+// le candele chiuse PRIMA di quella del segnale (la Simulazione entra dentro quella candela, quindi la sua chiusura non si conosce).
+// Restituisce un numero: più basso = prima. bars = candele di oggi del titolo (con .min), idx = posizione nella lista.
+export function signalRank(s, { sig, prep, bars, idx }) {
+  if (s.pick === 'move') {
+    let prev = null
+    for (const b of bars) { if (b.min >= sig.k.min) break; prev = b }
+    return -Math.max(Math.abs(sig.entry / sig.open - 1), prev ? Math.abs(prev.c / sig.open - 1) : 0)
+  }
+  if (s.pick === 'volume') { let v = 0; for (const b of bars) { if (b.min >= sig.k.min) break; v += b.v * b.c } return -v }
+  if (s.pick === 'volat') return -(prep.unit / sig.open)
+  return idx
+}
+export const bySignal = (a, b) => a.sig.k.t - b.sig.k.t || a.rank - b.rank
+
+// ---------- Limiti di perdita e freno di mercato (stesse regole per Simulazione, Prova e Reale) ----------
+// dayRef = capitale a inizio giornata, dayPnl = trade chiusi oggi, openPnl = posizioni aperte (al prezzo attuale),
+// totalRef = riferimento della perdita totale (partenza), balance = capitale attuale.
+export function lossCheck(s, { dayRef, dayPnl = 0, openPnl = 0, totalRef = null, balance = null }) {
+  const out = { brake: false, dayStop: false, halt: false }
+  if (dayRef > 0) {
+    if (s.brakePct > 0 && dayPnl + openPnl <= -dayRef * s.brakePct / 100) out.brake = true
+    if (s.maxDayLoss > 0 && dayPnl < 0 && -dayPnl >= dayRef * s.maxDayLoss / 100) out.dayStop = true
+  }
+  if (s.maxTotalLoss > 0 && totalRef > 0 && balance !== null && balance <= totalRef * (1 - s.maxTotalLoss / 100)) out.halt = true
+  return out
+}
+// Guadagno o perdita non realizzati di una posizione al prezzo px (compresa la metà già chiusa con "Metà subito")
+export function openPnlOf(p, px) {
+  const hq = p.half_done && p.half_qty > 0 ? p.half_qty : 0
+  return p.side * (px - p.entry) * (p.qty - hq) + (hq ? p.side * (p.half_px - p.entry) * hq : 0)
+}
+
 // ---------- Simulazione sui dati archiviati ----------
 // days: { 'YYYY-MM-DD': { SYM: [candele 1 min con t,o,h,l,c,v] } } (9:00–16:30 NY)
 // opts: { from, to, capital, limits }. Le regole sono le stesse del dal vivo; il saldo cresce e cala a ogni chiusura (guadagni reinvestiti).
@@ -206,6 +242,9 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
   const trades = [], dayRows = [], reasons = {}, skips = {}
   let fundingTot = 0, slipTot = 0, liqs = 0
   let tradeId = 0
+  // limiti di perdita e freno di mercato: quando sono scattati (giorno, tipo, minuto, risultato del giorno in quel momento)
+  const limitEvents = []
+  let halted = null // perdita massima totale: niente nuovi trade fino alla fine della simulazione
 
   for (const day of allDates) {
     if (day < from || day > to || !isTradingDay(day, weekdayOf(day))) continue
@@ -237,9 +276,10 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
       const sig = findEntry(today[sym].filter(b => b.min < entryUntil(s)), s, prep, rule.from)
       if (!sig) continue
       if (sig.skip) { const why = sig.skip.replace(/^solo \d+ giorni.*/, 'storico insufficiente'); skips[why] = (skips[why] || 0) + 1; continue }
-      sigs.push({ sym, sig, prep })
+      sigs.push({ sym, sig, prep, rank: signalRank(s, { sig, prep, bars: today[sym], idx: symOrder[sym] }) })
     }
-    sigs.sort((a, b) => a.sig.k.t - b.sig.k.t || symOrder[a.sym] - symOrder[b.sym])
+    // per minuto del segnale, poi secondo la regola di scelta (a parità: ordine della lista)
+    sigs.sort((a, b) => bySignal(a, b) || symOrder[a.sym] - symOrder[b.sym])
 
     const byMin = {}
     for (const sym of syms) {
@@ -277,17 +317,43 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     }
 
     let si = 0
+    let stopNew = halted ? 'strategia ferma (perdita massima totale)' : null // motivo per non aprire altri trade oggi
+    const lastPx = {}
+    const dayPnlNow = () => dayTrades.reduce((a, t) => a + t.pnl, 0)
+    const event = (type, m, extra = {}) => limitEvents.push({ day, type, min: m, dayPnl: dayPnlNow(), dayPct: startBal > 0 ? dayPnlNow() / startBal * 100 : 0, ...extra })
+    const checkAfterClose = m => {
+      const L = lossCheck(s, { dayRef: startBal, dayPnl: dayPnlNow(), totalRef: capital, balance })
+      if (L.halt && !halted) { halted = day; event('totale', m); stopNew = 'strategia ferma (perdita massima totale)' }
+      if (L.dayStop && !stopNew) { event('giornaliero', m); stopNew = 'perdita massima giornaliera' }
+      // freno superato già solo con i trade chiusi (nessuna posizione aperta da chiudere): niente nuovi trade
+      if (L.brake && !open.length && stopNew !== 'freno di mercato' && !halted) { event('freno', m, { lossAtTrigger: dayPnlNow(), lossPct: startBal > 0 ? dayPnlNow() / startBal * 100 : 0 }); stopNew = 'freno di mercato' }
+    }
     for (let m = OPEN_MIN; m < closeMin - 1; m++) {
       // uscite sulla candela chiusa del minuto m
+      const nBefore = dayTrades.length
       for (const pos of [...open]) {
         const b = byMin[pos.symbol].get(m)
         if (!b) continue
+        lastPx[pos.symbol] = b
         const r = stepBar(pos, s, b, today[pos.symbol], pos.prep)
         if (r) close(pos, r.exit, r.reason, b.t + MIN, r.liq)
       }
+      // freno di mercato: perdita del giorno (chiusi + aperti al prezzo di chiusura del minuto) oltre la soglia → chiude tutto
+      if (s.brakePct > 0 && open.length) {
+        let openPnl = 0
+        for (const pos of open) { const b = lastPx[pos.symbol]; if (b) openPnl += openPnlOf(pos, b.c) }
+        if (lossCheck(s, { dayRef: startBal, dayPnl: dayPnlNow(), openPnl }).brake) {
+          const loss = dayPnlNow() + openPnl
+          for (const pos of [...open]) { const b = lastPx[pos.symbol] || byMin[pos.symbol].get(m); close(pos, b ? b.c : pos.entry, 'freno di mercato', (b ? b.t : pos.opened_at) + MIN) }
+          event('freno', m, { lossAtTrigger: loss, lossPct: startBal > 0 ? loss / startBal * 100 : 0 })
+          if (!stopNew || stopNew === 'perdita massima giornaliera') stopNew = 'freno di mercato'
+        }
+      }
+      if (dayTrades.length > nBefore) checkAfterClose(m)
       // entrate scattate nel minuto m
       while (si < sigs.length && sigs[si].sig.k.min <= m) {
         const { sym, sig, prep } = sigs[si++]
+        if (stopNew) { skips[stopNew] = (skips[stopNew] || 0) + 1; continue }
         if (rule.maxPos > 0 && taken >= rule.maxPos) { skips['limite posizioni al giorno'] = (skips['limite posizioni al giorno'] || 0) + 1; continue }
         const size = sizing(s, balance)
         if (!(size.margin >= 1)) { skips['capitale insufficiente'] = (skips['capitale insufficiente'] || 0) + 1; continue }
@@ -301,8 +367,9 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
         pos.ctx = analysis ? tradeContext(days, allDates, day, sym, sig, s.symbols, info) : null
         pos.slipIn = Math.abs(fill - sig.entry) * pos.qty
         taken++; open.push(pos)
+        lastPx[sym] = sig.k
         const r = stepBar(pos, s, sig.k, today[sym], prep)
-        if (r) close(pos, r.exit, r.reason, sig.k.t + MIN, r.liq)
+        if (r) { close(pos, r.exit, r.reason, sig.k.t + MIN, r.liq); checkAfterClose(m) }
       }
     }
     // fine giornata: chiude tutto un minuto prima della chiusura della borsa
@@ -312,6 +379,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
       const px = last ? last.o : fallback?.c ?? pos.entry
       close(pos, px, 'chiusura', last ? last.t : (fallback?.t ?? pos.opened_at) + MIN)
     }
+    if (open.length === 0 && dayTrades.length) checkAfterClose(closeMin - 1) // la perdita totale si controlla anche a fine giornata
     if (dayTrades.length) {
       const pnl = dayTrades.reduce((a, t) => a + t.pnl, 0)
       dayRows.push({ day, n: dayTrades.length, wins: dayTrades.filter(t => t.pnl > 0).length, pnl, pct: startBal > 0 ? pnl / startBal * 100 : null, balance, ctx })
@@ -330,6 +398,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     maxDD, maxDDPct, days: simDays, daysWithTrades: dayRows.filter(d => d.n).length, daysUp: dayRows.filter(d => d.pnl > 0).length,
     firstDay: dayRows[0]?.day ?? null, lastDay: dayRows.at(-1)?.day ?? null,
     reasons: Object.entries(reasons).map(([reason, r]) => ({ reason, ...r })).sort((a, b) => b.n - a.n),
+    limitEvents, halted,
     skips: Object.entries(skips).map(([why, n]) => ({ why, n })).sort((a, b) => b.n - a.n),
     daily: dayRows,
     trades,

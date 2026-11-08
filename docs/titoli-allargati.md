@@ -51,6 +51,7 @@ I gruppi di titoli sono descritti in `docs/titoli-bitunix.md`.
 ## Come riprodurre i numeri nell'app
 
 1. Nella Simulazione apri **Impostazioni salvate** e carica **"Attuale · originali + nuovi"**: è la configurazione Attuale con 115 titoli (i 32 originali e gli 83 nuovi, senza bassa liquidità ed ETF a leva), margine 10%, leva 5x, commissione 0,06%, slittamento 0,05% e funding 0,01%.
+   L'impostazione ha anche i limiti di perdita e il freno spenti, 8 posizioni al giorno e la scelta tra segnali su "ordine della lista", come nei test di questo documento. I default dell'app adesso sono diversi (vedi `docs/freno-e-scelta.md`).
 2. Metti **capitale iniziale 300 USDT** e lascia la dimensione dei trade su **"% saldo", al 100%**. È l'interesse composto usato nel documento.
 3. Lancia la simulazione. Nei risultati, il riquadro **"Titoli usati"** mostra quanti titoli sono stati usati, di quali gruppi, quanti hanno dati nel periodo e quale dimensione dei trade è stata usata.
 

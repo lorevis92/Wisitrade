@@ -101,6 +101,32 @@ function Equity({ daily, capital }) {
   )
 }
 
+// Limiti di perdita e freno di mercato: quante volte sono scattati e in quali giorni
+const EVENT_NAME = { freno: 'freno di mercato (chiudi tutto)', giornaliero: 'perdita massima giornaliera', totale: 'perdita massima totale' }
+function LimitEvents({ r }) {
+  const s = r.settings || {}
+  const ev = r.limitEvents || []
+  const on = [s.maxDayLoss > 0 && `giornaliera ${num(s.maxDayLoss)}%`, s.brakePct > 0 && `freno ${num(s.brakePct)}%`, s.maxTotalLoss > 0 && `totale ${num(s.maxTotalLoss)}%`].filter(Boolean)
+  const hm2 = m => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`
+  return (
+    <div className="card" style={{ padding: '10px 14px' }}>
+      <div className="row"><span className="lab">Limiti di perdita e freno</span><span className="mono">{on.length ? `${ev.length} volte` : 'spenti'}</span></div>
+      {on.length > 0 && <div className="note">Attivi: {on.join(' · ')}.{!ev.length ? ' Non sono mai scattati.' : ''}</div>}
+      {Object.keys(EVENT_NAME).map(t => { const n = ev.filter(e => e.type === t).length; return n ? <div key={t} className="kv"><span className="sec">{EVENT_NAME[t]}</span><span className="mono">{n}</span></div> : null })}
+      {r.halted && <div className="note" style={{ color: 'var(--short)' }}>Simulazione ferma dal {dShort(r.halted)}: dopo non ha più aperto trade.</div>}
+      {ev.length > 0 && (
+        <details style={{ marginTop: 6 }}>
+          <summary className="lab" style={{ cursor: 'pointer' }}>Giorni · {ev.length}</summary>
+          {ev.map((e, i) => (
+            <div key={i} className="kv"><span className="sec">{dShort(e.day)} · {hm2(e.min)} NY · {EVENT_NAME[e.type]}</span>
+              <span className="mono down">{fmtSigned(e.type === 'freno' ? e.lossPct : e.dayPct)}%</span></div>
+          ))}
+        </details>
+      )}
+    </div>
+  )
+}
+
 // Con quali titoli e con quale dimensione dei trade è stata fatta la simulazione
 const GROUP_OF = Object.fromEntries([...ORIGINAL_SYMBOLS.map(x => [x, 'orig']), ...NEW_SYMBOLS.map(x => [x, 'new']), ...LOW_LIQ_SYMBOLS.map(x => [x, 'low']), ...LEV_SYMBOLS.map(x => [x, 'lev'])])
 const GROUP_NAME = { orig: 'originali', new: 'nuovi', low: 'bassa liquidità', lev: 'ETF a leva' }
@@ -150,6 +176,7 @@ function Results({ r, onTrade }) {
         <div className="tile"><div className="lab">Liquidazioni</div><div className={`mono big ${r.liquidations ? 'down' : ''}`}>{r.liquidations ?? 0}</div><div className="note">{r.liquidations ? 'margine perso per intero' : 'nessun trade liquidato'}</div></div>
       </div>
       <SimSetup r={r} />
+      <LimitEvents r={r} />
       <div className="card" style={{ padding: '10px 14px' }}>
         <div className="row"><span className="lab">Costi</span><span className="mono down">−{fmtUsd(r.costs ?? r.fees)} USDT</span></div>
         <div className="kv"><span className="sec">Commissioni (entrata e uscita, sul valore della posizione)</span><span className="mono">{fmtUsd(r.fees)}</span></div>
@@ -313,7 +340,7 @@ export default function Simulation({ onAuthError }) {
         </div>
       </div>
 
-      <RulesCard s={s} set={set} showFee={false} />
+      <RulesCard s={s} set={set} showFee={false} sim />
       <PresetsCard current={normalizeSettings(s)} onLoad={st => setS(normalizeSettings(st))} />
 
       {/* Periodo */}

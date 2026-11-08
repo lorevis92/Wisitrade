@@ -28,12 +28,7 @@ function DedicatedCapital({ c, s, set, mode }) {
       <div className="note" style={{ marginTop: 4 }}>
         Dopo ogni trade chiuso il capitale dedicato si aggiorna con il risultato vero{mode === 'live' ? ' (commissioni e funding di Bitunix compresi)' : ''}; il giorno dopo si lavora con il nuovo valore.{mode === 'live' ? ' Non si usa mai più del saldo disponibile su Bitunix.' : ''}
       </div>
-      <div className="grid2" style={{ marginTop: 8, alignItems: 'start' }}>
-        <Select label="Perdita massima giornaliera" value={s.maxDayLoss} options={OPTIONS.maxDayLoss} fmt={v => (v ? `${num(v)}% del capitale` : 'spenta')} onChange={v => set('maxDayLoss', v)}
-          hint="superata: niente nuovi trade fino a domani" />
-        <Select label="Perdita massima totale" value={s.maxTotalLoss} options={OPTIONS.maxTotalLoss} fmt={v => (v ? `${num(v)}% dalla partenza` : 'spenta')} onChange={v => set('maxTotalLoss', v)}
-          hint="superata: la strategia si ferma finché non la riavvii" />
-      </div>
+      <div className="note" style={{ marginTop: 4 }}>Limiti di perdita: giornaliera {s.maxDayLoss ? `${num(s.maxDayLoss)}%` : 'spenta'} · totale {s.maxTotalLoss ? `${num(s.maxTotalLoss)}%` : 'spenta'} · freno {s.brakePct ? `${num(s.brakePct)}%` : 'spento'} (si cambiano in Regole della strategia).</div>
       {c?.history?.length > 0 && (
         <details style={{ marginTop: 8 }}>
           <summary className="lab" style={{ cursor: 'pointer' }}>Storico delle modifiche · {c.history.length}</summary>
@@ -116,12 +111,13 @@ export default function Strategy() {
   const [resetBal, setResetBal] = useState('')
   const [armReset, setArmReset] = useState(false)
   const [armStart, setArmStart] = useState(false)
+  const [draftFrom, setDraftFrom] = useState(null) // { name, presetId, settings }: impostazione salvata caricata nella bozza
 
   const refresh = useCallback(() => mode === 'sim' ? Promise.resolve() : get(`/api/strategy?mode=${mode}`)
     .then(v => { setView(v); setErr(null) })
     .catch(e => { if (/codice/i.test(e.message)) { save('adminCode', ''); setAuthed(false) } setErr(e.message) }), [mode])
 
-  useEffect(() => { setView(null); setDraft(null); setArmStart(false); setArmReset(false) }, [mode])
+  useEffect(() => { setView(null); setDraft(null); setDraftFrom(null); setArmStart(false); setArmReset(false) }, [mode])
   useEffect(() => {
     if (!authed || mode === 'sim') return
     refresh()
@@ -141,7 +137,16 @@ export default function Strategy() {
     setBusy(true); setMsg(null)
     try { const v = await fn(); if (v?.view) setView(v.view); else if (v?.mode) setView(v); if (ok) setMsg(ok) } catch (e) { setMsg(e.message) } finally { setBusy(false) }
   }
-  const saveSettings = () => act(async () => { const v = await post('/api/strategy/settings', { mode, settings: draft }); setDraft(null); return v }, 'Impostazioni salvate.')
+  // nome della configurazione che si salva: quella caricata (o quella già attiva), "(modificata)" se è stata cambiata
+  const saveSettings = () => act(async () => {
+    const baseName = (draftFrom?.name || view.active?.name || 'personalizzata').replace(/ \(modificata\)$/, '')
+    const baseSettings = draftFrom ? draftFrom.settings : (view.active?.edited ? null : view.settings)
+    const edited = !baseSettings || JSON.stringify(normalizeSettings(draft)) !== JSON.stringify(normalizeSettings(baseSettings))
+    const presetId = draftFrom ? draftFrom.presetId : view.active?.presetId ?? null
+    const name = edited && baseName !== 'personalizzata' ? `${baseName} (modificata)` : baseName
+    const v = await post('/api/strategy/settings', { mode, settings: draft, name, presetId, edited })
+    setDraft(null); setDraftFrom(null); return v
+  }, mode === 'live' ? 'Impostazioni del Reale salvate.' : 'Impostazioni salvate.')
   const toggleEnabled = () => {
     if (!view.enabled && mode === 'live' && !armStart) { setArmStart(true); return }
     setArmStart(false)
@@ -176,6 +181,16 @@ export default function Strategy() {
     <>
       {tabs}
 
+      {/* Configurazione attiva in questa scheda */}
+      <div className="card" style={{ padding: '10px 14px' }}>
+        <div className="row">
+          <span className="lab">Configurazione attiva {mode === 'live' ? 'nel Reale' : 'in Prova'}</span>
+          <span className="mono sec">{view.active?.at ? `modificata il ${new Date(view.active.at).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</span>
+        </div>
+        <div style={{ fontSize: 16, fontWeight: 800, marginTop: 2 }}>{view.active?.name || 'default dell\'app'}</div>
+        {dirty && <div className="note" style={{ color: 'var(--warn)' }}>Hai modifiche non salvate{draftFrom ? ` (caricata "${draftFrom.name}")` : ''}: {mode === 'live' ? 'il Reale' : 'la Prova'} continua con la configurazione attiva finché non premi Salva.</div>}
+      </div>
+
       {/* Stato */}
       <div className={`card ${view.enabled ? 'long' : ''}`}>
         <div className="row">
@@ -194,7 +209,8 @@ export default function Strategy() {
         {mode === 'live' && !st.keys && <div className="warn">Mancano le chiavi API di Bitunix: aggiungi BITUNIX_API_KEY e BITUNIX_SECRET_KEY su Vercel (solo permesso di trading, mai prelievi).</div>}
         {mode === 'live' && st.keys && !st.liveTrading && <div className="warn">Gli ordini veri sono bloccati dall'interruttore generale: quando hai finito i test in Prova imposta LIVE_TRADING=on su Vercel.</div>}
         {view.capital?.halted && <div className="warn">Strategia fermata per la perdita massima totale: {view.capital.halted.why}. Riavviandola il limite riparte dal capitale attuale.</div>}
-        {view.capital?.dayStop && <div className="warn">Oggi niente nuovi trade: perdita massima giornaliera superata. Si riparte domani.</div>}
+        {(view.capital?.dayStop || t.dayStop) && <div className="warn">Oggi niente nuovi trade: perdita massima giornaliera superata. Si riparte domani.</div>}
+        {t.brake && <div className="warn">Freno di mercato scattato oggi alle {new Date(t.brake.at).toLocaleTimeString('it-CH', { hour: '2-digit', minute: '2-digit' })}: perdita del giorno {fmtSigned(t.brake.loss)} USDT{t.brake.pct !== null ? ` (${fmtSigned(t.brake.pct)}%)` : ''}, posizioni chiuse e niente nuovi trade fino a domani.</div>}
         {tickAge !== null && tickAge > 5 * 60000 && <div className="warn">L'ultimo controllo è di {ago(st.lastTick.at)}: il controllo ogni minuto non sta girando. Verifica cron-job.org.</div>}
         {tickAge === null && <div className="warn">Il controllo ogni minuto non è ancora partito: configura cron-job.org (vedi README).</div>}
         <div className="grid2" style={{ marginTop: 10 }}>
@@ -266,7 +282,11 @@ export default function Strategy() {
 
       {/* Regole */}
       <RulesCard s={s} set={set} showFee={mode === 'paper'} />
-      <PresetsCard current={normalizeSettings(s)} onLoad={st => { setDraft(normalizeSettings(st)); setMsg('Impostazioni caricate: premi Salva per applicarle.') }} />
+      <PresetsCard current={normalizeSettings(s)} onLoad={(st, name, id) => {
+        const ns = normalizeSettings(st)
+        setDraft(ns); setDraftFrom(name && name !== 'default' ? { name, presetId: id ?? null, settings: ns } : { name: 'default dell\'app', presetId: null, settings: ns })
+        setMsg(mode === 'live' ? 'Caricata nella pagina: il Reale non cambia finché non premi Salva.' : 'Impostazioni caricate: premi Salva per applicarle.')
+      }} />
 
       {dirty && (
         <div className="savebar">
