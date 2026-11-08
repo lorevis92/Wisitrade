@@ -1,0 +1,24 @@
+{
+  "name": "wisi-trade",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "vapid": "web-push generate-vapid-keys"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "lightweight-charts": "^5.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.0"
+  }
+}
