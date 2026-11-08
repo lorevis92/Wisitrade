@@ -3,9 +3,10 @@
 //  - live (Reale): ordini veri su Bitunix, solo se LIVE_TRADING=on, il conto Reale è attivo e le chiavi API ci sono
 // Gira ogni minuto dentro /api/cron/tick con le candele da 1 minuto già scaricate.
 import { ASSET_MAP } from '../shared/assets.js'
-import { normalizeSettings, sizing, exitLevel, exitReason, pnlOf, closeMinute, isTradingDay } from '../shared/opening.js'
-import { prepFromBars, findEntry, newPosition, stepBar, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
-import { klinesBack, account, setIsolated, setLeverage, openMarket, openPositions, closePosition, hasKeys, roundQty, tickers } from './bitunix.js'
+import { normalizeSettings, sizing, exitLevel, exitReason, pnlOf, closeMinute, isTradingDay, liqPriceOf, stopPastLiq } from '../shared/opening.js'
+import { prepFromBars, findEntry, newPosition, stepBar, riskFor, liqBlocks, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
+import { klinesBack, account, setIsolated, setLeverage, openMarket, openPositions, closePosition, positionHistory, hasKeys, roundQty, tickers } from './bitunix.js'
+import { getLimits } from './limits.js'
 import { db, q, getMeta, setMeta } from './db.js'
 import { notifyTrades } from './push.js'
 import { ny, OPEN_MIN } from './session.js'
@@ -16,6 +17,19 @@ export const liveAllowed = () => process.env.LIVE_TRADING === 'on' && hasKeys()
 const fmt = p => (p >= 1000 ? p.toFixed(1) : p >= 100 ? p.toFixed(2) : p >= 1 ? p.toFixed(3) : p.toPrecision(4))
 const sgn = v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}`
 const modeName = m => (m === 'live' ? 'Reale' : 'Prova')
+
+// Colonne aggiunte con la migrazione della liquidazione: se schema.sql non è ancora stato rilanciato si salva senza
+const NEW_COLS = ['liq_price', 'entry_bar', 'funding']
+const missingCol = e => /column|schema cache/i.test(e?.message || '') && NEW_COLS.some(c => (e.message || '').includes(c))
+const strip = o => Object.fromEntries(Object.entries(o).filter(([k]) => !NEW_COLS.includes(k)))
+async function updatePos(id, patch) {
+  try { await q(db().from('wt_positions').update(patch).eq('id', id)) }
+  catch (e) { if (!missingCol(e)) throw e; await q(db().from('wt_positions').update(strip(patch)).eq('id', id)) }
+}
+async function insertPos(pos) {
+  try { return await q(db().from('wt_positions').insert(pos).select()) }
+  catch (e) { if (!missingCol(e)) throw e; return q(db().from('wt_positions').insert(strip(pos)).select()) }
+}
 
 // ---------- Preparazione del giorno (livelli, volatilità, volume normale) ----------
 async function prepSymbol(sym, today) {
@@ -41,7 +55,7 @@ async function openLive({ sym, side, notional, price, leverage, initStop }) {
   const a = ASSET_MAP[sym]
   const pair = (await getPairs()).find(p => p.symbol === a.perp)
   if (!pair) throw new Error(`${a.perp} non disponibile su Bitunix`)
-  const lev = Math.min(leverage, pair.maxLeverage || leverage)
+  const lev = Math.min(leverage, pair.maxLeverage || leverage) // già controllata prima di arrivare qui: solo per sicurezza
   const qty = roundQty(notional / price, pair.basePrecision)
   if (!(qty > 0) || qty < pair.minQty) throw new Error(`quantità troppo piccola (${qty}, minimo ${pair.minQty})`)
   // margine isolato e leva: se sono già impostati Bitunix può rispondere con un errore innocuo
@@ -55,7 +69,7 @@ async function openLive({ sym, side, notional, price, leverage, initStop }) {
     pos = list.find(p => p.side === side) || null
     if (!pos) await new Promise(r => setTimeout(r, 400))
   }
-  return { qty: pos?.qty || qty, entry: pos?.entry || price, leverage: lev, exchange: { orderId: order?.orderId, positionId: pos?.positionId || null, sl } }
+  return { qty: pos?.qty || qty, entry: pos?.entry || price, leverage: lev, liqPrice: pos?.liqPrice || null, exchange: { orderId: order?.orderId, positionId: pos?.positionId || null, sl } }
 }
 
 async function closeLive(p, fallbackPrice) {
@@ -67,23 +81,52 @@ async function closeLive(p, fallbackPrice) {
   return { closedByExchange: false, price: fallbackPrice }
 }
 
+// Dati veri della posizione chiusa su Bitunix (prezzo, commissioni, funding, liquidazione), se l'API li fornisce
+async function liveClosed(p) {
+  if (!p.exchange?.positionId) return null
+  for (let i = 0; i < 3; i++) {
+    const h = await positionHistory(ASSET_MAP[p.symbol].perp, p.exchange?.positionId).catch(() => null)
+    if (h) return h
+    await new Promise(r => setTimeout(r, 500))
+  }
+  return null
+}
+
 // ---------- Chiusura (comune) ----------
-async function closePos(p, exit, reason, accounts, notes) {
+async function closePos(p, exit, reason, accounts, notes, { liq = false } = {}) {
   const acc = accounts[p.mode]
   const s = normalizeSettings(acc.settings)
-  let note = null
+  let note = null, real = null
   if (p.mode === 'live') {
     try {
       const r = await closeLive(p, exit)
-      if (r.closedByExchange) { exit = r.price; reason = 'stop loss (Bitunix)' }
+      real = await liveClosed(p)
+      if (r.closedByExchange) {
+        // chiusa da Bitunix: stop loss di sicurezza oppure liquidazione
+        exit = real?.closePrice ?? r.price
+        liq = !!(real?.liqQty > 0) || (!!p.liq_price && (p.side > 0 ? exit <= p.liq_price * 1.001 : exit >= p.liq_price * 0.999))
+        reason = liq ? 'liquidazione' : 'stop loss (Bitunix)'
+      } else {
+        liq = false // chiusa da noi a mercato prima della liquidazione
+        if (real?.closePrice) exit = real.closePrice
+      }
     } catch (e) { note = `chiusura su Bitunix non riuscita: ${e.message}`; reason = `${reason} · da verificare` }
   }
   const fee = p.mode === 'live' ? 0.06 : s.fee
-  const { pnl, fees } = pnlOf(p, exit, fee)
-  await q(db().from('wt_positions').update({
+  let { pnl, fees } = pnlOf(p, exit, fee, { liq })
+  let funding = null
+  if (real) {
+    // Reale: commissioni e funding veri di Bitunix (funding con segno: negativo = pagato)
+    if (real.fee !== null) fees = Math.abs(real.fee)
+    funding = real.funding
+    const gross = liq ? -(p.margin || 0) : Math.max(p.side * (exit - p.entry) * p.qty, -(p.margin || Infinity))
+    pnl = gross - fees + (funding || 0)
+  }
+  await updatePos(p.id, {
     status: 'closed', exit, reason, pnl, fees, closed_at: Date.now(), best: p.best, last_bar: p.last_bar,
-    init_stop: p.init_stop, halved: p.halved, stale_done: p.stale_done, confirmed: p.confirmed, volx: p.volx, ...(note ? { note } : {}),
-  }).eq('id', p.id))
+    init_stop: p.init_stop, halved: p.halved, stale_done: p.stale_done, confirmed: p.confirmed, volx: p.volx,
+    ...(funding !== null ? { funding } : {}), ...(note ? { note } : {}),
+  })
   if (p.mode === 'paper') {
     const fresh = await q(db().from('wt_accounts').select('balance').eq('mode', 'paper').single())
     await q(db().from('wt_accounts').update({ balance: fresh.balance + pnl }).eq('mode', 'paper'))
@@ -109,29 +152,32 @@ async function manage(p, ctx) {
   // posizione rimasta aperta da un giorno precedente (es. controllo saltato): chiudi subito
   if (p.day < today) { if (px) await closePos(p, px, 'chiusura', accounts, notes); return }
 
-  let exit = null, reason = null
+  let exit = null, reason = null, liq = false
   for (const b of todayBars) {
     if (b.t <= (p.last_bar ?? 0) || b.t + MIN > now) continue // solo candele chiuse e non ancora controllate
     const r = stepBar(p, s, b, todayBars, preps[p.symbol])
-    if (r) { exit = r.exit; reason = r.reason; break }
+    if (r) { exit = r.exit; reason = r.reason; liq = !!r.liq; break }
   }
   // controllo in tempo reale sul prezzo attuale (candela ancora in corso)
   if (exit === null && px) {
     const lvl = exitLevel(p, s)
-    if (p.side > 0 ? px <= lvl : px >= lvl) { exit = px; reason = exitReason(p, lvl) }
+    if (p.liq_price && (p.side > 0 ? px <= p.liq_price : px >= p.liq_price)) { exit = p.liq_price; reason = 'liquidazione'; liq = true }
+    else if (p.side > 0 ? px <= lvl : px >= lvl) { exit = px; reason = exitReason(p, lvl) }
   }
   // fine giornata: chiudi tutto un minuto prima della chiusura della borsa
   if (exit === null && nowMin >= closeMin - 1 && px) { exit = px; reason = 'chiusura' }
 
-  if (exit !== null) return closePos(p, exit, reason, accounts, notes)
-  await q(db().from('wt_positions').update({
+  if (exit !== null) return closePos(p, exit, reason, accounts, notes, { liq })
+  await updatePos(p.id, {
     best: p.best, last_bar: p.last_bar, init_stop: p.init_stop, halved: p.halved, stale_done: p.stale_done, confirmed: p.confirmed, volx: p.volx,
-  }).eq('id', p.id))
+  })
 }
 
 // ---------- Entrate ----------
 async function entries(ctx, active, dayPos) {
-  const { series, today, preps, notes } = ctx
+  const { series, today, preps, notes, accounts } = ctx
+  let limits = null
+  const lim = async sym => { if (!limits) limits = await getLimits().catch(() => ({})); return limits[sym] || null }
   const skipKey = `orbskip:${today}`
   const skips = (await getMeta(skipKey)) || { paper: {}, live: {} }
   let skipsChanged = false
@@ -164,19 +210,32 @@ async function entries(ctx, active, dayPos) {
       const { capital, margin, notional } = sizing(s, base)
       if (!(margin >= 1)) { skip(mode, sym, 'capitale insufficiente'); continue }
       const unit = prep.unit
-      let pos = newPosition({ mode, day: today, symbol: sym, sig, s, prep, size: { capital, margin, notional } })
+      // margine di mantenimento e leva massima di Bitunix per questo titolo e questo valore della posizione
+      const risk = riskFor(await lim(sym), notional, s)
+      if (mode === 'live' && risk.maxLev && s.leverage > risk.maxLev) { skip(mode, sym, `leva ${s.leverage}x oltre il massimo Bitunix (${risk.maxLev}x)`); continue }
+      let pos = newPosition({ mode, day: today, symbol: sym, sig, s, prep, size: { capital, margin, notional }, risk })
+      // stop loss oltre il prezzo di liquidazione: non si apre (nel Reale sempre)
+      if ((mode === 'live' || s.liqGuard) && liqBlocks(pos)) { skip(mode, sym, 'stop oltre la liquidazione'); continue }
       if (mode === 'live') {
         try {
           const r = await openLive({ sym, side, notional, price: series[sym]['1m'].at(-1).c, leverage: s.leverage, initStop: pos.init_stop })
           pos = { ...pos, entry: r.entry, qty: r.qty, leverage: r.leverage, best: r.entry, init_stop: r.entry - side * s.sl * unit, exchange: r.exchange, opened_at: now }
+          // prezzo di liquidazione vero di Bitunix, altrimenti calcolato sul prezzo eseguito
+          pos.liq_price = r.liqPrice || liqPriceOf(pos, risk.mmr, s.liqFee)
         } catch (e) {
           skip(mode, sym, `ordine non riuscito: ${e.message}`)
           notes.push({ title: `⚠ ${sym}: ordine non riuscito`, body: `${e.message} · Reale`, url: '/strategia?mode=live', tag: `err-${sym}` })
           continue
         }
       }
-      const [row] = await q(db().from('wt_positions').insert(pos).select())
+      const [row] = await insertPos(pos)
       taken.push(row); dayPos.push(row)
+      // Reale: se dopo l'esecuzione lo stop risulta oltre la liquidazione di Bitunix, chiudi subito
+      if (mode === 'live' && stopPastLiq(pos)) {
+        await closePos({ ...pos, ...row }, pos.entry, 'stop oltre la liquidazione', accounts, notes)
+        skip(mode, sym, 'stop oltre la liquidazione (chiusa subito)')
+        continue
+      }
       notes.push({
         title: `${side > 0 ? '▲ LONG' : '▼ SHORT'} ${sym} a ${fmt(pos.entry)}`,
         body: `${sgn(pos.move_pct)}% dall'apertura · stop ${fmt(pos.init_stop)} · margine ${pos.margin.toFixed(0)} USDT × ${pos.leverage}x · ${modeName(mode)}`,

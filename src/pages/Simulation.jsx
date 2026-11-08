@@ -118,9 +118,18 @@ function Results({ r, onTrade }) {
         <div className="tile"><div className="lab">Trade vinti</div><div className="mono big">{r.wins} su {r.n}</div><div className="note">{r.n ? Math.round(r.wins / r.n * 100) : 0}% · {r.daysUp} giorni su {r.daysWithTrades} in guadagno</div></div>
         <div className="tile"><div className="lab">Profit factor</div><div className="mono big">{r.pf ? fmtUsd(r.pf) : '—'}</div><div className="note">vinto {fmtUsd(r.grossWin, 0)} · perso {fmtUsd(r.grossLoss, 0)}</div></div>
         <div className="tile"><div className="lab">Peggior calo</div><div className="mono big down">−{fmtUsd(r.maxDDPct)}%</div><div className="note">−{fmtUsd(r.maxDD)} USDT dal massimo</div></div>
+        <div className="tile"><div className="lab">Giorno peggiore</div><div className={`mono big ${!r.worstDay || r.worstDay.pct >= 0 ? '' : 'down'}`}>{r.worstDay ? `${fmtSigned(r.worstDay.pct)}%` : '—'}</div><div className="note">{r.worstDay ? `${fmtSigned(r.worstDay.pnl)} USDT · ${dShort(r.worstDay.day)}` : 'nessuna operazione'}</div></div>
+        <div className="tile"><div className="lab">Liquidazioni</div><div className={`mono big ${r.liquidations ? 'down' : ''}`}>{r.liquidations ?? 0}</div><div className="note">{r.liquidations ? 'margine perso per intero' : 'nessun trade liquidato'}</div></div>
       </div>
       <div className="card" style={{ padding: '10px 14px' }}>
-        <div className="row"><span className="lab">Saldo nel tempo</span><span className="note">commissioni pagate {fmtUsd(r.fees)} USDT</span></div>
+        <div className="row"><span className="lab">Costi</span><span className="mono down">−{fmtUsd(r.costs ?? r.fees)} USDT</span></div>
+        <div className="kv"><span className="sec">Commissioni (entrata e uscita, sul valore della posizione)</span><span className="mono">{fmtUsd(r.fees)}</span></div>
+        <div className="kv"><span className="sec">Funding stimato</span><span className="mono">{fmtUsd(r.funding ?? 0)}</span></div>
+        <div className="kv"><span className="sec">Slittamento</span><span className="mono">{fmtUsd(r.slippage ?? 0)}</span></div>
+        {r.mmrFrom && Object.values(r.mmrFrom).includes('impostato') && <div className="note" style={{ color: 'var(--warn)' }}>Margine di mantenimento non disponibile da Bitunix per {Object.entries(r.mmrFrom).filter(([, v]) => v === 'impostato').map(([k]) => k).join(', ')}: usato quello impostato.</div>}
+      </div>
+      <div className="card" style={{ padding: '10px 14px' }}>
+        <div className="row"><span className="lab">Saldo nel tempo</span></div>
         <Equity daily={r.daily} capital={r.capital} />
         {best && <div className="note">Giorno migliore <span className="up mono">{fmtSigned(best.pnl)}</span> ({dShort(best.day)}) · peggiore <span className={`mono ${worst.pnl >= 0 ? 'up' : 'down'}`}>{fmtSigned(worst.pnl)}</span> ({dShort(worst.day)})</div>}
       </div>
@@ -265,7 +274,11 @@ export default function Simulation({ onAuthError }) {
             hint={<>posizione da <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.notional)} USDT</b></>} />
           <Select label="Posizioni al giorno" value={s.maxPos} options={OPTIONS.maxPos} fmt={v => lab('maxPos', v) || `massimo ${v}`} onChange={v => set('maxPos', v)} />
           <Select label="Commissione per lato" value={s.fee} options={OPTIONS.fee} fmt={v => `${num(v)}%`} onChange={v => set('fee', v)}
-            hint="Bitunix taker 0,06%" />
+            hint="Bitunix taker 0,06%, sul valore della posizione" />
+          <Select label="Slittamento per lato" value={s.slip} options={OPTIONS.slip} fmt={v => `${num(v)}%`} onChange={v => set('slip', v)}
+            hint="su entrata e uscita a mercato" />
+          <Select label="Funding medio" value={s.funding} options={OPTIONS.funding} fmt={v => `${num(v)}% a periodo`} onChange={v => set('funding', v)}
+            hint="pagato a ogni orario del funding di Bitunix con la posizione aperta" />
         </div>
       </div>
 
@@ -291,7 +304,7 @@ export default function Simulation({ onAuthError }) {
           {busy ? 'Simulo…' : 'Avvia la simulazione'}
         </button>
         {err && <div className="note" style={{ color: 'var(--short)', marginTop: 6 }}>{err}</div>}
-        <p className="note" style={{ marginTop: 8 }}>Stesso motore di Prova e Reale, minuto per minuto, sulle candele da 1 minuto di Bitunix. Entrate al prezzo esatto del segnale come in Prova: nel Reale ci sarà un po' di slittamento.</p>
+        <p className="note" style={{ marginTop: 8 }}>Stesso motore di Prova e Reale, minuto per minuto, sulle candele da 1 minuto di Bitunix. Con slittamento, funding e liquidazione (margine isolato, margine di mantenimento di Bitunix): un trade liquidato perde tutto il margine.</p>
       </div>
 
       {result && <Results r={result} onTrade={setTrade} />}

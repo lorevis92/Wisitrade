@@ -74,6 +74,7 @@ In **Strategia → Simulazione** la strategia gira sulle candele da 1 minuto ver
 2. Poi l'archivio si aggiorna da solo: il controllo ogni minuto, fuori dall'orario della strategia (dopo le 16:35 di New York, di notte e nel fine settimana), scarica i giorni mancanti.
 3. Scegli capitale iniziale, commissione, regole e periodo (1 settimana, 1 mese, 3 mesi, 6 mesi, tutto o date a scelta) e premi **Avvia la simulazione**. Tocca un trade per vedere il grafico della sua giornata.
 4. **Impostazioni salvate**: salvi le impostazioni con un nome, le ricarichi con un tocco in Prova, Reale o Simulazione, e puoi sceglierne una come nuovo default.
+5. **Liquidazione e costi**: ogni posizione ha il suo prezzo di liquidazione in margine isolato (margine di mantenimento di Bitunix per scaglione, altrimenti quello impostato, più la commissione di liquidazione). Se il prezzo lo tocca prima dello stop il trade perde tutto il margine. Se lo stop è oltre la liquidazione il trade non si apre (nel Reale sempre). La simulazione conta anche slittamento per lato e funding stimato a ogni orario del funding di Bitunix. Nel Reale la leva non può superare il massimo di Bitunix e commissioni e funding si prendono da Bitunix.
 
 ## Comandi utili (con il codice di controllo come `Authorization: Bearer ADMIN_TOKEN`)
 - `GET /api/admin/perps`: quali titoli hanno un perpetual su Bitunix.

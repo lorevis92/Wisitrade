@@ -209,6 +209,7 @@ export default function Strategy() {
                 <span>margine<br /><b>{fmtUsd(p.margin, 0)} × {p.leverage}x</b></span>
               </div>
               {p.level && <div className="note">livello più vicino: {p.level.t} {fmtPrice(p.level.p)}{p.note ? ` · ${p.note}` : ''}</div>}
+              {p.liq_price > 0 && <div className="note">liquidazione a <span className="mono">{fmtPrice(p.liq_price)}</span> (margine isolato)</div>}
               <button className="btn ghost small" disabled={busy} onClick={() => act(() => post('/api/strategy/close', { mode, id: p.id }), `${p.symbol} chiuso.`)}>Chiudi ora</button>
             </div>
           )

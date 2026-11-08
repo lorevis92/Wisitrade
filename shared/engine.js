@@ -1,7 +1,7 @@
 // Motore della strategia "Apertura USA": le stesse regole di entrata e uscita, minuto per minuto,
 // usate da Prova e Reale (server/strategy.js, ogni minuto) e dalla Simulazione (runSimulation, sui dati archiviati).
 // Qui non c'è nessun accesso a database o a Bitunix: solo calcoli.
-import { sizing, pathOf, walk, exitReason, pnlOf, closeMinute, isTradingDay, HOLIDAYS } from './opening.js'
+import { sizing, pathOf, walk, exitReason, pnlOf, closeMinute, isTradingDay, HOLIDAYS, tierFor, liqPriceOf, stopPastLiq } from './opening.js'
 import { ny, weekdayOf } from './time.js'
 
 export const MIN = 60000
@@ -77,25 +77,40 @@ export function findEntry(bars, s, prep) {
   return { k, side, entry, open, R }
 }
 
-// Nuova posizione a partire dal segnale e dalla dimensione calcolata
-export function newPosition({ mode, day, symbol, sig, s, prep, size }) {
+// Margine di mantenimento per un titolo: quello di Bitunix per lo scaglione del valore della posizione,
+// altrimenti quello impostato (s.mmr, in %). lim = limiti Bitunix del titolo ({ maxLev, tiers }) o null.
+export function riskFor(lim, notional, s) {
+  const t = tierFor(lim, notional)
+  return { mmr: t ? t.mmr : s.mmr / 100, maxLev: t ? t.maxLev : (lim?.maxLev || null), fromBitunix: !!t }
+}
+
+// Nuova posizione a partire dal segnale e dalla dimensione calcolata (con il prezzo di liquidazione in margine isolato)
+export function newPosition({ mode, day, symbol, sig, s, prep, size, risk }) {
   const { k, side, entry, open, R } = sig
   const unit = prep.unit
-  return {
+  const p = {
     mode, day, symbol, side, status: 'open', entry, qty: size.notional / entry, margin: size.margin, leverage: s.leverage,
     init_stop: entry - side * s.sl * unit, unit, best: entry, open_price: open, move_pct: side * 1.25 * s.movePct,
     level: R, entry_slot: k.min < 585 ? 570 : 585, confirmed: false, last_bar: k.t - 1, opened_at: k.t, capital: size.capital,
+    entry_bar: k.t, liq_price: null,
   }
+  if (risk) p.liq_price = liqPriceOf(p, risk.mmr, s.liqFee)
+  return p
 }
+
+// Lo stop loss è oltre il prezzo di liquidazione? (la posizione verrebbe liquidata prima di arrivare allo stop)
+export const liqBlocks = p => stopPastLiq(p)
 
 // ---------- Uscita: una candela da 1 minuto chiusa ----------
 // p = posizione (viene aggiornata), b = candela chiusa (con .min), dayBars = candele di oggi dalle 9:30 (con .min).
 // Restituisce { exit, reason } se la posizione va chiusa, altrimenti null.
 export function stepBar(p, s, b, dayBars, prep) {
   const inProfit = x => p.side * (x - p.entry) > 0
-  const hit = walk(p, s, pathOf(b))
+  // dalla seconda candela in poi l'apertura può essere già oltre lo stop (salto): si esce a quel prezzo
+  const gap = b.t > (p.entry_bar ?? (p.opened_at - MIN))
+  const hit = walk(p, s, pathOf(b), gap)
   p.last_bar = b.t
-  if (hit !== null) return { exit: hit, reason: exitReason(p, hit) }
+  if (hit !== null) return { exit: hit.px, reason: hit.liq ? 'liquidazione' : exitReason(p, hit.px), liq: hit.liq }
   // a ogni chiusura di una candela da 15 minuti
   if ((b.min + 1 - OPEN_MIN) % 15 !== 0) return null
   const slot = b.min - 14
@@ -127,10 +142,15 @@ export function stepBar(p, s, b, dayBars, prep) {
 
 // ---------- Simulazione sui dati archiviati ----------
 // days: { 'YYYY-MM-DD': { SYM: [candele 1 min con t,o,h,l,c,v] } } (9:00–16:30 NY)
-// opts: { from, to, capital }. Le regole sono le stesse del dal vivo; il saldo cresce e cala a ogni chiusura (guadagni reinvestiti).
+// opts: { from, to, capital, limits }. Le regole sono le stesse del dal vivo; il saldo cresce e cala a ogni chiusura (guadagni reinvestiti).
+// limits = { SYM: { maxLev, tiers, fundingH } } da Bitunix (margine di mantenimento e orari del funding); se manca si usano i valori impostati.
+// Costi: commissione per lato sul valore della posizione, slittamento per lato sugli ordini a mercato (s.slip),
+// funding stimato (s.funding) a ogni orario del funding di Bitunix con la posizione aperta, pagato sempre (stima prudente).
 // Come dal vivo: il segnale nella candela del minuto m viene preso al controllo successivo (dopo le uscite di quel minuto),
 // la candela d'entrata viene già controllata per l'uscita, e alle 15:59 si chiude tutto all'apertura di quel minuto.
-export function runSimulation(days, s, { from, to, capital }) {
+export function runSimulation(days, s, { from, to, capital, limits = {} }) {
+  const slip = (s.slip || 0) / 100
+  const mmrFrom = {}
   const allDates = Object.keys(days).sort()
   const symOrder = Object.fromEntries(s.symbols.map((x, i) => [x, i]))
   // candele da 15 minuti per simbolo (per la preparazione di ogni giorno)
@@ -151,6 +171,7 @@ export function runSimulation(days, s, { from, to, capital }) {
 
   let balance = capital, peak = capital, maxDD = 0, maxDDPct = 0
   const trades = [], dayRows = [], reasons = {}, skips = {}
+  let fundingTot = 0, slipTot = 0, liqs = 0
   let tradeId = 0
 
   for (const day of allDates) {
@@ -181,8 +202,15 @@ export function runSimulation(days, s, { from, to, capital }) {
     for (const sym of syms) { const m = (byMin[sym] = new Map()); for (const b of today[sym]) m.set(b.min, b) }
     let open = [], taken = 0
     const dayTrades = []
-    const close = (pos, exit, reason, at) => {
-      const { pnl, fees } = pnlOf(pos, exit, s.fee)
+    const close = (pos, raw, reason, at, liq = false) => {
+      // uscita a mercato: slittamento contro di te (non con la liquidazione, che chiude Bitunix)
+      const exit = liq ? raw : raw * (1 - pos.side * slip)
+      const slipCost = pos.slipIn + Math.abs(raw - exit) * pos.qty
+      const P = (limits[pos.symbol]?.fundingH || 8) * 3600000
+      const nF = Math.max(0, Math.ceil(at / P) - Math.ceil(pos.opened_at / P)) // orari del funding con la posizione aperta
+      const funding = nF * pos.qty * pos.entry * (s.funding || 0) / 100
+      const { pnl, fees } = pnlOf(pos, exit, s.fee, { liq, funding })
+      fundingTot += funding; slipTot += slipCost; if (liq) liqs++
       balance += pnl
       peak = Math.max(peak, balance)
       const dd = peak - balance
@@ -193,7 +221,8 @@ export function runSimulation(days, s, { from, to, capital }) {
       const tr = {
         id: ++tradeId, symbol: pos.symbol, day, side: pos.side, entry: pos.entry, exit, stop: pos.stop0, stopEnd: pos.init_stop,
         level: pos.level, opened_at: pos.opened_at, closed_at: at, reason, pnl, fees, qty: pos.qty, margin: pos.margin,
-        leverage: pos.leverage, pct: pnl / (pos.entry * pos.qty) * 100, balance,
+        leverage: pos.leverage, pct: pnl / (pos.entry * pos.qty) * 100, balance, liq: pos.liq_price, funding, slip: slipCost,
+        signal: pos.signal,
       }
       trades.push(tr); dayTrades.push(tr)
       open = open.filter(x => x !== pos)
@@ -206,7 +235,7 @@ export function runSimulation(days, s, { from, to, capital }) {
         const b = byMin[pos.symbol].get(m)
         if (!b) continue
         const r = stepBar(pos, s, b, today[pos.symbol], pos.prep)
-        if (r) close(pos, r.exit, r.reason, b.t + MIN)
+        if (r) close(pos, r.exit, r.reason, b.t + MIN, r.liq)
       }
       // entrate scattate nel minuto m
       while (si < sigs.length && sigs[si].sig.k.min <= m) {
@@ -214,11 +243,17 @@ export function runSimulation(days, s, { from, to, capital }) {
         if (s.maxPos > 0 && taken >= s.maxPos) { skips['limite posizioni al giorno'] = (skips['limite posizioni al giorno'] || 0) + 1; continue }
         const size = sizing(s, balance)
         if (!(size.margin >= 1)) { skips['capitale insufficiente'] = (skips['capitale insufficiente'] || 0) + 1; continue }
-        const pos = newPosition({ mode: 'sim', day, symbol: sym, sig, s, prep, size })
-        pos.prep = prep; pos.stop0 = pos.init_stop
+        // entrata a mercato: slittamento contro di te; lo stop si calcola dal prezzo eseguito, come nel Reale
+        const fill = sig.entry * (1 + sig.side * slip)
+        const risk = riskFor(limits[sym], size.notional, s)
+        mmrFrom[sym] = risk.fromBitunix ? 'bitunix' : 'impostato'
+        const pos = newPosition({ mode: 'sim', day, symbol: sym, sig: { ...sig, entry: fill }, s, prep, size, risk })
+        if (s.liqGuard && liqBlocks(pos)) { skips['stop oltre la liquidazione'] = (skips['stop oltre la liquidazione'] || 0) + 1; continue }
+        pos.prep = prep; pos.stop0 = pos.init_stop; pos.signal = sig.entry
+        pos.slipIn = Math.abs(fill - sig.entry) * pos.qty
         taken++; open.push(pos)
         const r = stepBar(pos, s, sig.k, today[sym], prep)
-        if (r) close(pos, r.exit, r.reason, sig.k.t + MIN)
+        if (r) close(pos, r.exit, r.reason, sig.k.t + MIN, r.liq)
       }
     }
     // fine giornata: chiude tutto un minuto prima della chiusura della borsa
@@ -240,6 +275,9 @@ export function runSimulation(days, s, { from, to, capital }) {
   return {
     from, to, capital, final: balance, net: balance - capital, pct: capital > 0 ? (balance / capital - 1) * 100 : 0,
     n: trades.length, wins, pf: gl > 0 ? gp / gl : null, grossWin: gp, grossLoss: gl, fees,
+    funding: fundingTot, slippage: slipTot, costs: fees + fundingTot + slipTot, liquidations: liqs,
+    worstDay: dayRows.filter(d => d.n && d.pct !== null).reduce((w, d) => (!w || d.pct < w.pct ? d : w), null),
+    mmrFrom,
     maxDD, maxDDPct, days: simDays, daysWithTrades: dayRows.filter(d => d.n).length, daysUp: dayRows.filter(d => d.pnl > 0).length,
     firstDay: dayRows[0]?.day ?? null, lastDay: dayRows.at(-1)?.day ?? null,
     reasons: Object.entries(reasons).map(([reason, r]) => ({ reason, ...r })).sort((a, b) => b.n - a.n),

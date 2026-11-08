@@ -45,6 +45,7 @@ export default function TradeChart({ trade, onClose }) {
     pl(trade.stop, C.down, 'stop', LineStyle.Dotted)
     if (trade.stopEnd && Math.abs(trade.stopEnd - trade.stop) > 1e-9) pl(trade.stopEnd, C.warn, 'stop ridotto', LineStyle.Dotted)
     if (trade.level) pl(trade.level.p, C.line, trade.level.t, LineStyle.Dotted)
+    if (trade.liq) pl(trade.liq, '#FF5C7A', 'liquidazione', LineStyle.LargeDashed)
 
     const barAt = ts => { let k = 0; for (let i = 0; i < bars.length; i++) if (bars[i].t <= ts) k = i; return t[k] }
     const exitBar = trade.reason === 'chiusura' ? trade.closed_at : trade.closed_at - 60000
@@ -75,7 +76,8 @@ export default function TradeChart({ trade, onClose }) {
           <span>stop<br /><b>{fmtPrice(trade.stop)}</b></span>
           <span>risultato<br /><b className={trade.pnl >= 0 ? 'up' : 'down'}>{fmtSigned(trade.pnl)} ({fmtSigned(trade.pct)}%)</b></span>
         </div>
-        <div className="note">{trade.reason}{trade.level ? ` · livello più vicino: ${trade.level.t} ${fmtPrice(trade.level.p)}` : ' · nessun livello davanti'} · margine {trade.margin.toFixed(0)} USDT × {trade.leverage}x</div>
+        <div className="note">{trade.reason}{trade.level ? ` · livello più vicino: ${trade.level.t} ${fmtPrice(trade.level.p)}` : ' · nessun livello davanti'} · margine {trade.margin.toFixed(0)} USDT × {trade.leverage}x{trade.liq ? ` · liquidazione ${fmtPrice(trade.liq)}` : ''}</div>
+        {trade.fees !== undefined && <div className="note">costi: commissioni {trade.fees.toFixed(2)}{trade.funding ? ` · funding ${trade.funding.toFixed(2)}` : ''}{trade.slip ? ` · slittamento ${trade.slip.toFixed(2)}` : ''} USDT{trade.signal && Math.abs(trade.signal - trade.entry) > 1e-9 ? ` · segnale a ${fmtPrice(trade.signal)}` : ''}</div>}
         <div className="chart-box" ref={box} style={{ height: 340 }}>
           {err && <div className="empty">Grafico non disponibile: {err}</div>}
           {!err && !bars && <div className="empty">Carico le candele…</div>}

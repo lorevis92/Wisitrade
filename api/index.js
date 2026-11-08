@@ -13,6 +13,7 @@ import { refreshContexts, generateContext } from '../server/context.js'
 import { sendPush } from '../server/push.js'
 import { tick } from '../server/tick.js'
 import { closeManual, liveAllowed } from '../server/strategy.js'
+import { getLimits } from '../server/limits.js'
 
 const TF = {
   '1m': { bx: '1m', n: 400, ttl: 20 },
@@ -216,6 +217,12 @@ async function route(req, url) {
     const mode = body.mode === 'live' ? 'live' : 'paper'
     const patch = { updated_at: Date.now() }
     if (body.settings) patch.settings = normalizeSettings(body.settings)
+    // Reale: niente leva più alta della leva massima di Bitunix per i titoli scelti
+    if (mode === 'live' && patch.settings) {
+      const lim = await getLimits().catch(() => ({}))
+      const over = patch.settings.symbols.filter(x => lim[x]?.maxLev && patch.settings.leverage > lim[x].maxLev)
+      if (over.length) throw new HttpError(400, `Leva ${patch.settings.leverage}x oltre il massimo di Bitunix per ${over.map(x => `${x} (${lim[x].maxLev}x)`).join(', ')}`)
+    }
     if (typeof body.enabled === 'boolean') patch.enabled = body.enabled
     await q(db().from('wt_accounts').update(patch).eq('mode', mode))
     return strategyView(mode)
@@ -259,8 +266,9 @@ async function route(req, url) {
     const t0 = Date.now()
     // 20 giorni prima dell'inizio servono per la preparazione (livelli, volatilità, volume normale)
     const days = await loadDays(s.symbols, addDays(body.from, -20), body.to)
+    const limits = await getLimits().catch(() => ({})) // margine di mantenimento e orari del funding di Bitunix
     const loadMs = Date.now() - t0
-    const r = runSimulation(days, s, { from: body.from, to: body.to, capital })
+    const r = runSimulation(days, s, { from: body.from, to: body.to, capital, limits })
     const MAX_TRADES = 4000
     return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: s, ms: { load: loadMs, run: Date.now() - t0 - loadMs } }
   }

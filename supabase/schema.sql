@@ -151,3 +151,8 @@ create table if not exists wt_presets (
 
 alter table wt_bars enable row level security;
 alter table wt_presets enable row level security;
+
+-- ---------- Liquidazione e costi (non distruttivo) ----------
+alter table wt_positions add column if not exists liq_price double precision;  -- prezzo di liquidazione in margine isolato
+alter table wt_positions add column if not exists entry_bar bigint;            -- candela da 1 min del segnale d'entrata
+alter table wt_positions add column if not exists funding double precision;    -- funding vero di Bitunix (Reale; negativo = pagato)

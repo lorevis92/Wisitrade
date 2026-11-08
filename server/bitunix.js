@@ -74,6 +74,19 @@ export async function tradingPairs() {
   }))
 }
 
+// Scaglioni di rischio di un perpetual: margine di mantenimento e leva massima per valore della posizione
+export async function positionTiers(symbol) {
+  const data = await getJson(`/api/v1/futures/position/get_position_tiers?symbol=${symbol}`)
+  return (data || []).map(t => ({ start: +t.startValue || 0, end: +t.endValue || Infinity, lev: +t.leverage || null, mmr: +t.maintenanceMarginRate }))
+    .filter(t => Number.isFinite(t.mmr)).sort((a, b) => a.start - b.start)
+}
+
+// Funding attuale di tutti i perpetual (fundingRate in %, intervallo in ore)
+export async function fundingRates() {
+  const data = await getJson('/api/v1/futures/market/funding_rate/batch')
+  return Object.fromEntries((data || []).map(f => [f.symbol, { rate: +f.fundingRate, hours: +f.fundingInterval || 8, next: +f.nextFundingTime || null }]))
+}
+
 // Scarica tante serie in parallelo (il limite di velocità lo gestisce throttle)
 export async function many(jobs) {
   const res = await Promise.allSettled(jobs.map(j => klines(j.symbol, j.interval, j.limit)))
@@ -138,8 +151,18 @@ export async function openPositions(symbol) {
   const d = await signed('GET', '/api/v1/futures/position/get_pending_positions', { query: symbol ? { symbol } : {} })
   return (Array.isArray(d) ? d : []).map(p => ({
     positionId: p.positionId, symbol: p.symbol, side: p.side === 'SHORT' || p.side === 'SELL' ? -1 : 1,
-    qty: +p.qty, entry: +p.avgOpenPrice || +p.entryValue / +p.qty || null, raw: p,
+    qty: +p.qty, entry: +p.avgOpenPrice || +p.entryValue / +p.qty || null, liqPrice: +p.liqPrice || null, raw: p,
   }))
+}
+
+// Posizione chiusa dallo storico di Bitunix: prezzo d'uscita, commissioni, funding e liquidazione veri (se forniti)
+export async function positionHistory(symbol, positionId) {
+  const d = await signed('GET', '/api/v1/futures/position/get_history_positions', { query: { symbol, ...(positionId ? { positionId } : {}), limit: 20 } })
+  const list = Array.isArray(d) ? d : (d?.positionList || [])
+  const p = positionId ? list.find(x => String(x.positionId) === String(positionId)) : list[0]
+  if (!p) return null
+  const n = v => (v === undefined || v === null || v === '' || !Number.isFinite(+v) ? null : +v)
+  return { closePrice: n(p.closePrice), fee: n(p.fee), funding: n(p.funding), realizedPNL: n(p.realizedPNL), liqQty: n(p.liqQty), liqPrice: n(p.liqPrice), raw: p }
 }
 
 // Chiusura immediata a mercato di tutta la posizione

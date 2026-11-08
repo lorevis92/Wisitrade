@@ -38,6 +38,15 @@ export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (P
         <Select label="Trade fermi dopo 60 min" value={s.stale} options={OPTIONS.stale} fmt={v => lab('stale', v)} onChange={v => set('stale', v)} />
         {showFee && <Select label={feeLabel} value={s.fee} options={OPTIONS.fee} fmt={v => `${num(v)}%`} onChange={v => set('fee', v)} />}
       </div>
+      <div className="lab" style={{ marginTop: 14 }}>Liquidazione · margine isolato</div>
+      <div className="grid2" style={{ marginTop: 6, alignItems: 'start' }}>
+        <Select label="Stop oltre la liquidazione" value={s.liqGuard ? 'on' : 'off'} options={['on', 'off']} fmt={v => (v === 'on' ? 'non aprire il trade' : 'apri comunque')}
+          onChange={v => set('liqGuard', v === 'on')} hint="nel Reale non si apre mai, qualunque sia la scelta" />
+        <Select label="Margine di mantenimento" value={s.mmr} options={OPTIONS.mmr} fmt={v => `${num(v)}%`} onChange={v => set('mmr', v)}
+          hint="usato solo se Bitunix non lo fornisce per quel titolo" />
+        <Select label="Commissione di liquidazione" value={s.liqFee} options={OPTIONS.liqFee} fmt={v => `${num(v)}%`} onChange={v => set('liqFee', v)}
+          hint="del valore della posizione" />
+      </div>
       <div className="lab" style={{ marginTop: 14 }}>Titoli · {s.symbols.length} scelti</div>
       <div className="chips" style={{ marginTop: 6 }}>
         {ORB_SYMBOLS.map(x => <button key={x} className={`chip ${symSet.has(x) ? 'active' : ''}`} onClick={() => toggleSym(x)}>{x}</button>)}
@@ -90,7 +99,7 @@ export function PresetsCard({ current, onLoad }) {
           <div key={p.id} className="preset">
             <button className="preset-main" disabled={busy} onClick={() => { onLoad(normalizeSettings(p.settings), p.name); setMsg(`Caricata "${p.name}".`) }}>
               <b>{p.name}</b>{p.is_default && <span className="pill long" style={{ marginLeft: 6 }}>default</span>}{same(p) && <span className="pill neutral" style={{ marginLeft: 6 }}>in uso</span>}
-              <span className="note" style={{ display: 'block' }}>{new Date(p.created_at).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })} · leva {p.settings.leverage}x · stop {num(p.settings.sl)} · segue {num(p.settings.trail)} · {p.settings.symbols?.length ?? 0} titoli</span>
+              <span className="note" style={{ display: 'block' }}>{new Date(p.created_at).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })} · leva {p.settings.leverage}x · stop {num(p.settings.sl)} · segue {num(p.settings.trail)} · {p.settings.symbols?.length ?? 0} titoli{p.settings.slip !== undefined ? ` · slitt. ${num(p.settings.slip)}%` : ''}</span>
             </button>
             <div className="preset-actions">
               <button className="chip" disabled={busy} onClick={() => act(() => post('/api/presets/default', { id: p.is_default ? null : p.id }), p.is_default ? 'Tornato al default originale.' : `"${p.name}" è il nuovo default.`)}>{p.is_default ? 'togli default' : 'default'}</button>

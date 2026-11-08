@@ -21,7 +21,13 @@ export const STRATEGY_DEFAULTS = {
   room: 1,                // spazio minimo dal livello più vicino, in multipli del movimento già fatto
   maxPos: 8,              // posizioni al giorno
   stale: 'run',           // trade fermi dopo 60 min: run | half | close
-  fee: 0.06,              // commissione per lato in % (solo Prova)
+  fee: 0.06,              // commissione per lato in % (Prova e Simulazione; nel Reale quella vera di Bitunix)
+  // Liquidazione (margine isolato) e costi
+  liqGuard: true,         // non aprire se lo stop loss è oltre il prezzo di liquidazione (nel Reale sempre attivo)
+  mmr: 1,                 // margine di mantenimento in % se Bitunix non lo fornisce per quel perpetual
+  liqFee: 0.1,            // commissione di liquidazione in % del valore della posizione
+  funding: 0.01,          // funding medio per periodo, in % del valore della posizione (solo Simulazione)
+  slip: 0.05,             // slittamento per lato sugli ordini a mercato, in % (solo Simulazione)
 }
 
 const steps = (from, to, step) => Array.from({ length: Math.round((to - from) / step) + 1 }, (_, i) => +(from + i * step).toFixed(4))
@@ -37,6 +43,10 @@ export const OPTIONS = {
   maxPos: [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 0],
   stale: ['run', 'half', 'close'],
   fee: [0.06, 0.05, 0.042, 0.03, 0.02, 0.014, 0],
+  mmr: [0.5, 1, 1.5, 2, 2.5, 3, 5],
+  liqFee: [0, 0.05, 0.1, 0.2, 0.5, 1],
+  funding: [0, 0.005, 0.01, 0.02, 0.03, 0.05, 0.1],
+  slip: [0, 0.01, 0.02, 0.03, 0.05, 0.1, 0.15, 0.2, 0.3],
 }
 
 const n2 = v => String(v).replace('.', ',')
@@ -55,7 +65,10 @@ export function normalizeSettings(s = {}) {
   const out = { ...STRATEGY_DEFAULTS }
   for (const k of Object.keys(STRATEGY_DEFAULTS)) if (s[k] !== undefined && s[k] !== null) out[k] = s[k]
   out.symbols = Array.isArray(out.symbols) ? out.symbols.filter(x => ORB_SYMBOLS.includes(x)) : ORB_SYMBOLS
-  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee']) out[k] = Number(out[k])
+  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip']) out[k] = Number(out[k])
+  for (const k of ['fee', 'liqFee', 'funding', 'slip']) out[k] = Math.min(Math.max(out[k] || 0, 0), 5)
+  out.mmr = Math.min(Math.max(out.mmr || 1, 0.1), 50)
+  out.liqGuard = out.liqGuard !== false
   out.leverage = Math.min(Math.max(out.leverage || 1, 1), 20)
   out.marginPct = Math.min(Math.max(out.marginPct || 10, 1), 100)
   out.capitalPct = Math.min(Math.max(out.capitalPct || 100, 1), 100)
@@ -91,11 +104,20 @@ export function exitLevel(p, s) {
   return lvl
 }
 
-// Fa scorrere dei prezzi sulla posizione: aggiorna il punto migliore, restituisce il prezzo d'uscita se toccato
-export function walk(p, s, pts) {
-  for (const pt of pts) {
-    const lvl = exitLevel(p, s)
-    if (p.side > 0 ? pt <= lvl : pt >= lvl) return lvl
+// Fa scorrere dei prezzi sulla posizione: aggiorna il punto migliore e restituisce { px, liq } se tocca l'uscita.
+// gap = il primo prezzo è l'apertura di una nuova candela: se è già oltre lo stop si esce a quel prezzo (peggiore), non allo stop.
+// Liquidazione (p.liq_price): se il prezzo la tocca prima dello stop la posizione è liquidata.
+export function walk(p, s, pts, gap = false) {
+  const liq = p.liq_price > 0 ? p.liq_price : null
+  for (let i = 0; i < pts.length; i++) {
+    const pt = pts[i], lvl = exitLevel(p, s)
+    const past = x => (p.side > 0 ? pt <= x : pt >= x)
+    const liqFirst = liq !== null && (p.side > 0 ? liq >= lvl : liq <= lvl) // stop oltre la liquidazione
+    if (liqFirst && past(liq)) return { px: liq, liq: true }
+    if (past(lvl)) {
+      if (gap && i === 0) return liq !== null && past(liq) ? { px: liq, liq: true } : { px: pt, liq: false }
+      return { px: lvl, liq: false }
+    }
     p.best = p.side > 0 ? Math.max(p.best, pt) : Math.min(p.best, pt)
   }
   return null
@@ -103,11 +125,33 @@ export function walk(p, s, pts) {
 
 export const exitReason = (p, px) => ((p.side > 0 ? px > p.entry : px < p.entry) ? 'ritracciamento' : (p.halved ? 'stop ridotto' : 'stop loss'))
 
-export const pnlOf = (p, exit, feePct) => {
-  const gross = p.side * (exit - p.entry) * p.qty
-  const fees = (p.entry + exit) * p.qty * (feePct / 100)
-  return { pnl: gross - fees, fees }
+// Risultato di una chiusura. Commissioni sul valore della posizione (prezzo × quantità) in entrata e in uscita.
+// Nessun trade perde più del suo margine sul prezzo; con la liquidazione si perde tutto il margine
+// (dentro ci sono margine di mantenimento e commissione di liquidazione) più la commissione d'entrata già pagata.
+export const pnlOf = (p, exit, feePct, { liq = false, funding = 0 } = {}) => {
+  const entryFee = p.entry * p.qty * (feePct / 100)
+  if (liq) return { pnl: -(p.margin || 0) - entryFee - funding, fees: entryFee, gross: -(p.margin || 0) }
+  let gross = p.side * (exit - p.entry) * p.qty
+  if (p.margin > 0) gross = Math.max(gross, -p.margin)
+  const fees = entryFee + exit * p.qty * (feePct / 100)
+  return { pnl: gross - fees - funding, fees, gross }
 }
+
+// ---------- Liquidazione in margine isolato ----------
+// Scaglione di Bitunix per il valore della posizione: { mmr (frazione), maxLev } oppure null se non disponibile
+export function tierFor(lim, notional) {
+  const t = lim?.tiers
+  if (!t?.length) return null
+  const x = t.find(r => notional >= (r.start || 0) && notional < (r.end || Infinity)) || t[t.length - 1]
+  return { mmr: x.mmr, maxLev: Math.min(x.lev || Infinity, lim.maxLev || Infinity) }
+}
+// Prezzo di liquidazione: il margine più il risultato scende al margine di mantenimento più la commissione di liquidazione
+export function liqPriceOf({ side, entry, qty, margin }, mmr, liqFeePct) {
+  const m = mmr + liqFeePct / 100
+  const px = side > 0 ? (qty * entry - margin) / (qty * (1 - m)) : (qty * entry + margin) / (qty * (1 + m))
+  return px > 0 && Number.isFinite(px) ? px : null
+}
+export const stopPastLiq = p => !!p.liq_price && (p.side > 0 ? p.init_stop <= p.liq_price : p.init_stop >= p.liq_price)
 
 // Giorni di chiusura della borsa USA (NYSE) e chiusure anticipate alle 13:00
 export const HOLIDAYS = new Set([
