@@ -112,7 +112,7 @@ function SimSetup({ r }) {
     const list = syms.filter(x => GROUP_OF[x] === g)
     return { g, n: list.length, data: list.filter(x => withData.has(x)).length }
   }).filter(x => x.n)
-  const compound = s.capitalMode === 'percent'
+  const compound = s.capitalMode !== 'fixed' // capitale dedicato in Simulazione = 100% del saldo della simulazione
   return (
     <div className="card" style={{ padding: '10px 14px' }}>
       <div className="row"><span className="lab">Titoli usati</span><span className="mono">{syms.length}</span></div>
@@ -121,7 +121,7 @@ function SimSetup({ r }) {
       ))}
       {r.symbolsWithData && withData.size < syms.length && <div className="note">Titoli con dati nel periodo: {withData.size} su {syms.length} (gli altri sono quotati su Bitunix dopo l'inizio del periodo).</div>}
       <div className="kv" style={{ marginTop: 6 }}><span className="sec">Dimensione dei trade</span>
-        <span className="mono">{compound ? `${num(s.capitalPct)}% del saldo · margine ${s.marginPct}% · ${s.leverage}x` : `${num(s.capitalFixed)} USDT fissi · margine ${s.marginPct}% · ${s.leverage}x`}</span></div>
+        <span className="mono">{compound ? `${s.capitalMode === 'dedicated' ? 'capitale dedicato (100% del saldo)' : num(s.capitalPct) + '% del saldo'} · margine ${s.marginPct}% · ${s.leverage}x` : `${num(s.capitalFixed)} USDT fissi · margine ${s.marginPct}% · ${s.leverage}x`}</span></div>
       <div className="note">{compound ? 'Interesse composto: ogni trade si calcola sul saldo del momento, quindi i guadagni fanno crescere i trade successivi.' : 'Senza interesse composto: ogni trade ha la stessa dimensione, qualunque sia il saldo. Su periodi lunghi il risultato in % è più basso che con "% saldo".'}</div>
       <div className="kv"><span className="sec">Commissione · slittamento · funding</span><span className="mono">{num(s.fee)}% · {num(s.slip)}% · {num(s.funding)}%</span></div>
     </div>

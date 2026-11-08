@@ -20,9 +20,12 @@ export const STRATEGY_DEFAULTS = {
   symbols: ORB_SYMBOLS,
   leverage: 5,
   marginPct: 10,          // margine per trade, % del capitale da usare
-  capitalMode: 'percent', // 'fixed' = cifra in USDT, 'percent' = % del saldo
+  capitalMode: 'percent', // 'fixed' = cifra in USDT, 'percent' = % del saldo, 'dedicated' = capitale dedicato (si aggiorna con i risultati)
   capitalFixed: 300,
   capitalPct: 100,
+  capitalDedicated: 0,    // capitale dedicato: cifra di partenza (cambiandola si riparte da lì)
+  maxDayLoss: 10,         // con capitale dedicato: perdita massima giornaliera in % (0 = spenta): superata, niente nuovi trade fino a domani
+  maxTotalLoss: 30,       // con capitale dedicato: perdita massima totale in % (0 = spenta): superata, la strategia si ferma
   movePct: 1,             // segnale: movimento dall'apertura (entrata a 1,25 × questo valore)
   sl: 1.5,                // stop loss in unità di volatilità
   trail: 1,               // in guadagno: stop che segue a questa distanza
@@ -59,6 +62,8 @@ export const OPTIONS = {
   giveback: [0, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6],
   room: [0, 0.25, 0.5, 0.75, 1, 1.5],
   maxPos: [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 0],
+  maxDayLoss: [0, 3, 5, 7.5, 10, 15, 20, 30],
+  maxTotalLoss: [0, 10, 15, 20, 25, 30, 40, 50],
   stale: ['run', 'half', 'close'],
   fee: [0.06, 0.05, 0.042, 0.03, 0.02, 0.014, 0],
   mmr: [0.5, 1, 1.5, 2, 2.5, 3, 5],
@@ -93,7 +98,7 @@ export function normalizeSettings(s = {}) {
   const out = { ...STRATEGY_DEFAULTS }
   for (const k of Object.keys(STRATEGY_DEFAULTS)) if (s[k] !== undefined && s[k] !== null) out[k] = s[k]
   out.symbols = Array.isArray(out.symbols) ? [...new Set(out.symbols.filter(x => STRATEGY_SET.has(x)))] : ORB_SYMBOLS
-  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt', 'idxMin', 'idxPos', 'entryWin']) out[k] = Number(out[k])
+  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt', 'idxMin', 'idxPos', 'entryWin', 'capitalDedicated', 'maxDayLoss', 'maxTotalLoss']) out[k] = Number(out[k])
   out.entryWin = Math.min(Math.max(Math.round(out.entryWin) || 30, 1), 30)
   if (!['off', 'min', 'reduce'].includes(out.idxMode)) out.idxMode = 'off'
   out.idxMin = Math.min(Math.max(out.idxMin || 0, 0), 100)
@@ -108,16 +113,27 @@ export function normalizeSettings(s = {}) {
   out.marginPct = Math.min(Math.max(out.marginPct || 10, 1), 100)
   out.capitalPct = Math.min(Math.max(out.capitalPct || 100, 1), 100)
   out.capitalFixed = Math.max(out.capitalFixed || 0, 0)
-  if (!['fixed', 'percent'].includes(out.capitalMode)) out.capitalMode = 'percent'
+  if (!['fixed', 'percent', 'dedicated'].includes(out.capitalMode)) out.capitalMode = 'percent'
+  out.capitalDedicated = Math.max(out.capitalDedicated || 0, 0)
+  out.maxDayLoss = Math.min(Math.max(out.maxDayLoss || 0, 0), 100)
+  out.maxTotalLoss = Math.min(Math.max(out.maxTotalLoss || 0, 0), 100)
   if (!['run', 'half', 'close'].includes(out.stale)) out.stale = 'run'
   return out
 }
 
 // Capitale da usare e dimensione di ogni trade a partire dal saldo della piattaforma
-export function sizing(settings, platformBalance) {
+// Impostazioni di un conto: nel Reale, se non è mai stato scelto, il capitale è "dedicato" (default)
+export const settingsFor = (mode, raw = {}) => normalizeSettings(mode === 'live' && !raw?.capitalMode ? { ...raw, capitalMode: 'dedicated' } : raw)
+
+// Capitale da usare. platformBalance = saldo (nel Reale quello disponibile su Bitunix).
+// dedicatedNow = capitale dedicato attuale; senza (Simulazione) il capitale dedicato è il saldo della simulazione.
+// Con il capitale dedicato non si usa mai più del saldo.
+export function sizing(settings, platformBalance, dedicatedNow) {
   const s = normalizeSettings(settings)
   const bal = Math.max(0, platformBalance || 0)
-  const capital = s.capitalMode === 'fixed' ? Math.min(s.capitalFixed, bal || s.capitalFixed) : bal * s.capitalPct / 100
+  const capital = s.capitalMode === 'fixed' ? Math.min(s.capitalFixed, bal || s.capitalFixed)
+    : s.capitalMode === 'dedicated' ? (dedicatedNow === undefined || dedicatedNow === null ? bal : Math.min(Math.max(0, dedicatedNow), bal))
+      : bal * s.capitalPct / 100
   const margin = capital * s.marginPct / 100
   return { capital, margin, notional: margin * s.leverage }
 }

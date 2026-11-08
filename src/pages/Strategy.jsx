@@ -6,6 +6,84 @@ import { OPTIONS, exitLevel, normalizeSettings, sizing } from '@shared/opening.j
 import { Select, RulesCard, PresetsCard, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
 import Simulation from './Simulation.jsx'
 
+// Capitale dedicato: valore attuale, partenza, risultato, limiti di perdita e storico delle modifiche
+function DedicatedCapital({ c, s, set, mode }) {
+  const pending = !c || c.set !== s.capitalDedicated
+  const dt = t => new Date(t).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return (
+    <div style={{ marginTop: 12, borderTop: '1px solid var(--border-soft)', paddingTop: 10 }}>
+      <div className="lab">Capitale dedicato</div>
+      {c && !pending ? (
+        <>
+          <div className="kv"><span>Capitale dedicato attuale</span><span className="mono"><b>{fmtUsd(c.current)} USDT</b></span></div>
+          <div className="kv"><span className="sec">Partenza</span><span className="mono sec">{fmtUsd(c.start)} USDT · {dt(c.startAt)}</span></div>
+          <div className="kv"><span className="sec">Risultato dalla partenza</span><span className={`mono ${c.net >= 0 ? 'up' : 'down'}`}>{fmtSigned(c.net)} USDT · {fmtSigned(c.pct)}% · {c.trades} trade</span></div>
+          <div className="kv"><span className="sec">Oggi</span><span className={`mono ${c.dayPnl >= 0 ? 'up' : 'down'}`}>{fmtSigned(c.dayPnl)} USDT</span></div>
+        </>
+      ) : (
+        <div className="note" style={{ color: 'var(--warn)' }}>
+          {s.capitalDedicated > 0 ? `Premi Salva: ${fmtUsd(s.capitalDedicated)} USDT diventa il punto di partenza.` : "Imposta la cifra di partenza e premi Salva: finché non c'è, la strategia non apre trade."}
+        </div>
+      )}
+      <div className="note" style={{ marginTop: 4 }}>
+        Dopo ogni trade chiuso il capitale dedicato si aggiorna con il risultato vero{mode === 'live' ? ' (commissioni e funding di Bitunix compresi)' : ''}; il giorno dopo si lavora con il nuovo valore.{mode === 'live' ? ' Non si usa mai più del saldo disponibile su Bitunix.' : ''}
+      </div>
+      <div className="grid2" style={{ marginTop: 8, alignItems: 'start' }}>
+        <Select label="Perdita massima giornaliera" value={s.maxDayLoss} options={OPTIONS.maxDayLoss} fmt={v => (v ? `${num(v)}% del capitale` : 'spenta')} onChange={v => set('maxDayLoss', v)}
+          hint="superata: niente nuovi trade fino a domani" />
+        <Select label="Perdita massima totale" value={s.maxTotalLoss} options={OPTIONS.maxTotalLoss} fmt={v => (v ? `${num(v)}% dalla partenza` : 'spenta')} onChange={v => set('maxTotalLoss', v)}
+          hint="superata: la strategia si ferma finché non la riavvii" />
+      </div>
+      {c?.history?.length > 0 && (
+        <details style={{ marginTop: 8 }}>
+          <summary className="lab" style={{ cursor: 'pointer' }}>Storico delle modifiche · {c.history.length}</summary>
+          {c.history.map((h, i) => (
+            <div key={i} className="kv">
+              <span className="sec">{dt(h.at)} · {h.type === 'set' ? 'nuova partenza' : 'riavvio dopo lo stop'}</span>
+              <span className="mono">{h.from !== null && h.from !== undefined ? `${fmtUsd(h.from)} → ` : ''}{fmtUsd(h.to)} USDT</span>
+            </div>
+          ))}
+        </details>
+      )}
+    </div>
+  )
+}
+
+// Slittamento nel Reale: prezzo del segnale contro prezzo eseguito su Bitunix (+ = contro di te), e confronto con la Prova
+function Slippage({ sl }) {
+  const pc = v => (v === null || v === undefined ? '—' : `${fmtSigned(v, 3)}%`)
+  return (
+    <>
+      <div className="lab section-title">Slittamento nel Reale · {sl.n} trade</div>
+      <div className="stat-grid">
+        <div className="tile"><div className="lab">Medio in entrata</div><div className="mono big">{pc(sl.avgIn)}</div><div className="note">per lato, rispetto al prezzo del segnale</div></div>
+        <div className="tile"><div className="lab">Medio in uscita</div><div className="mono big">{pc(sl.avgOut)}</div><div className="note">{sl.nOut} uscite a mercato (stop di Bitunix esclusi)</div></div>
+        <div className="tile"><div className="lab">Reale · Prova</div><div className="mono big">{sl.vsPaper ? `${fmtSigned(sl.vsPaper.live, 2)}% · ${fmtSigned(sl.vsPaper.paper, 2)}%` : '—'}</div><div className="note">{sl.vsPaper ? `risultato medio per trade su ${sl.vsPaper.n} segnali uguali` : 'servono trade sugli stessi segnali in Prova'}</div></div>
+      </div>
+      {sl.list.length > 0 && (
+        <div className="table-wrap">
+          <table className="tbl">
+            <thead><tr><th>Titolo</th><th>Giorno</th><th>Entrata: segnale → eseguito</th><th>Slitt.</th><th>Uscita: segnale → eseguito</th><th>Slitt.</th><th>Commissioni</th><th>Reale</th><th>Prova</th></tr></thead>
+            <tbody>{sl.list.map(r => (
+              <tr key={r.id}>
+                <td><b>{r.symbol}</b> <span className={`pill ${r.side > 0 ? 'long' : 'short'}`}>{r.side > 0 ? 'L' : 'S'}</span></td>
+                <td>{dayFmt(r.day, { day: '2-digit', month: '2-digit' })}</td>
+                <td className="mono">{fmtPrice(r.sigIn)} → {fmtPrice(r.fillIn)}</td>
+                <td className={`mono ${r.inPct > 0 ? 'down' : 'up'}`}>{pc(r.inPct)}</td>
+                <td className="mono">{r.fillOut ? `${fmtPrice(r.sigOut)} → ${fmtPrice(r.fillOut)}${r.byExchange ? ' (stop Bitunix)' : ''}` : '—'}</td>
+                <td className={`mono ${r.outPct > 0 ? 'down' : 'up'}`}>{r.byExchange ? '—' : pc(r.outPct)}</td>
+                <td className="mono">{r.fee !== null && r.fee !== undefined ? fmtUsd(Math.abs(r.fee), 3) : '—'}</td>
+                <td className={r.pnl >= 0 ? 'up' : 'down'}>{fmtSigned(r.pct, 2)}%</td>
+                <td className={r.paper?.pct >= 0 ? 'up' : 'down'}>{r.paper?.pct !== null && r.paper?.pct !== undefined ? `${fmtSigned(r.paper.pct, 2)}%` : '—'}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </>
+  )
+}
+
 function CodeGate({ onOk }) {
   const [code, setCode] = useState('')
   const [err, setErr] = useState(null)
@@ -54,7 +132,10 @@ export default function Strategy() {
   const s = draft || view?.settings
   const dirty = !!draft && JSON.stringify(normalizeSettings(draft)) !== JSON.stringify(normalizeSettings(view?.settings))
   const set = (k, v) => setDraft(d => ({ ...(d || view.settings), [k]: v }))
-  const sz = useMemo(() => (s && view ? sizing(s, view.platform.balance ?? 0) : null), [s, view])
+  // capitale dedicato: la cifra nuova (non ancora salvata) diventa la partenza; altrimenti il valore attuale
+  const dedNow = s?.capitalMode === 'dedicated' ? (view?.capital && view.capital.set === s.capitalDedicated ? view.capital.current : s.capitalDedicated || 0) : undefined
+  const sizeBase = view ? (mode === 'live' && s?.capitalMode === 'dedicated' ? view.platform.available ?? 0 : view.platform.balance ?? 0) : 0
+  const sz = useMemo(() => (s && view ? sizing(s, sizeBase, dedNow) : null), [s, view, sizeBase, dedNow])
 
   const act = async (fn, ok) => {
     setBusy(true); setMsg(null)
@@ -112,6 +193,8 @@ export default function Strategy() {
         </p>
         {mode === 'live' && !st.keys && <div className="warn">Mancano le chiavi API di Bitunix: aggiungi BITUNIX_API_KEY e BITUNIX_SECRET_KEY su Vercel (solo permesso di trading, mai prelievi).</div>}
         {mode === 'live' && st.keys && !st.liveTrading && <div className="warn">Gli ordini veri sono bloccati dall'interruttore generale: quando hai finito i test in Prova imposta LIVE_TRADING=on su Vercel.</div>}
+        {view.capital?.halted && <div className="warn">Strategia fermata per la perdita massima totale: {view.capital.halted.why}. Riavviandola il limite riparte dal capitale attuale.</div>}
+        {view.capital?.dayStop && <div className="warn">Oggi niente nuovi trade: perdita massima giornaliera superata. Si riparte domani.</div>}
         {tickAge !== null && tickAge > 5 * 60000 && <div className="warn">L'ultimo controllo è di {ago(st.lastTick.at)}: il controllo ogni minuto non sta girando. Verifica cron-job.org.</div>}
         {tickAge === null && <div className="warn">Il controllo ogni minuto non è ancora partito: configura cron-job.org (vedi README).</div>}
         <div className="grid2" style={{ marginTop: 10 }}>
@@ -146,14 +229,17 @@ export default function Strategy() {
             <div className="seg small">
               <button className={s.capitalMode === 'fixed' ? 'on' : ''} onClick={() => set('capitalMode', 'fixed')}>Cifra</button>
               <button className={s.capitalMode === 'percent' ? 'on' : ''} onClick={() => set('capitalMode', 'percent')}>% saldo</button>
+              <button className={s.capitalMode === 'dedicated' ? 'on' : ''} onClick={() => set('capitalMode', 'dedicated')}>Dedicato</button>
             </div>
             <div className="input-suffix">
               <input type="number" inputMode="decimal" min="0" step="any"
-                value={s.capitalMode === 'fixed' ? s.capitalFixed : s.capitalPct}
-                onChange={e => set(s.capitalMode === 'fixed' ? 'capitalFixed' : 'capitalPct', e.target.value === '' ? '' : +e.target.value)} />
-              <span>{s.capitalMode === 'fixed' ? 'USDT' : '%'}</span>
+                value={s.capitalMode === 'fixed' ? s.capitalFixed : s.capitalMode === 'dedicated' ? s.capitalDedicated : s.capitalPct}
+                onChange={e => set(s.capitalMode === 'fixed' ? 'capitalFixed' : s.capitalMode === 'dedicated' ? 'capitalDedicated' : 'capitalPct', e.target.value === '' ? '' : +e.target.value)} />
+              <span>{s.capitalMode === 'percent' ? '%' : 'USDT'}</span>
             </div>
-            <span className="note">= <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.capital)} USDT</b>{s.capitalMode === 'fixed' && view.platform.balance !== null && s.capitalFixed > view.platform.balance ? ' (limitato al saldo)' : ''}</span>
+            {s.capitalMode === 'dedicated'
+              ? <span className="note">cifra di partenza · ora si usano <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.capital)} USDT</b>{dedNow > sz.capital ? (mode === 'live' ? ' (limitato al saldo disponibile)' : ' (limitato al saldo)') : ''}. Cambiandola si riparte da questa cifra.</span>
+              : <span className="note">= <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.capital)} USDT</b>{s.capitalMode === 'fixed' && view.platform.balance !== null && s.capitalFixed > view.platform.balance ? ' (limitato al saldo)' : ''}</span>}
           </div>
           <Select label="Margine per trade" value={s.marginPct} options={OPTIONS.marginPct} fmt={v => `${v}% del capitale`} onChange={v => set('marginPct', v)}
             hint={<>= <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.margin)} USDT</b> a trade</>} />
@@ -162,6 +248,7 @@ export default function Strategy() {
           <Select label="Posizioni al giorno" value={s.maxPos} options={OPTIONS.maxPos} fmt={v => lab('maxPos', v) || `massimo ${v}`} onChange={v => set('maxPos', v)}
             hint={s.maxPos > 0 ? `esposizione massima ${fmtUsd(sz.notional * s.maxPos, 0)} USDT` : 'senza limite'} />
         </div>
+        {s.capitalMode === 'dedicated' && <DedicatedCapital c={view.capital} s={s} set={set} mode={mode} />}
         {mode === 'paper' && (
           <div style={{ marginTop: 12, borderTop: '1px solid var(--border-soft)', paddingTop: 10 }}>
             <div className="lab">Riparti da capo</div>
@@ -247,6 +334,8 @@ export default function Strategy() {
           </div>
         </>
       ) : <div className="card note">Ancora nessuna operazione chiusa. Il riepilogo compare dopo il primo giorno.</div>}
+
+      {mode === 'live' && view.slippage && <Slippage sl={view.slippage} />}
 
       {/* Operazioni */}
       <div className="lab section-title">Operazioni chiuse · ultime {view.trades.length}</div>

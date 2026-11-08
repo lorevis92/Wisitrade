@@ -1,7 +1,8 @@
 // Wisi Trade — tutte le API in una sola funzione Vercel (vercel.json riscrive /api/* qui).
 import crypto from 'node:crypto'
 import { ASSETS, ASSET_MAP, TYPE_LABEL } from '../shared/assets.js'
-import { normalizeSettings, sizing, isTradingDay, STRATEGY_SYMBOLS, STRATEGY_DEFAULTS } from '../shared/opening.js'
+import { normalizeSettings, settingsFor, sizing, isTradingDay, STRATEGY_SYMBOLS, STRATEGY_DEFAULTS } from '../shared/opening.js'
+import { getCapital, syncCapitalSetting, restartCapital } from '../server/capital.js'
 import { runSimulation } from '../shared/engine.js'
 import { addDays, weekdayOf } from '../shared/time.js'
 import { archiveStatus, fillArchive, loadDays, dayBars, EXTRA_SYMBOLS } from '../server/archive.js'
@@ -54,7 +55,7 @@ function dailySummary(closed) {
 
 async function strategyView(mode) {
   const acc = await q(db().from('wt_accounts').select('*').eq('mode', mode).single())
-  const s = normalizeSettings(acc.settings)
+  const s = settingsFor(mode, acc.settings)
   let platform
   if (mode === 'paper') platform = { balance: acc.balance, start: acc.start_balance }
   else if (!hasKeys()) platform = { balance: null, error: 'Chiavi API Bitunix non configurate su Vercel' }
@@ -76,9 +77,40 @@ async function strategyView(mode) {
   ])
   let gp = 0, gl = 0, wins = 0
   for (const p of closed) { if (p.pnl > 0) { gp += p.pnl; wins++ } else gl -= p.pnl || 0 }
+  // capitale dedicato: attuale, partenza, risultato dalla partenza e storico delle modifiche
+  const cap = await getCapital(mode)
+  const dayPnl = closed.filter(p => p.day === n.date).reduce((a, p) => a + (p.pnl || 0), 0)
+  const capital = cap ? {
+    current: cap.current, start: cap.start, startAt: cap.startAt, set: cap.set, lossRef: cap.lossRef, trades: cap.trades || 0,
+    net: cap.current - cap.start, pct: cap.start > 0 ? (cap.current / cap.start - 1) * 100 : null,
+    halted: cap.halted || null, dayStop: cap.dayStop?.day === n.date ? cap.dayStop : null, dayPnl, history: (cap.history || []).slice().reverse(),
+  } : null
+  const sizeBase = mode === 'live' && s.capitalMode === 'dedicated' ? (platform.available ?? 0) : (platform.balance ?? 0)
+  // slittamento nel Reale: prezzo del segnale e prezzo eseguito su Bitunix, in entrata e in uscita (in % per lato, + = contro di te)
+  let slippage = null
+  if (mode === 'live') {
+    const rows = closed.filter(p => p.exchange?.slip?.fillIn && p.exchange.slip.sigIn).slice(0, 300)
+    const paper = rows.length ? await q(db().from('wt_positions').select('day, symbol, side, entry, exit, pnl, qty, status').eq('mode', 'paper').in('day', [...new Set(rows.map(r => r.day))])) : []
+    const list = rows.map(p => {
+      const x = p.exchange.slip
+      const inPct = p.side * (x.fillIn - x.sigIn) / x.sigIn * 100
+      const outPct = x.fillOut && x.sigOut ? -p.side * (x.fillOut - x.sigOut) / x.sigOut * 100 : null
+      const pp = paper.find(z => z.day === p.day && z.symbol === p.symbol && z.side === p.side)
+      return {
+        id: p.id, day: p.day, symbol: p.symbol, side: p.side, sigIn: x.sigIn, fillIn: x.fillIn, sigOut: x.sigOut ?? null, fillOut: x.fillOut ?? null,
+        inPct, outPct, fee: x.fee ?? p.fees, funding: x.funding ?? null, byExchange: !!x.byExchange, pnl: p.pnl, pct: p.pnl / (p.entry * p.qty) * 100,
+        paper: pp ? { entry: pp.entry, exit: pp.exit, pnl: pp.pnl, pct: pp.status === 'closed' && pp.qty ? pp.pnl / (pp.entry * pp.qty) * 100 : null } : null,
+      }
+    })
+    const avg = a => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null)
+    const outs = list.filter(r => r.outPct !== null && !r.byExchange)
+    const both = list.filter(r => r.paper?.pct !== null && r.paper?.pct !== undefined)
+    slippage = { n: list.length, avgIn: avg(list.map(r => r.inPct)), avgOut: avg(outs.map(r => r.outPct)), nOut: outs.length, list,
+      vsPaper: both.length ? { n: both.length, live: avg(both.map(r => r.pct)), paper: avg(both.map(r => r.paper.pct)) } : null }
+  }
   return {
-    mode, enabled: acc.enabled, settings: s, platform,
-    sizing: sizing(s, platform.balance ?? 0),
+    mode, enabled: acc.enabled, settings: s, platform, capital, slippage,
+    sizing: sizing(s, sizeBase, s.capitalMode === 'dedicated' ? (cap?.current ?? 0) : undefined),
     open: open.map(p => {
       const px = prices[ASSET_MAP[p.symbol].perp]?.last ?? null
       const hq = p.half_done && p.half_qty > 0 ? p.half_qty : 0 // con "Metà subito" una metà è già chiusa
@@ -220,7 +252,7 @@ async function route(req, url) {
     requireAdmin(req)
     const mode = body.mode === 'live' ? 'live' : 'paper'
     const patch = { updated_at: Date.now() }
-    if (body.settings) patch.settings = normalizeSettings(body.settings)
+    if (body.settings) patch.settings = settingsFor(mode, body.settings)
     // Reale: niente leva più alta della leva massima di Bitunix per i titoli scelti
     if (mode === 'live' && patch.settings) {
       const lim = await getLimits().catch(() => ({}))
@@ -229,6 +261,9 @@ async function route(req, url) {
     }
     if (typeof body.enabled === 'boolean') patch.enabled = body.enabled
     await q(db().from('wt_accounts').update(patch).eq('mode', mode))
+    // capitale dedicato: una cifra nuova diventa il nuovo punto di partenza (con storico); riavvio dopo lo stop per perdita
+    if (patch.settings) await syncCapitalSetting(mode, patch.settings)
+    if (body.enabled === true) await restartCapital(mode)
     return strategyView(mode)
   }
 

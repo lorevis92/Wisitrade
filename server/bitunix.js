@@ -144,23 +144,55 @@ export const setLeverage = (symbol, leverage) =>
 export const setIsolated = symbol =>
   signed('POST', '/api/v1/futures/account/change_margin_mode', { body: { symbol, marginMode: 'ISOLATION', marginCoin: 'USDT' } })
 
-// Ordine a mercato in apertura, con stop loss di sicurezza direttamente su Bitunix
-export const openMarket = ({ symbol, side, qty, slPrice, clientId }) =>
+// Modalità delle posizioni del conto: ONE_WAY (una posizione per titolo) o HEDGE (una per titolo e per lato)
+export async function positionMode() {
+  const d = await signed('GET', '/api/v1/futures/account/position_mode')
+  return (Array.isArray(d) ? d[0] : d)?.positionMode || null
+}
+
+// Leva e modalità di margine impostate per un titolo: { leverage, marginMode: 'ISOLATION' | 'CROSS' }
+export async function leverageMarginMode(symbol) {
+  const d = await signed('GET', '/api/v1/futures/account/get_leverage_margin_mode', { query: { symbol, marginCoin: 'USDT' } })
+  const x = Array.isArray(d) ? d[0] : d
+  return { leverage: +x?.leverage || null, marginMode: x?.marginMode || null }
+}
+
+// Ordine a mercato in apertura (lo stop loss si mette dopo, solo sulla posizione nata da questo ordine)
+export const openMarket = ({ symbol, side, qty, clientId }) =>
   signed('POST', '/api/v1/futures/trade/place_order', {
-    body: {
-      symbol, qty: String(qty), side: side > 0 ? 'BUY' : 'SELL', tradeSide: 'OPEN', orderType: 'MARKET',
-      ...(slPrice ? { slPrice: String(slPrice), slStopType: 'LAST_PRICE', slOrderType: 'MARKET' } : {}),
-      ...(clientId ? { clientId } : {}),
-    },
+    body: { symbol, qty: String(qty), side: side > 0 ? 'BUY' : 'SELL', tradeSide: 'OPEN', orderType: 'MARKET', reduceOnly: false, ...(clientId ? { clientId } : {}) },
   })
 
 export async function openPositions(symbol) {
   const d = await signed('GET', '/api/v1/futures/position/get_pending_positions', { query: symbol ? { symbol } : {} })
   return (Array.isArray(d) ? d : []).map(p => ({
-    positionId: p.positionId, symbol: p.symbol, side: p.side === 'SHORT' || p.side === 'SELL' ? -1 : 1,
-    qty: +p.qty, entry: +p.avgOpenPrice || +p.entryValue / +p.qty || null, liqPrice: +p.liqPrice || null, raw: p,
+    positionId: String(p.positionId), symbol: p.symbol, side: p.side === 'SHORT' || p.side === 'SELL' ? -1 : 1,
+    qty: +p.qty, entry: +p.avgOpenPrice || +p.entryValue / +p.qty || null, liqPrice: +p.liqPrice > 0 ? +p.liqPrice : null,
+    marginMode: p.marginMode || null, leverage: +p.leverage || null, ctime: +p.ctime || null, raw: p,
   }))
 }
+
+// Ordini in attesa su un titolo (limite, non ancora eseguiti)
+export async function pendingOrders(symbol) {
+  const d = await signed('GET', '/api/v1/futures/trade/get_pending_orders', { query: { symbol, limit: 100 } })
+  return (d?.orderList || (Array.isArray(d) ? d : [])).map(o => ({ orderId: String(o.orderId), clientId: o.clientId || '', side: o.side, qty: +o.qty, status: o.status }))
+}
+
+// Dettaglio di un ordine (quantità eseguita, stato, commissione)
+export async function orderDetail(orderId) {
+  const d = await signed('GET', '/api/v1/futures/trade/get_order_detail', { query: { orderId } })
+  return d ? { orderId: String(d.orderId), status: d.status, qty: +d.qty, tradeQty: +d.tradeQty, fee: +d.fee || 0, marginMode: d.marginMode, leverage: +d.leverage || null } : null
+}
+
+// Stop loss di una sola posizione e per una quantità precisa (non tocca le altre posizioni)
+export const placeStopLoss = ({ symbol, positionId, slPrice, qty }) =>
+  signed('POST', '/api/v1/futures/tpsl/place_order', {
+    body: { symbol, positionId: String(positionId), slPrice: String(slPrice), slStopType: 'LAST_PRICE', slOrderType: 'MARKET', slQty: String(qty) },
+  })
+export const modifyStopLoss = ({ orderId, slPrice, qty }) =>
+  signed('POST', '/api/v1/futures/tpsl/modify_order', { body: { orderId: String(orderId), slPrice: String(slPrice), slStopType: 'LAST_PRICE', slOrderType: 'MARKET', slQty: String(qty) } })
+export const cancelStopLoss = ({ symbol, orderId }) =>
+  signed('POST', '/api/v1/futures/tpsl/cancel_order', { body: { symbol, orderId: String(orderId) } })
 
 // Posizione chiusa dallo storico di Bitunix: prezzo d'uscita, commissioni, funding e liquidazione veri (se forniti)
 export async function positionHistory(symbol, positionId) {
@@ -172,10 +204,11 @@ export async function positionHistory(symbol, positionId) {
   return { closePrice: n(p.closePrice), fee: n(p.fee), funding: n(p.funding), realizedPNL: n(p.realizedPNL), liqQty: n(p.liqQty), liqPrice: n(p.liqPrice), raw: p }
 }
 
-// Chiusura a mercato di una parte della posizione (side = direzione dell'ordine: -1 vende, 1 compra)
+// Chiusura a mercato di una parte di UNA posizione precisa (positionId), solo in riduzione (reduceOnly: non può aprire niente).
+// side = valore del campo side dell'ordine (1 BUY, -1 SELL): la documentazione Bitunix in hedge indica il lato della posizione.
 export const closePartial = ({ symbol, positionId, side, qty }) =>
   signed('POST', '/api/v1/futures/trade/place_order', {
-    body: { symbol, qty: String(qty), side: side > 0 ? 'BUY' : 'SELL', tradeSide: 'CLOSE', positionId, orderType: 'MARKET' },
+    body: { symbol, qty: String(qty), side: side > 0 ? 'BUY' : 'SELL', tradeSide: 'CLOSE', positionId: String(positionId), orderType: 'MARKET', reduceOnly: true },
   })
 
 // Chiusura immediata a mercato di tutta la posizione
