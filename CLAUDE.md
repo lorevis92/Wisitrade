@@ -5,8 +5,9 @@ App personale di Lorenzo: scanner di momentum su 14 crypto + 36 titoli USA (perp
 ## Struttura
 - `src/` PWA React + Vite (grafici `lightweight-charts` v5, service worker `public/sw.js`). Pagine: Live, Watchlist, Strategia, Calendario, Asset, Impostazioni.
 - `api/index.js` unica funzione Vercel con tutte le API (vercel.json riscrive `/api/*` qui). Rotte cron: `/api/cron/tick` (ogni minuto) e `/api/cron/context` (ogni ora), chiamate da cron-job.org con `CRON_SECRET`.
-- `server/` logica server: `bitunix.js` (dati pubblici + API firmate), `tick.js` (controllo ogni minuto), `scanner.js` (segnali), `strategy.js` (motore Apertura USA), `context.js` (Contesto AI), `push.js` (web-push), `db.js` (Supabase), `session.js` (orari NY).
-- `shared/` codice comune server/app (alias Vite `@shared`): `assets.js`, `indicators.js`, `signals.js`, `opening.js` (regole e impostazioni della strategia).
+- `server/` logica server: `bitunix.js` (dati pubblici + API firmate), `tick.js` (controllo ogni minuto; fuori orario aggiorna anche l'archivio), `scanner.js` (segnali), `strategy.js` (Apertura USA dal vivo: Prova e Reale), `archive.js` (archivio candele 1 min per la Simulazione, tabella `wt_bars`), `context.js` (Contesto AI), `push.js` (web-push), `db.js` (Supabase), `session.js` (orari NY).
+- `shared/` codice comune server/app (alias Vite `@shared`): `assets.js`, `indicators.js`, `signals.js`, `opening.js` (impostazioni e opzioni della strategia), `engine.js` (regole di entrata/uscita minuto per minuto, usate da Prova, Reale e Simulazione: cambiarle qui cambia tutte e tre), `time.js` (orari NY).
+- Pagina Strategia: schede Prova, Reale, Simulazione (`src/pages/Simulation.jsx`). Impostazioni salvate con nome in `wt_presets`, comuni alle tre schede.
 - `supabase/schema.sql` schema del database (tabelle `wt_*`, RLS attiva senza regole: accesso solo dal server con service_role).
 
 ## Regole

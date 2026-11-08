@@ -5,6 +5,7 @@ import { getMeta, setMeta } from './db.js'
 import { nyInfo } from './session.js'
 import { scan, getPairs } from './scanner.js'
 import { runStrategy } from './strategy.js'
+import { fillArchive } from './archive.js'
 
 export async function tick() {
   const t0 = Date.now()
@@ -33,6 +34,17 @@ export async function tick() {
     try { out.strategy = await runStrategy(series, info) } catch (e) { out.strategy = { error: e.message } }
     try { out.scan = await scan(series, info) } catch (e) { out.scan = { error: e.message } }
     if (errors.length) out.dataErrors = errors.slice(0, 5)
+    // archivio per la Simulazione: solo lontano dall'orario della strategia (dopo le 16:35 o prima delle 7:50 di New York, e nel fine settimana)
+    const quiet = !info.isWeekday || info.minutes >= 995 || info.minutes < 470
+    if (quiet) {
+      try {
+        const left = 50000 - (Date.now() - t0)
+        if (left > 15000) {
+          const r = await fillArchive({ budgetMs: Math.min(30000, left - 5000), source: 'auto' })
+          out.archive = r.busy ? { busy: true } : { saved: r.saved, remaining: r.remaining, ...(r.errors.length ? { errors: r.errors.slice(0, 2) } : {}) }
+        }
+      } catch (e) { out.archive = { error: e.message } }
+    }
     out.ms = Date.now() - t0
     await setMeta('last:tick', { at: t0, ms: out.ms, strategy: out.strategy, scan: out.scan })
     return out

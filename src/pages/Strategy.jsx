@@ -2,13 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { get, post, fmtPrice, fmtUsd, fmtSigned, ago } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
-import { OPTIONS, LABELS, ORB_SYMBOLS, exitLevel, normalizeSettings, sizing } from '@shared/opening.js'
-
-const TOP10 = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NFLX', 'NVDA', 'META', 'TSLA', 'AMD', 'PLTR']
-const num = v => String(v).replace('.', ',')
-const lab = (k, v) => LABELS[k]?.[v] ?? null
-const dayFmt = (d, o = { weekday: 'short', day: '2-digit', month: '2-digit' }) => new Date(d + 'T12:00:00Z').toLocaleDateString('it-CH', o)
-const hm = t => new Date(t).toLocaleTimeString('it-CH', { hour: '2-digit', minute: '2-digit' })
+import { OPTIONS, exitLevel, normalizeSettings, sizing } from '@shared/opening.js'
+import { Select, RulesCard, PresetsCard, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
+import Simulation from './Simulation.jsx'
 
 function CodeGate({ onOk }) {
   const [code, setCode] = useState('')
@@ -30,21 +26,9 @@ function CodeGate({ onOk }) {
   )
 }
 
-function Select({ label, value, options, onChange, fmt, hint }) {
-  return (
-    <label className="field">
-      <span className="lab">{label}</span>
-      <select value={String(value)} onChange={e => onChange(isNaN(+e.target.value) ? e.target.value : +e.target.value)}>
-        {options.map(o => <option key={o} value={String(o)}>{fmt ? fmt(o) : o}</option>)}
-      </select>
-      {hint && <span className="note">{hint}</span>}
-    </label>
-  )
-}
-
 export default function Strategy() {
   const [params, setParams] = useSearchParams()
-  const mode = params.get('mode') === 'live' ? 'live' : 'paper'
+  const mode = ['live', 'sim'].includes(params.get('mode')) ? params.get('mode') : 'paper'
   const [authed, setAuthed] = useState(() => !!load('adminCode', ''))
   const [view, setView] = useState(null)
   const [draft, setDraft] = useState(null)
@@ -55,13 +39,13 @@ export default function Strategy() {
   const [armReset, setArmReset] = useState(false)
   const [armStart, setArmStart] = useState(false)
 
-  const refresh = useCallback(() => get(`/api/strategy?mode=${mode}`)
+  const refresh = useCallback(() => mode === 'sim' ? Promise.resolve() : get(`/api/strategy?mode=${mode}`)
     .then(v => { setView(v); setErr(null) })
     .catch(e => { if (/codice/i.test(e.message)) { save('adminCode', ''); setAuthed(false) } setErr(e.message) }), [mode])
 
   useEffect(() => { setView(null); setDraft(null); setArmStart(false); setArmReset(false) }, [mode])
   useEffect(() => {
-    if (!authed) return
+    if (!authed || mode === 'sim') return
     refresh()
     const id = setInterval(refresh, 30000)
     return () => clearInterval(id)
@@ -89,15 +73,15 @@ export default function Strategy() {
     <div className="seg" style={{ marginBottom: 12 }}>
       <button className={mode === 'paper' ? 'on' : ''} onClick={() => setParams({ mode: 'paper' })}>Prova · capitale fittizio</button>
       <button className={mode === 'live' ? 'on' : ''} onClick={() => setParams({ mode: 'live' })}>Reale · Bitunix</button>
+      <button className={mode === 'sim' ? 'on' : ''} onClick={() => setParams({ mode: 'sim' })}>Simulazione</button>
     </div>
   )
+  if (mode === 'sim') return <>{tabs}<Simulation onAuthError={() => { save('adminCode', ''); setAuthed(false) }} /></>
   if (!view) return <>{tabs}<div className="card empty">{err || 'Carico la strategia…'}</div></>
 
   const st = view.status, t = view.today
   const tickAge = st.lastTick?.at ? Date.now() - st.lastTick.at : null
   const openLocal = new Date(Date.now() - (t.minutes - 570) * 60000).toLocaleTimeString('it-CH', { hour: '2-digit', minute: '2-digit' })
-  const symSet = new Set(s.symbols)
-  const toggleSym = x => set('symbols', symSet.has(x) ? s.symbols.filter(y => y !== x) : [...s.symbols, x])
   const totalUpnl = view.open.reduce((a, p) => a + (p.upnl || 0), 0)
   const days = view.days
   const bestDay = days.length ? days.reduce((a, b) => (b.pnl > a.pnl ? b : a)) : null
@@ -189,28 +173,8 @@ export default function Strategy() {
       </div>
 
       {/* Regole */}
-      <details className="card">
-        <summary className="lab" style={{ cursor: 'pointer' }}>Regole della strategia · tocca per modificare</summary>
-        <div className="grid2" style={{ marginTop: 12, alignItems: 'start' }}>
-          <Select label="Segnale: movimento dall'apertura" value={s.movePct} options={OPTIONS.movePct} fmt={v => `${num(v)}% (entrata a ${num(+(v * 1.25).toFixed(2))}%)`} onChange={v => set('movePct', v)} />
-          <Select label="Stop loss" value={s.sl} options={OPTIONS.sl} fmt={v => lab('sl', v)} onChange={v => set('sl', v)} />
-          <Select label="In guadagno: stop che segue" value={s.trail} options={OPTIONS.trail} fmt={v => lab('trail', v)} onChange={v => set('trail', v)} />
-          <Select label="Protezione guadagno" value={s.giveback} options={OPTIONS.giveback} fmt={v => lab('giveback', v)} onChange={v => set('giveback', v)} />
-          <Select label="Spazio dal livello più vicino" value={s.room} options={OPTIONS.room} fmt={v => lab('room', v)} onChange={v => set('room', v)} />
-          <Select label="Trade fermi dopo 60 min" value={s.stale} options={OPTIONS.stale} fmt={v => lab('stale', v)} onChange={v => set('stale', v)} />
-          {mode === 'paper' && <Select label="Commissione per lato (Prova)" value={s.fee} options={OPTIONS.fee} fmt={v => `${num(v)}%`} onChange={v => set('fee', v)} />}
-        </div>
-        <div className="lab" style={{ marginTop: 14 }}>Titoli · {s.symbols.length} scelti</div>
-        <div className="chips" style={{ marginTop: 6 }}>
-          {ORB_SYMBOLS.map(x => <button key={x} className={`chip ${symSet.has(x) ? 'active' : ''}`} onClick={() => toggleSym(x)}>{x}</button>)}
-        </div>
-        <div className="chips" style={{ marginTop: 8 }}>
-          <button className="chip" onClick={() => set('symbols', ORB_SYMBOLS)}>tutti</button>
-          <button className="chip" onClick={() => set('symbols', [])}>nessuno</button>
-          <button className="chip" onClick={() => set('symbols', TOP10)}>i 10 principali</button>
-        </div>
-        <p className="note" style={{ marginTop: 10 }}>Unità di volatilità = la più grande tra l'ATR delle candele da 15 minuti e l'escursione media della prima candela dei giorni precedenti. Finché il guadagno non supera mezza unità resta solo lo stop loss.</p>
-      </details>
+      <RulesCard s={s} set={set} showFee={mode === 'paper'} />
+      <PresetsCard current={normalizeSettings(s)} onLoad={st => { setDraft(normalizeSettings(st)); setMsg('Impostazioni caricate: premi Salva per applicarle.') }} />
 
       {dirty && (
         <div className="savebar">

@@ -68,6 +68,13 @@ Dalle 8:00 di New York (14:00 in Svizzera) l'app prepara i titoli: livelli di ie
 
 Inizia con poco capitale e controlla le prime operazioni direttamente su Bitunix.
 
+## 7. Simulazione
+In **Strategia → Simulazione** la strategia gira sulle candele da 1 minuto vere di Bitunix, con **lo stesso motore** di Prova e Reale (`shared/engine.js`).
+1. La prima volta premi **Completa lo scaricamento**: scarica tutto lo storico disponibile a blocchi (circa 30 minuti in tutto, tieni la pagina aperta). Se si interrompe, riparte da dove si era fermato.
+2. Poi l'archivio si aggiorna da solo: il controllo ogni minuto, fuori dall'orario della strategia (dopo le 16:35 di New York, di notte e nel fine settimana), scarica i giorni mancanti.
+3. Scegli capitale iniziale, commissione, regole e periodo (1 settimana, 1 mese, 3 mesi, 6 mesi, tutto o date a scelta) e premi **Avvia la simulazione**. Tocca un trade per vedere il grafico della sua giornata.
+4. **Impostazioni salvate**: salvi le impostazioni con un nome, le ricarichi con un tocco in Prova, Reale o Simulazione, e puoi sceglierne una come nuovo default.
+
 ## Comandi utili (con il codice di controllo come `Authorization: Bearer ADMIN_TOKEN`)
 - `GET /api/admin/perps`: quali titoli hanno un perpetual su Bitunix.
 - `POST /api/admin/tick`: lancia subito un controllo.

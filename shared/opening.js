@@ -24,24 +24,29 @@ export const STRATEGY_DEFAULTS = {
   fee: 0.06,              // commissione per lato in % (solo Prova)
 }
 
+const steps = (from, to, step) => Array.from({ length: Math.round((to - from) / step) + 1 }, (_, i) => +(from + i * step).toFixed(4))
+
 export const OPTIONS = {
-  leverage: [1, 2, 3, 5, 10],
-  marginPct: [5, 10, 20, 33, 100],
-  movePct: [0.5, 1, 1.5, 2],
-  sl: [0.5, 0.75, 1, 1.5, 2],
-  trail: [0.5, 0.75, 1, 1.5],
-  giveback: [0, 0.25, 0.4],
-  room: [0, 0.5, 1],
-  maxPos: [5, 8, 10, 0],
+  leverage: steps(1, 20, 1),
+  marginPct: [5, 10, 15, 20, 25, 33, 50, 100],
+  movePct: [0.5, 0.75, 1, 1.25, 1.5, 2],
+  sl: steps(0.25, 3, 0.25),
+  trail: steps(0.25, 3, 0.25),
+  giveback: [0, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6],
+  room: [0, 0.25, 0.5, 0.75, 1, 1.5],
+  maxPos: [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 0],
   stale: ['run', 'half', 'close'],
-  fee: [0.06, 0.042, 0.02, 0.014, 0],
+  fee: [0.06, 0.05, 0.042, 0.03, 0.02, 0.014, 0],
 }
 
+const n2 = v => String(v).replace('.', ',')
+const slWord = v => (v <= 0.5 ? 'molto stretto' : v < 1 ? 'stretto' : v < 1.5 ? 'medio-stretto' : v < 2 ? 'medio' : v < 2.75 ? 'largo' : 'molto largo')
+const trailWord = v => (v < 0.5 ? 'molto stretto' : v < 0.75 ? 'stretto' : v < 1 ? 'medio-stretto' : v < 1.5 ? 'medio' : v <= 2 ? 'largo' : 'molto largo')
 export const LABELS = {
-  sl: { 0.5: 'molto stretto (0,5)', 0.75: 'stretto (0,75)', 1: 'medio-stretto (1)', 1.5: 'medio (1,5)', 2: 'largo (2)' },
-  trail: { 0.5: 'stretto (0,5)', 0.75: 'medio-stretto (0,75)', 1: 'medio (1)', 1.5: 'largo (1,5)' },
-  giveback: { 0: 'spenta', 0.25: 'esci se restituisci il 25%', 0.4: 'esci se restituisci il 40%' },
-  room: { 0: 'nessun controllo', 0.5: 'almeno metà del movimento', 1: 'almeno tutto il movimento' },
+  sl: Object.fromEntries(OPTIONS.sl.map(v => [v, `${slWord(v)} (${n2(v)})`])),
+  trail: Object.fromEntries(OPTIONS.trail.map(v => [v, `${trailWord(v)} (${n2(v)})`])),
+  giveback: Object.fromEntries(OPTIONS.giveback.map(v => [v, v ? `esci se restituisci il ${Math.round(v * 100)}%` : 'spenta'])),
+  room: { 0: 'nessun controllo', 0.25: 'almeno un quarto del movimento', 0.5: 'almeno metà del movimento', 0.75: 'almeno 3/4 del movimento', 1: 'almeno tutto il movimento', 1.5: 'almeno 1,5 volte il movimento' },
   maxPos: { 0: 'nessun limite' },
   stale: { run: 'lascia correre', half: 'dimezza lo stop', close: 'chiudi se in perdita' },
 }

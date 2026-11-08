@@ -132,3 +132,17 @@ ul.list { margin: 6px 0; padding-left: 18px; font-size: 14px; line-height: 1.6; 
 details > summary { list-style: none; }
 details > summary::-webkit-details-marker { display: none; }
 @media (min-width: 720px) { .stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+/* Simulazione e impostazioni salvate */
+.preset { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--border-soft); padding: 8px 0; }
+.preset:first-child { border-top: 0; }
+.preset-main { flex: 1; min-width: 0; text-align: left; background: transparent; border: 0; color: var(--text); padding: 0; font-size: 14px; }
+.preset-main .note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preset-actions { display: flex; gap: 5px; flex-shrink: 0; }
+.mini-select { background: var(--surface-deep); border: 1px solid var(--border); border-radius: 3px; color: var(--text-sec); font-family: var(--font-num); font-size: 11px; padding: 4px 6px; text-transform: none; letter-spacing: 0; }
+.tbl.clickable tbody tr { cursor: pointer; }
+.tbl.clickable tbody tr:hover td { background: var(--surface-alt); }
+.field input[type="date"] { font-family: var(--font-num); color-scheme: dark; }
+.sheet-bg { position: fixed; inset: 0; z-index: 50; background: rgba(3, 5, 9, .72); display: flex; align-items: flex-end; justify-content: center; }
+.sheet { width: 100%; max-width: 760px; max-height: 92vh; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-hi); border-bottom: 0; border-radius: 10px 10px 0 0; padding: 14px 16px calc(16px + env(safe-area-inset-bottom)); }
+@media (min-width: 720px) { .sheet-bg { align-items: center; } .sheet { border-radius: 10px; border-bottom: 1px solid var(--border-hi); } }

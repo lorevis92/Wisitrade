@@ -1,7 +1,10 @@
 // Wisi Trade — tutte le API in una sola funzione Vercel (vercel.json riscrive /api/* qui).
 import crypto from 'node:crypto'
 import { ASSETS, ASSET_MAP, TYPE_LABEL } from '../shared/assets.js'
-import { normalizeSettings, sizing, isTradingDay } from '../shared/opening.js'
+import { normalizeSettings, sizing, isTradingDay, ORB_SYMBOLS, STRATEGY_DEFAULTS } from '../shared/opening.js'
+import { runSimulation } from '../shared/engine.js'
+import { addDays } from '../shared/time.js'
+import { archiveStatus, fillArchive, loadDays, dayBars } from '../server/archive.js'
 import { db, q, getMeta } from '../server/db.js'
 import { klinesBack, account, hasKeys, tickers } from '../server/bitunix.js'
 import { nyInfo } from '../server/session.js'
@@ -234,6 +237,69 @@ async function route(req, url) {
     const mode = body.mode === 'live' ? 'live' : 'paper'
     const r = await closeManual(mode, body.id ? Number(body.id) : null)
     return { ...r, view: await strategyView(mode) }
+  }
+
+  // ---- Simulazione (solo con il codice di controllo) ----
+  if (path === '/sim/status' && m === 'GET') { requireAdmin(req); return archiveStatus() }
+
+  if (path === '/sim/fill' && m === 'POST') {
+    requireAdmin(req)
+    const r = await fillArchive({ budgetMs: 150000, source: 'manual' })
+    return { ...r, status: r.busy ? null : await archiveStatus() }
+  }
+
+  if (path === '/sim/run' && m === 'POST') {
+    requireAdmin(req)
+    const isDate = d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
+    if (!isDate(body.from) || !isDate(body.to) || body.from > body.to) throw new HttpError(400, 'Periodo non valido')
+    const capital = Number(body.capital)
+    if (!(capital > 0 && capital < 1e9)) throw new HttpError(400, 'Capitale iniziale non valido')
+    const s = normalizeSettings(body.settings || {})
+    if (!s.symbols.length) throw new HttpError(400, 'Scegli almeno un titolo')
+    const t0 = Date.now()
+    // 20 giorni prima dell'inizio servono per la preparazione (livelli, volatilità, volume normale)
+    const days = await loadDays(s.symbols, addDays(body.from, -20), body.to)
+    const loadMs = Date.now() - t0
+    const r = runSimulation(days, s, { from: body.from, to: body.to, capital })
+    const MAX_TRADES = 4000
+    return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: s, ms: { load: loadMs, run: Date.now() - t0 - loadMs } }
+  }
+
+  if (path === '/sim/day' && m === 'GET') {
+    requireAdmin(req)
+    const sym = url.searchParams.get('symbol'), day = url.searchParams.get('day') || ''
+    if (!ORB_SYMBOLS.includes(sym) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new HttpError(400, 'Parametri non validi')
+    return { symbol: sym, day, bars: await dayBars(sym, day) }
+  }
+
+  // ---- Impostazioni salvate (le stesse per Prova, Reale e Simulazione) ----
+  if (path === '/presets' && m === 'GET') {
+    requireAdmin(req)
+    const rows = await q(db().from('wt_presets').select('*').order('created_at', { ascending: false }))
+    const def = rows.find(r => r.is_default)
+    return { presets: rows, defaults: def ? normalizeSettings(def.settings) : normalizeSettings(STRATEGY_DEFAULTS), defaultId: def?.id ?? null }
+  }
+
+  if (path === '/presets' && m === 'POST') {
+    requireAdmin(req)
+    const name = String(body.name || '').trim().slice(0, 60)
+    if (!name) throw new HttpError(400, 'Dai un nome alle impostazioni')
+    await q(db().from('wt_presets').insert({ name, settings: normalizeSettings(body.settings || {}), created_at: Date.now() }))
+    return { ok: true }
+  }
+
+  if (path === '/presets/delete' && m === 'POST') {
+    requireAdmin(req)
+    await q(db().from('wt_presets').delete().eq('id', Number(body.id)))
+    return { ok: true }
+  }
+
+  if (path === '/presets/default' && m === 'POST') {
+    requireAdmin(req)
+    // id = null → si torna alle impostazioni di default originali
+    await q(db().from('wt_presets').update({ is_default: false }).eq('is_default', true))
+    if (body.id) await q(db().from('wt_presets').update({ is_default: true }).eq('id', Number(body.id)))
+    return { ok: true }
   }
 
   // ---- Comandi admin per test ----

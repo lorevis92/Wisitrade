@@ -125,3 +125,29 @@ alter table wt_meta enable row level security;
 alter table wt_accounts enable row level security;
 alter table wt_prep enable row level security;
 alter table wt_positions enable row level security;
+
+-- ---------- Simulazione ----------
+-- Archivio candele da 1 minuto Bitunix dei titoli della strategia: una riga per titolo e per giorno,
+-- dalle 9:00 alle 16:30 di New York (450 minuti). data = base64(deflate(Float32 o[450] h[450] l[450] c[450] v[450])).
+create table if not exists wt_bars (
+  symbol text not null,
+  day text not null,
+  t0 bigint not null,          -- timestamp (ms) delle 9:00 di New York di quel giorno
+  n int not null,              -- candele presenti (0 = Bitunix non ha dati per quel giorno)
+  data text not null,
+  created_at bigint not null,
+  primary key (symbol, day)
+);
+create index if not exists wt_bars_day on wt_bars (day);
+
+-- Impostazioni della strategia salvate con un nome (le stesse per Prova, Reale e Simulazione)
+create table if not exists wt_presets (
+  id bigserial primary key,
+  name text not null,
+  settings jsonb not null,
+  is_default boolean not null default false,
+  created_at bigint not null
+);
+
+alter table wt_bars enable row level security;
+alter table wt_presets enable row level security;
