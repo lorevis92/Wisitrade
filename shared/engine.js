@@ -7,7 +7,8 @@ import { makeInfo, dayContext, tradeContext, tradeStates } from './analysis.js'
 
 export const MIN = 60000
 export const OPEN_MIN = 570                // 9:30 New York
-export const ENTRY_UNTIL = OPEN_MIN + 30   // entrate solo nei primi 30 minuti
+export const ENTRY_UNTIL = OPEN_MIN + 30   // entrate al massimo nei primi 30 minuti (s.entryWin può accorciare la finestra)
+export const entryUntil = s => OPEN_MIN + Math.min(30, s.entryWin || 30)
 const LOOKBACK = 10, MIN_HISTORY = 5
 export const PREP_BARS = 1300              // candele da 15 min usate per la preparazione (~13 giorni)
 
@@ -167,14 +168,17 @@ export function stepBar(p, s, b, dayBars, prep) {
 // funding stimato (s.funding) a ogni orario del funding di Bitunix con la posizione aperta, pagato sempre (stima prudente).
 // Come dal vivo: il segnale nella candela del minuto m viene preso al controllo successivo (dopo le uscite di quel minuto),
 // la candela d'entrata viene già controllata per l'uscita, e alle 15:59 si chiude tutto all'apertura di quel minuto.
-export function runSimulation(days, s, { from, to, capital, limits = {}, mindex = {} }) {
+// cache (facoltativa): oggetto riusato tra simulazioni sugli stessi `days` (ottimizzazione): preparazione e candele
+// si calcolano una volta sola; i risultati sono identici. analysis = false salta i valori dell'Analisi (più veloce).
+export function runSimulation(days, s, { from, to, capital, limits = {}, mindex = {}, cache = null, analysis = true }) {
   const slip = (s.slip || 0) / 100
   const mmrFrom = {}
-  const allDates = Object.keys(days).sort()
+  const C = cache || {}
+  const allDates = C.allDates ||= Object.keys(days).sort()
   const symOrder = Object.fromEntries(s.symbols.map((x, i) => [x, i]))
   // candele da 15 minuti per simbolo (per la preparazione di ogni giorno)
-  const b15 = {}
-  for (const d of allDates) for (const [sym, bars] of Object.entries(days[d])) {
+  const b15 = C.b15 ||= {}
+  if (!C.b15done) for (const d of allDates) for (const [sym, bars] of Object.entries(days[d])) {
     const arr = (b15[sym] ||= [])
     let cur = null
     for (const b of bars) {
@@ -182,13 +186,17 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
       if (!cur || cur.t !== t) { cur = { t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }; arr.push(cur) } else { cur.h = Math.max(cur.h, b.h); cur.l = Math.min(cur.l, b.l); cur.c = b.c; cur.v += b.v }
     }
   }
+  C.b15done = true
+  const prepC = C.prep ||= {}, todayC = C.today ||= {}, byMinC = C.byMin ||= {}, ctxC = C.ctx ||= {}
   const prepFor = (sym, day, openTs) => {
+    const key = sym + '|' + day
+    if (prepC[key]) return prepC[key]
     const arr = b15[sym] || []
     const start = openTs - 5 * MIN - PREP_BARS * 15 * MIN // come dal vivo: le ultime 1300 candele prima della preparazione
-    return prepFromBars(arr.filter(b => b.t >= start && b.t < openTs), day)
+    return (prepC[key] = prepFromBars(arr.filter(b => b.t >= start && b.t < openTs), day))
   }
 
-  const info = makeInfo(days) // per l'Analisi: solo dati fino al minuto considerato
+  const info = C.info ||= makeInfo(days) // per l'Analisi: solo dati fino al minuto considerato
   let balance = capital, peak = capital, maxDD = 0, maxDDPct = 0
   const trades = [], dayRows = [], reasons = {}, skips = {}
   let fundingTot = 0, slipTot = 0, liqs = 0
@@ -202,12 +210,15 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     for (const sym of s.symbols) {
       const raw = days[day][sym]
       if (!raw?.length) continue
-      today[sym] = raw.map(b => ({ ...b, min: ny(b.t).min })).filter(b => b.min >= OPEN_MIN)
+      const key = sym + '|' + day
+      today[sym] = todayC[key] ||= raw.map(b => ({ ...b, min: ny(b.t).min })).filter(b => b.min >= OPEN_MIN)
     }
     const syms = Object.keys(today)
     if (!syms.length) continue
     const mi = mindex[day] || null
-    const ctx = { ...(dayContext(days, allDates, day, s.symbols, info) || {}), mindex: mi?.idx ?? null, mindexPcts: mi?.pcts ?? null }
+    const ctxKey = day + '|' + s.symbols.join(',')
+    const dctx = !analysis ? null : ctxKey in ctxC ? ctxC[ctxKey] : (ctxC[ctxKey] = dayContext(days, allDates, day, s.symbols, info))
+    const ctx = { ...(dctx || {}), mindex: mi?.idx ?? null, mindexPcts: mi?.pcts ?? null }
     const rule = indexRule(s, mi?.idx ?? null)
     if (!rule.ok) skips['giorni con indice sotto il minimo'] = (skips['giorni con indice sotto il minimo'] || 0) + 1
     if (rule.reduced) skips['giorni con meno posizioni (indice basso)'] = (skips['giorni con meno posizioni (indice basso)'] || 0) + 1
@@ -216,7 +227,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     for (const sym of rule.ok ? syms : []) {
       const openTs = today[sym][0].t - (today[sym][0].min - OPEN_MIN) * MIN
       const prep = prepFor(sym, day, openTs)
-      const sig = findEntry(today[sym].filter(b => b.min < ENTRY_UNTIL), s, prep, rule.from)
+      const sig = findEntry(today[sym].filter(b => b.min < entryUntil(s)), s, prep, rule.from)
       if (!sig) continue
       if (sig.skip) { const why = sig.skip.replace(/^solo \d+ giorni.*/, 'storico insufficiente'); skips[why] = (skips[why] || 0) + 1; continue }
       sigs.push({ sym, sig, prep })
@@ -224,7 +235,11 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     sigs.sort((a, b) => a.sig.k.t - b.sig.k.t || symOrder[a.sym] - symOrder[b.sym])
 
     const byMin = {}
-    for (const sym of syms) { const m = (byMin[sym] = new Map()); for (const b of today[sym]) m.set(b.min, b) }
+    for (const sym of syms) {
+      const key = sym + '|' + day
+      if (!byMinC[key]) { const m = (byMinC[key] = new Map()); for (const b of today[sym]) m.set(b.min, b) }
+      byMin[sym] = byMinC[key]
+    }
     let open = [], taken = 0
     const dayTrades = []
     const close = (pos, raw, reason, at, liq = false) => {
@@ -248,7 +263,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
         level: pos.level, opened_at: pos.opened_at, closed_at: at, reason, pnl, fees, qty: pos.qty, margin: pos.margin,
         leverage: pos.leverage, pct: pnl / (pos.entry * pos.qty) * 100, balance, liq: pos.liq_price, funding, slip: slipCost,
         signal: pos.signal, half: pos.half_done ? { px: pos.half_px, qty: pos.half_qty } : null, unit: pos.unit,
-        states: tradeStates(pos, byMin[pos.symbol], at), ctx: pos.ctx,
+        states: analysis ? tradeStates(pos, byMin[pos.symbol], at) : null, ctx: pos.ctx,
       }
       trades.push(tr); dayTrades.push(tr)
       open = open.filter(x => x !== pos)
@@ -276,7 +291,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
         const pos = newPosition({ mode: 'sim', day, symbol: sym, sig: { ...sig, entry: fill }, s, prep, size, risk })
         if (s.liqGuard && liqBlocks(pos)) { skips['stop oltre la liquidazione'] = (skips['stop oltre la liquidazione'] || 0) + 1; continue }
         pos.prep = prep; pos.stop0 = pos.init_stop; pos.signal = sig.entry; pos.kmin = sig.k.min
-        pos.ctx = tradeContext(days, allDates, day, sym, sig, s.symbols, info)
+        pos.ctx = analysis ? tradeContext(days, allDates, day, sym, sig, s.symbols, info) : null
         pos.slipIn = Math.abs(fill - sig.entry) * pos.qty
         taken++; open.push(pos)
         const r = stepBar(pos, s, sig.k, today[sym], prep)

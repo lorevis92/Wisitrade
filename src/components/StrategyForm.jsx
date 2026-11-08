@@ -35,6 +35,7 @@ export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (P
         <Select label="In guadagno: stop che segue" value={s.trail} options={OPTIONS.trail} fmt={v => lab('trail', v) || num(v)} onChange={v => set('trail', v)} />
         <Select label="Protezione guadagno" value={s.giveback} options={OPTIONS.giveback} fmt={v => lab('giveback', v) || num(v)} onChange={v => set('giveback', v)} />
         <Select label="Spazio dal livello più vicino" value={s.room} options={OPTIONS.room} fmt={v => lab('room', v) || num(v)} onChange={v => set('room', v)} />
+        <Select label="Finestra d'entrata" value={s.entryWin} options={OPTIONS.entryWin} fmt={v => `primi ${v} minuti`} onChange={v => set('entryWin', v)} />
         <Select label="Trade fermi dopo 60 min" value={s.stale} options={OPTIONS.stale} fmt={v => lab('stale', v)} onChange={v => set('stale', v)} />
         {showFee && <Select label={feeLabel} value={s.fee} options={OPTIONS.fee} fmt={v => `${num(v)}%`} onChange={v => set('fee', v)} />}
       </div>

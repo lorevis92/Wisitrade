@@ -33,6 +33,7 @@ export const STRATEGY_DEFAULTS = {
   npUnits: 0.25,          // ...se il guadagno massimo non ha raggiunto queste unità di volatilità, chiudi
   halfAt: 0,              // "Metà subito": a +queste unità chiudi metà posizione e sposta lo stop al prezzo d'entrata (0 = spenta)
   // Indice di attività del mercato (alle 9:35 di New York): off | min = opera solo se l'indice è almeno idxMin | reduce = sotto idxMin usa solo idxPos posizioni
+  entryWin: 30,           // finestra d'entrata: minuti dopo l'apertura in cui si può entrare (5, 10, 15 o 30)
   idxMode: 'off',
   idxMin: 50,
   idxPos: 2,
@@ -58,6 +59,7 @@ export const OPTIONS = {
   npMin: [0, 5, 10, 15, 20, 30, 45, 60, 90],
   npUnits: [0.1, 0.25, 0.5, 0.75, 1],
   halfAt: [0, 0.5, 0.75, 1, 1.25, 1.5, 2, 3],
+  entryWin: [5, 10, 15, 30],
   idxMode: ['off', 'min', 'reduce'],
   idxMin: [20, 30, 40, 50, 60, 70, 80],
   idxPos: [1, 2, 3, 4, 5, 6],
@@ -82,7 +84,8 @@ export function normalizeSettings(s = {}) {
   const out = { ...STRATEGY_DEFAULTS }
   for (const k of Object.keys(STRATEGY_DEFAULTS)) if (s[k] !== undefined && s[k] !== null) out[k] = s[k]
   out.symbols = Array.isArray(out.symbols) ? out.symbols.filter(x => ORB_SYMBOLS.includes(x)) : ORB_SYMBOLS
-  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt', 'idxMin', 'idxPos']) out[k] = Number(out[k])
+  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt', 'idxMin', 'idxPos', 'entryWin']) out[k] = Number(out[k])
+  out.entryWin = Math.min(Math.max(Math.round(out.entryWin) || 30, 1), 30)
   if (!['off', 'min', 'reduce'].includes(out.idxMode)) out.idxMode = 'off'
   out.idxMin = Math.min(Math.max(out.idxMin || 0, 0), 100)
   out.idxPos = Math.min(Math.max(Math.round(out.idxPos) || 1, 1), 50)

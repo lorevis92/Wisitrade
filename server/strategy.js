@@ -4,7 +4,7 @@
 // Gira ogni minuto dentro /api/cron/tick con le candele da 1 minuto già scaricate.
 import { ASSET_MAP } from '../shared/assets.js'
 import { normalizeSettings, sizing, exitLevel, exitReason, pnlOf, closeMinute, isTradingDay, liqPriceOf, stopPastLiq } from '../shared/opening.js'
-import { prepFromBars, findEntry, newPosition, stepBar, riskFor, liqBlocks, indexRule, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
+import { prepFromBars, findEntry, newPosition, stepBar, riskFor, liqBlocks, indexRule, entryUntil, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
 import { klinesBack, account, setIsolated, setLeverage, openMarket, openPositions, closePosition, closePartial, positionHistory, hasKeys, roundQty, tickers } from './bitunix.js'
 import { getLimits } from './limits.js'
 import { todayIndex, INDEX_READY_MIN } from './mindex.js'
@@ -253,7 +253,7 @@ async function entries(ctx, active, dayPos) {
       if (rule.maxPos > 0 && taken.length >= rule.maxPos) break
       const prep = preps[sym]
       if (!prep) continue
-      const bars = (series[sym]?.['1m'] || []).map(b => ({ ...b, ...ny(b.t) })).filter(b => b.date === today && b.min >= OPEN_MIN && b.min < ENTRY_UNTIL)
+      const bars = (series[sym]?.['1m'] || []).map(b => ({ ...b, ...ny(b.t) })).filter(b => b.date === today && b.min >= OPEN_MIN && b.min < entryUntil(s))
       const sig = findEntry(bars, s, prep, rule.from)
       if (!sig) continue
       if (sig.skip) { skip(mode, sym, sig.skip); continue }
