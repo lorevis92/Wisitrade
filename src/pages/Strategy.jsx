@@ -6,6 +6,7 @@ import { OPTIONS, exitLevel, normalizeSettings, sizing } from '@shared/opening.j
 import { Select, RulesCard, PresetsCard, MarginField, PositionsField, ExposureInfo, useMins, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
 import Simulation from './Simulation.jsx'
 import CalendarOverview from '../components/CalendarOverview.jsx'
+import PositionChart from '../components/PositionChart.jsx'
 
 // Capitale dedicato: valore attuale, partenza, risultato, limiti di perdita e storico delle modifiche
 function DedicatedCapital({ c, s, set, mode }) {
@@ -46,7 +47,7 @@ function DedicatedCapital({ c, s, set, mode }) {
 }
 
 // Slittamento nel Reale: prezzo del segnale contro prezzo eseguito su Bitunix (negativo = peggio per te), e confronto con la Prova
-function Slippage({ sl }) {
+function Slippage({ sl, onTrade }) {
   const pc = v => (v === null || v === undefined ? '—' : `${fmtSigned(v, 3)}%`)
   return (
     <>
@@ -59,10 +60,10 @@ function Slippage({ sl }) {
       </div>
       {sl.list.length > 0 && (
         <div className="table-wrap">
-          <table className="tbl">
+          <table className="tbl clickable">
             <thead><tr><th>Titolo</th><th>Giorno</th><th>Segnale</th><th>Ritardo</th><th>Entrata: segnale → eseguito</th><th>Slitt.</th><th>Uscita: segnale → eseguito</th><th>Slitt.</th><th>Commissioni</th><th>Reale</th><th>Prova</th></tr></thead>
             <tbody>{sl.list.map(r => (
-              <tr key={r.id}>
+              <tr key={r.id} onClick={() => onTrade?.(r.id)}>
                 <td><b>{r.symbol}</b> <span className={`pill ${r.side > 0 ? 'long' : 'short'}`}>{r.side > 0 ? 'L' : 'S'}</span></td>
                 <td>{dayFmt(r.day, { day: '2-digit', month: '2-digit' })}</td>
                 <td className="mono">{r.signalAt ? new Date(r.signalAt).toLocaleTimeString('it-CH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}{r.src ? <span className="note"> {r.src}</span> : null}</td>
@@ -142,6 +143,7 @@ export default function Strategy() {
   const [armReset, setArmReset] = useState(false)
   const [armStart, setArmStart] = useState(false)
   const [selDay, setSelDay] = useState(null)
+  const [chartId, setChartId] = useState(null) // posizione di cui si mostra il grafico della giornata
   const mins = useMins() // giorno scelto nella panoramica: filtra le operazioni chiuse
   const [draftFrom, setDraftFrom] = useState(null) // { name, presetId, settings }: impostazione salvata caricata nella bozza
 
@@ -360,7 +362,7 @@ export default function Strategy() {
         {view.open.map(p => {
           const lvl = exitLevel(p, normalizeSettings(view.settings))
           return (
-            <div key={p.id} className="pos">
+            <div key={p.id} className="pos" style={{ cursor: 'pointer' }} onClick={() => setChartId(p.id)} title="Tocca per il grafico della giornata">
               <div className="row">
                 <div><b>{p.symbol}</b> <span className={`pill ${p.side > 0 ? 'long' : 'short'}`}>{p.side > 0 ? 'Long' : 'Short'}</span> <span className="note">{hm(p.opened_at)}</span></div>
                 <span className={`mono ${p.upnl >= 0 ? 'up' : 'down'}`}>{fmtSigned(p.upnl)} USDT</span>
@@ -373,7 +375,7 @@ export default function Strategy() {
               </div>
               {p.level && <div className="note">livello più vicino: {p.level.t} {fmtPrice(p.level.p)}{p.note ? ` · ${p.note}` : ''}</div>}
               {p.liq_price > 0 && <div className="note">liquidazione a <span className="mono">{fmtPrice(p.liq_price)}</span> (margine isolato)</div>}
-              <button className="btn ghost small" disabled={busy} onClick={() => act(() => post('/api/strategy/close', { mode, id: p.id }), `${p.symbol} chiuso.`)}>Chiudi ora</button>
+              <button className="btn ghost small" disabled={busy} onClick={e => { e.stopPropagation(); act(() => post('/api/strategy/close', { mode, id: p.id }), `${p.symbol} chiuso.`) }}>Chiudi ora</button>
             </div>
           )
         })}
@@ -408,7 +410,7 @@ export default function Strategy() {
         </>
       ) : <div className="card note">Ancora nessuna operazione chiusa. Il riepilogo compare dopo il primo giorno.</div>}
 
-      {mode === 'live' && view.slippage && <Slippage sl={view.slippage} />}
+      {mode === 'live' && view.slippage && <Slippage sl={view.slippage} onTrade={setChartId} />}
 
       {/* Operazioni */}
       <div className="lab section-title row" id="closed-trades">
@@ -417,12 +419,12 @@ export default function Strategy() {
       </div>
       {shownTrades.length ? (
         <div className="table-wrap">
-          <table className="tbl">
+          <table className="tbl clickable">
             <thead><tr><th>Titolo</th><th>Tipo</th><th>Giorno</th><th>Entrata</th><th>Uscita</th><th>Motivo</th><th>Risultato</th><th>%</th></tr></thead>
             <tbody>{shownTrades.map(p => {
               const pct = p.pnl / (p.entry * p.qty) * 100
               return (
-                <tr key={p.id}>
+                <tr key={p.id} onClick={() => setChartId(p.id)}>
                   <td><b>{p.symbol}</b></td>
                   <td><span className={`pill ${p.side > 0 ? 'long' : 'short'}`}>{p.side > 0 ? 'Long' : 'Short'}</span></td>
                   <td>{dayFmt(p.day, { day: '2-digit', month: '2-digit' })}</td>
@@ -437,6 +439,8 @@ export default function Strategy() {
           </table>
         </div>
       ) : <div className="card note">Nessuna operazione chiusa.</div>}
+      {shownTrades.length > 0 && <div className="note">Tocca un'operazione (o una posizione aperta) per il grafico della sua giornata.</div>}
+      {chartId && <PositionChart id={chartId} mode={mode} onClose={() => setChartId(null)} />}
 
       {skips.length > 0 && (
         <details className="card" style={{ marginTop: 12 }}>

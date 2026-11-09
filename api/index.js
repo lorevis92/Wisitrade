@@ -4,7 +4,7 @@ import { ASSETS, ASSET_MAP, TYPE_LABEL } from '../shared/assets.js'
 import { normalizeSettings, settingsFor, sizing, isTradingDay, STRATEGY_SYMBOLS, STRATEGY_DEFAULTS } from '../shared/opening.js'
 import { getCapital, syncCapitalSetting, restartCapital } from '../server/capital.js'
 import { runSimulation } from '../shared/engine.js'
-import { addDays, weekdayOf } from '../shared/time.js'
+import { addDays, weekdayOf, nyTs } from '../shared/time.js'
 import { archiveStatus, fillArchive, loadDays, dayBars, EXTRA_SYMBOLS } from '../server/archive.js'
 import { db, q, getMeta, setMeta } from '../server/db.js'
 import { klinesBack, account, hasKeys, tickers } from '../server/bitunix.js'
@@ -414,6 +414,29 @@ async function route(req, url) {
     const dates = []
     for (let d = nyInfo().date; dates.length < n && d > '2026-11-01'; d = addDays(d, -1)) if (isTradingDay(d, weekdayOf(d))) dates.push(d)
     return { days: dates, symbols: await spreadSummary(dates) }
+  }
+
+  // Grafico della giornata di una posizione di Prova o Reale: la posizione, le impostazioni della modalità e le candele da 1 minuto
+  // (dall'archivio; per la giornata in corso o non ancora archiviata da Bitunix, dalle 9:00 alle 16:30 di New York). Solo lettura.
+  if (path === '/strategy/day' && m === 'GET') {
+    requireAdmin(req)
+    const id = Number(url.searchParams.get('id'))
+    if (!(id > 0)) throw new HttpError(400, 'Posizione non valida')
+    const p = await q(db().from('wt_positions').select('*').eq('id', id).maybeSingle())
+    if (!p) throw new HttpError(404, 'Posizione non trovata')
+    const acc = await q(db().from('wt_accounts').select('settings').eq('mode', p.mode).maybeSingle())
+    const perp = ASSET_MAP[p.symbol]?.perp
+    let bars = p.status === 'closed' ? await dayBars(p.symbol, p.day).catch(() => []) : []
+    let source = 'archivio'
+    if (!bars.length && perp) {
+      const start = nyTs(p.day, 540), end = Math.min(Date.now(), nyTs(p.day, 990))
+      const n = Math.max(1, Math.ceil((end - start) / 60000) + 1)
+      bars = (await klinesBack(perp, '1m', Math.min(n, 460), { endTime: end }).catch(() => [])).filter(b => b.t >= start && b.t < nyTs(p.day, 990))
+      source = 'Bitunix'
+    }
+    let price = null
+    if (p.status === 'open' && perp) price = (await tickers([perp]).catch(() => ({})))[perp]?.last ?? null
+    return { position: p, settings: settingsFor(p.mode, acc?.settings), bars, source, price, at: Date.now() }
   }
 
   if (path === '/sim/day' && m === 'GET') {
