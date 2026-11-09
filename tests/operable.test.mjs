@@ -87,6 +87,11 @@ try {
     assert.equal(D.tables.wt_positions.length, 0)
     assert.equal(marksOf(D).NVDA.kind, 'stop')
     assert.equal(ctx.notes.filter(n => /non operabile via API/.test(n.title)).length, 1)
+    // costo vero dell'apertura e chiusura immediata (dallo storico di Bitunix) contato nel capitale dedicato
+    const cost = D.tables.wt_meta.find(m => m.key === `closecost:${DAY}`).value[0]
+    assert.equal(cost.symbol, 'NVDA'); assert.ok(cost.pnl < 0 && cost.fee > 0, JSON.stringify(cost))
+    const cap = D.tables.wt_meta.find(m => m.key === 'capital:live').value
+    assert.ok(Math.abs(cap.current - (300 + cost.pnl)) < 1e-9, `capitale ${cap.current}`)
     assert.ok(!(await activeSyms('live')).includes('NVDA')); assert.ok(!(await activeSyms('paper')).includes('NVDA'))
   })
 

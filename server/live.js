@@ -20,7 +20,8 @@ const isOurOrder = o => (o.clientId || '').startsWith(CLIENT_PREFIX)
 export class LiveSkip extends Error {
   // notify = va mandata una notifica (es. margine isolato non verificabile); altrimenti è solo un titolo scartato
   // noSl = posizione chiusa perché Bitunix non ha accettato lo stop loss (il titolo va segnato come non operabile)
-  constructor(msg, { notify = false, noSl = false } = {}) { super(msg); this.skip = true; this.notify = notify; this.noSl = noSl }
+  // closed = { positionId, qty, entry, side } se la posizione era stata aperta e poi chiusa subito (il costo va contato)
+  constructor(msg, { notify = false, noSl = false, closed = null } = {}) { super(msg); this.skip = true; this.notify = notify; this.noSl = noSl; this.closed = closed }
 }
 
 const round = (x, prec) => (prec !== null && prec !== undefined ? Number(x.toFixed(prec)) : Number(x.toPrecision(6)))
@@ -60,11 +61,11 @@ export async function openLive(api, { perp, pair, side, notional, price, leverag
   if (tooSmall) throw new LiveSkip(`ordine troppo piccolo: ${qty} sotto il minimo di Bitunix (${pair.minQty})`)
 
   // 2. sul titolo non ci devono essere posizioni né ordini in attesa che non sono della strategia
-  const before = await api.openPositions(perp)
+  // (due letture in parallelo: si guadagna circa un terzo di secondo prima dell'ordine)
+  const [before, orders] = await Promise.all([api.openPositions(perp), api.pendingOrders(perp)])
   const manual = before.filter(x => !ourIds.has(String(x.positionId)))
   if (manual.length) throw new LiveSkip('hai una posizione aperta su questo titolo: la strategia non lo tocca (né leva né margine)')
   if (before.length) throw new LiveSkip('la strategia ha già una posizione aperta su questo titolo')
-  const orders = await api.pendingOrders(perp)
   if (orders.some(o => !isOurOrder(o))) throw new LiveSkip('hai un ordine in attesa su questo titolo: la strategia non lo tocca')
 
   // 3. margine isolato e leva, verificati su Bitunix
@@ -96,7 +97,7 @@ export async function openLive(api, { perp, pair, side, notional, price, leverag
   // 6. la posizione deve risultare isolata: altrimenti si chiude subito (è tutta della strategia: è nuova)
   if (pos.marginMode && pos.marginMode !== 'ISOLATION') {
     await closeOurs(api, { perp, positionId, side, qty: ourQty, step: pair.step })
-    throw new LiveSkip(`la posizione risultava in margine ${pos.marginMode}: chiusa subito`, { notify: true })
+    throw new LiveSkip(`la posizione risultava in margine ${pos.marginMode}: chiusa subito`, { notify: true, closed: { positionId, qty: ourQty, entry: pos.entry || price, side } })
   }
 
   // 7. stop loss di sicurezza solo su questa posizione: si verifica quello messo nell'ordine, altrimenti chiamata separata
@@ -105,7 +106,7 @@ export async function openLive(api, { perp, pair, side, notional, price, leverag
   const sl = await secureStop(api, { perp, positionId, slPrice, qty: ourQty, tick: 10 ** -(pair.quotePrecision ?? 6) })
   if (!sl.ok) {
     await closeOurs(api, { perp, positionId, side, qty: ourQty, step: pair.step }).catch(() => {})
-    throw new LiveSkip(`stop loss non impostabile su Bitunix (${sl.why}): posizione chiusa subito`, { notify: true, noSl: true })
+    throw new LiveSkip(`stop loss non impostabile su Bitunix (${sl.why}): posizione chiusa subito`, { notify: true, noSl: true, closed: { positionId, qty: ourQty, entry: pos.entry || price, side } })
   }
   const slOrderId = sl.id
   return {

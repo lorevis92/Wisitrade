@@ -23,11 +23,12 @@ export async function syncCapitalSetting(mode, s, now = Date.now()) {
 }
 
 // Risultato di un trade chiuso
-export async function applyTrade(mode, pnl) {
+// count = false per una correzione di un trade già contato (es. dati veri di Bitunix arrivati dopo)
+export async function applyTrade(mode, pnl, { count = true } = {}) {
   const st = await getCapital(mode)
   if (!st) return null
   st.current = Math.max(0, st.current + pnl)
-  st.trades = (st.trades || 0) + 1
+  if (count) st.trades = (st.trades || 0) + 1
   st.updatedAt = Date.now()
   await setMeta(key(mode), st)
   return st

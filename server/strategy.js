@@ -128,11 +128,11 @@ async function liveClosed(p) {
 }
 
 // ---------- Chiusura (comune) ----------
-async function closePos(p, exit, reason, accounts, notes, { liq = false } = {}) {
+async function closePos(p, exit, reason, accounts, notes, { liq = false, level = null } = {}) {
   const acc = accounts[p.mode]
   const s = settingsFor(p.mode, acc.settings)
   let note = null, real = null
-  const sigOut = exit // prezzo del segnale d'uscita (per misurare lo slittamento)
+  const sigOut = level ?? exit // livello d'uscita (stop, livello che segue, chiusura della candela): per lo slittamento
   let exchangeClosed = false
   if (p.mode === 'live') {
     try {
@@ -242,7 +242,7 @@ async function manage(p, ctx) {
   // posizione rimasta aperta da un giorno precedente (es. controllo saltato): chiudi subito
   if (p.day < today) { if (px) await closePos(p, px, 'chiusura', accounts, notes); return }
 
-  let exit = null, reason = null, liq = false
+  let exit = null, reason = null, liq = false, level = null
   const halfBefore = !!p.half_done, stopBefore = p.init_stop, halvedBefore = !!p.halved
   for (const b of todayBars) {
     if (b.t <= (p.last_bar ?? 0) || b.t + MIN > now) continue // solo candele chiuse e non ancora controllate
@@ -253,7 +253,7 @@ async function manage(p, ctx) {
   if (exit === null && px) {
     const lvl = exitLevel(p, s)
     if (p.liq_price && (p.side > 0 ? px <= p.liq_price : px >= p.liq_price)) { exit = p.liq_price; reason = 'liquidazione'; liq = true }
-    else if (p.side > 0 ? px <= lvl : px >= lvl) { exit = px; reason = exitReason(p, lvl) }
+    else if (p.side > 0 ? px <= lvl : px >= lvl) { exit = px; reason = exitReason(p, lvl); level = lvl }
   }
   // fine giornata: chiudi tutto un minuto prima della chiusura della borsa
   if (exit === null && nowMin >= closeMin - 1 && px) { exit = px; reason = 'chiusura' }
@@ -280,7 +280,7 @@ async function manage(p, ctx) {
     notes.push({ title: `½ ${p.symbol}: ${msg}`, body: modeName(p.mode), url: `/strategia?mode=${p.mode}`, tag: `pos-${p.id}-half` })
   }
 
-  if (exit !== null) return closePos(p, exit, reason, accounts, notes, { liq })
+  if (exit !== null) return closePos(p, exit, reason, accounts, notes, { liq, level })
   await updatePos(p.id, {
     best: p.best, last_bar: p.last_bar, init_stop: p.init_stop, halved: p.halved, stale_done: p.stale_done, confirmed: p.confirmed, volx: p.volx,
     half_done: !!p.half_done, half_px: p.half_px ?? null, half_qty: p.half_qty ?? null, np_done: !!p.np_done,
@@ -391,7 +391,8 @@ export async function openSignal(env, ctx, gate, dayPos, { sym, sig, prep, price
   if ((mode === 'live' || s.liqGuard) && liqBlocks(pos)) { env.skip(mode, sym, 'stop oltre la liquidazione'); return null }
   // prenotazione del titolo: se un altro controllo l'ha già preso (o lo sta aprendo) non si fa niente
   if (!(await claimSymbol(mode, today, sym, timing?.src || 'minuto'))) return null
-  const tm = { src: timing?.src || 'minuto', signalAt: timing?.signalAt ?? now, sigPx: timing?.sigPx ?? sig.entry, level: sig.entry }
+  // level = soglia in cui scatta il segnale (minuto: è il prezzo d'entrata del segnale; veloce: apertura ± soglia)
+  const tm = { src: timing?.src || 'minuto', signalAt: timing?.signalAt ?? now, sigPx: timing?.sigPx ?? sig.entry, level: timing?.level ?? sig.entry }
   if (mode === 'live') {
     const pair = await pairOf(sym)
     if (!pair) { env.skip(mode, sym, 'perpetual non disponibile su Bitunix'); return null }
@@ -406,11 +407,13 @@ export async function openSignal(env, ctx, gate, dayPos, { sym, sig, prep, price
       }
       tm.fillAt = r.exchange.fillAt ?? Date.now()
       pos = { ...pos, entry: r.entry, qty: r.qty, leverage: r.leverage, best: r.entry, init_stop: r.entry - side * s.sl * unit, opened_at: now,
-        exchange: { ...r.exchange, slip: { sigIn: tm.sigPx, fillIn: r.entry }, timing: tm } }
+        exchange: { ...r.exchange, slip: { sigIn: tm.level, sigPx: tm.sigPx, fillIn: r.entry }, timing: tm } }
       env.liveIds.add(String(r.exchange.positionId))
       // prezzo di liquidazione vero di Bitunix, altrimenti calcolato sul prezzo eseguito
       pos.liq_price = r.liqPrice || liqPriceOf(pos, risk.mmr, s.liqFee)
     } catch (e) {
+      // posizione aperta e chiusa subito (stop rifiutato, margine non isolato): il costo vero va nel capitale dedicato
+      if (e.closed) await immediateCost(sym, e.closed, today, notes).catch(() => null)
       // Bitunix non accetta questo titolo via API (ordine o stop loss): segnato come non operabile, non si ritenta per qualche giorno
       if (e.noSl || isApiReject(e.message)) {
         const kind = e.noSl ? 'stop' : 'ordini'
@@ -446,6 +449,25 @@ export async function openSignal(env, ctx, gate, dayPos, { sym, sig, prep, price
     body: `${sgn(pos.move_pct)}% dall'apertura · stop ${fmt(pos.init_stop)} · margine ${pos.margin.toFixed(0)} USDT × ${pos.leverage}x · ${modeName(mode)}${tm.src === 'veloce' ? ' · entrata veloce' : ''}`,
     url: `/strategia?mode=${mode}`, tag: `pos-${row.id}`,
   })
+  return row
+}
+
+// Costo di una posizione del Reale aperta e chiusa subito (commissioni + slittamento, dallo storico di Bitunix):
+// si conta nel capitale dedicato e resta nel registro del giorno (wt_meta closecost:<giorno>).
+async function immediateCost(sym, c, today, notes) {
+  const perp = ASSET_MAP[sym].perp
+  let h = null
+  for (let i = 0; i < 3 && !h; i++) { if (i) await new Promise(r => setTimeout(r, 600)); h = await positionHistory(perp, c.positionId).catch(() => null) }
+  const exit = h?.closePrice ?? null
+  const fee = h?.fee !== null && h?.fee !== undefined ? Math.abs(h.fee) : null
+  // come closePos: risultato = (uscita − entrata) × quantità − commissioni vere (realizedPNL di Bitunix solo se manca il resto)
+  const pnl = exit && fee !== null ? c.side * (exit - c.entry) * c.qty - fee : (h?.realizedPNL ?? null)
+  const row = { symbol: sym, positionId: c.positionId, qty: c.qty, entry: c.entry, exit, fee, pnl, at: Date.now() }
+  const k = `closecost:${today}`
+  await setMeta(k, [...((await getMeta(k)) || []), row])
+  const s = settingsFor('live', (await q(db().from('wt_accounts').select('settings').eq('mode', 'live').single())).settings)
+  if (pnl !== null && s.capitalMode === 'dedicated') await applyTrade('live', pnl)
+  if (pnl !== null) notes.push({ title: `${sym}: aperta e chiusa subito ${sgn(pnl)} USDT`, body: 'costo contato nel capitale dedicato · Reale', url: '/strategia?mode=live', tag: `cost-${sym}` })
   return row
 }
 
@@ -548,7 +570,12 @@ export async function strategyNeeds(info) {
 }
 
 // ---------- Punto d'ingresso dal controllo ogni minuto ----------
-export async function runStrategy(series, info) {
+// only = 'exits': solo uscite e freno (il controllo ogni minuto lo fa subito, con le candele delle sole posizioni aperte);
+// skipManage = uscite già fatte in questo minuto: qui solo le entrate.
+export async function strategyOpenSymbols() {
+  return [...new Set((await q(db().from('wt_positions').select('symbol').eq('status', 'open'))).map(p => p.symbol))]
+}
+export async function runStrategy(series, info, { only = null, skipManage = false } = {}) {
   const today = info.date
   const log = { day: today }
   if (!isTradingDay(today, info.isWeekday)) return { ...log, skipped: 'borsa chiusa' }
@@ -561,7 +588,7 @@ export async function runStrategy(series, info) {
   if (!active.length && !openPos.length) return { ...log, skipped: 'nessuna modalità attiva' }
 
   const symbols = [...new Set([...active.flatMap(a => a.s.symbols), ...openPos.map(p => p.symbol)])]
-  if (info.minutes >= 480 && info.minutes < ENTRY_UNTIL) log.prep = await prepare(symbols, today, info.minutes >= OPEN_MIN - 5)
+  if (only !== 'exits' && info.minutes >= 480 && info.minutes < ENTRY_UNTIL) log.prep = await prepare(symbols, today, info.minutes >= OPEN_MIN - 5)
 
   const prepRows = await q(db().from('wt_prep').select('symbol, data').eq('day', today))
   const preps = Object.fromEntries(prepRows.map(r => [r.symbol, r.data]))
@@ -571,7 +598,7 @@ export async function runStrategy(series, info) {
   if (needTk.length) { const t = await tickers(needTk); for (const p of openPos) { const x = t[ASSET_MAP[p.symbol].perp]; if (x?.last) lastPrice[p.symbol] = x.last } }
   const ctx = { series, today, nowMin: info.minutes, closeMin, accounts, preps, notes, lastPrice }
 
-  for (const p of openPos) {
+  if (!skipManage) for (const p of openPos) {
     try { await manage(p, ctx) } catch (e) { (log.errors ||= []).push(`${p.symbol}: ${e.message}`) }
   }
   // freno di mercato "chiudi tutto": perdita del giorno (chiusi + aperti) oltre la soglia → chiude tutte le posizioni della strategia
@@ -580,7 +607,7 @@ export async function runStrategy(series, info) {
   if (info.minutes >= INDEX_READY_MIN && info.minutes <= ENTRY_UNTIL) {
     try { ctx.mindex = await todayIndex(today); log.mindex = ctx.mindex.idx === null ? null : Math.round(ctx.mindex.idx) } catch (e) { (log.errors ||= []).push(`indice: ${e.message}`) }
   }
-  if (info.minutes >= OPEN_MIN && info.minutes <= ENTRY_UNTIL && active.length) {
+  if (only !== 'exits' && info.minutes >= OPEN_MIN && info.minutes <= ENTRY_UNTIL && active.length) {
     const dayPos = await q(db().from('wt_positions').select('*').eq('day', today))
     // modalità seguite in questo momento dal controllo veloce dell'apertura: le entrate le fa lui
     const fl = await getMeta('fast:lock').catch(() => null)
@@ -591,6 +618,30 @@ export async function runStrategy(series, info) {
   log.closed = notes.filter(n => /^(✓|✗)/.test(n.title)).length
   if (notes.length) log.pushes = (await notifyTrades(notes)).sent
   return log
+}
+
+// Reale: posizioni chiuse senza i dati veri di Bitunix (lo storico non era ancora pronto alla chiusura): si riprovano più
+// tardi e si correggono prezzo d'uscita, commissioni e risultato (con la differenza nel capitale dedicato).
+export async function repairLiveClosed(max = 3) {
+  if (!hasKeys()) return null
+  const since = Date.now() - 3 * 86400000
+  const rows = (await q(db().from('wt_positions').select('*').eq('mode', 'live').eq('status', 'closed').gte('closed_at', since)))
+    .filter(p => p.exchange?.positionId && p.exchange?.slip && !p.exchange.slip.fillOut && !p.exchange.slip.repairTried)
+    .slice(0, max)
+  let fixed = 0
+  for (const p of rows) {
+    const h = await positionHistory(ASSET_MAP[p.symbol].perp, p.exchange.positionId).catch(() => null)
+    const slip = { ...p.exchange.slip, repairTried: Date.now() }
+    if (!h?.closePrice) { await updatePos(p.id, { exchange: { ...p.exchange, slip } }); continue }
+    const fees = h.fee !== null ? Math.abs(h.fee) : p.fees
+    const gross = pnlOf({ ...p }, h.closePrice, 0, {}).gross
+    const pnl = gross - fees + (h.funding || 0)
+    await updatePos(p.id, { exit: h.closePrice, fees, pnl, ...(h.funding !== null ? { funding: h.funding } : {}), exchange: { ...p.exchange, slip: { ...slip, fillOut: h.closePrice, fee: h.fee, funding: h.funding } } })
+    const s = settingsFor('live', (await q(db().from('wt_accounts').select('settings').eq('mode', 'live').single())).settings)
+    if (s.capitalMode === 'dedicated' && Number.isFinite(pnl - (p.pnl || 0))) await applyTrade('live', pnl - (p.pnl || 0), { count: false })
+    fixed++
+  }
+  return { checked: rows.length, fixed }
 }
 
 // Chiusura manuale dalla pagina Strategia (una posizione o tutte)

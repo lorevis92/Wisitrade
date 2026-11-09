@@ -146,6 +146,8 @@ await test('Reale completo: entrata veloce con margine isolato, stop loss solo s
     assert.ok(tm.signalAt >= T(570, 10) && tm.signalAt <= T(570, 12), new Date(tm.signalAt).toISOString())
     assert.ok(tm.orderAt >= tm.signalAt && tm.fillAt >= tm.orderAt)
     assert.equal(tm.sigPx, 203); assert.equal(rows[0].exchange.positionId, pos.positionId)
+    // prezzo del segnale per lo slittamento = soglia (200 × 1,0125), prezzo letto a parte
+    assert.equal(rows[0].exchange.slip.sigIn, 202.5); assert.equal(rows[0].exchange.slip.sigPx, 203); assert.equal(tm.level, 202.5)
     assert.ok(D.tables.wt_meta.some(m => m.key === `claim:live:${DAY}:AAPL`))
     const sk = D.tables.wt_meta.find(m => m.key === `orbskip:${DAY}`).value.live
     assert.match(sk.MSFT, /posizione aperta/)

@@ -7,7 +7,7 @@ import { many } from './bitunix.js'
 import { getMeta, setMeta } from './db.js'
 import { nyInfo } from './session.js'
 import { scan, getPairs } from './scanner.js'
-import { runStrategy, strategyNeeds } from './strategy.js'
+import { runStrategy, strategyNeeds, strategyOpenSymbols, repairLiveClosed } from './strategy.js'
 import { fillArchive } from './archive.js'
 import { ensureIndex } from './mindex.js'
 import { getLimits } from './limits.js'
@@ -42,13 +42,31 @@ export async function tick() {
     // Reale: margine isolato e leva impostati prima dell'apertura (9:05–9:28), sui titoli dove non hai posizioni
     if (info.isWeekday && info.minutes >= 545 && info.minutes <= 568) { try { out.preset = await presetLive(info, 15000) } catch (e) { errors.push(`preparazione Reale: ${e.message}`) } }
 
-    // 1. strategia: solo i titoli che servono in questo minuto
+    // 1. strategia: prima le uscite (candele delle sole posizioni aperte), poi le entrate con i titoli che servono in questo minuto
+    const ok = s => ASSET_MAP[s] && perps.has(ASSET_MAP[s].perp)
+    const tm = { start: t0 - Math.floor(t0 / 60000) * 60000 } // ms dall'inizio del minuto (ritardo di cron-job.org e avvio)
+    let openSyms = []
+    try { openSyms = (await strategyOpenSymbols()).filter(ok) } catch (e) { errors.push(`posizioni aperte: ${e.message}`) }
+    if (openSyms.length) {
+      await load(openSyms.map(job1m))
+      tm.exitKl = Date.now() - t0
+      try { out.exits = await runStrategy(series, info, { only: 'exits' }) } catch (e) { out.exits = { error: e.message } }
+      tm.exits = Date.now() - t0
+    }
     let need = []
-    try { need = (await strategyNeeds(info)).filter(s => ASSET_MAP[s] && perps.has(ASSET_MAP[s].perp)) } catch (e) { errors.push(`titoli strategia: ${e.message}`) }
-    await load(need.map(job1m))
+    try { need = (await strategyNeeds(info)).filter(ok) } catch (e) { errors.push(`titoli strategia: ${e.message}`) }
+    await load(need.filter(s => !series[s]?.['1m']).map(job1m))
+    tm.entryKl = Date.now() - t0
     out.strategySymbols = need.length
-    try { out.strategy = await runStrategy(series, info) } catch (e) { out.strategy = { error: e.message } }
-    out.strategyMs = Date.now() - t0
+    try { out.strategy = await runStrategy(series, info, { skipManage: openSyms.length > 0 }) } catch (e) { out.strategy = { error: e.message } }
+    out.strategyMs = tm.strategy = Date.now() - t0
+    // registro dei tempi del controllo ogni minuto all'apertura (9:25–10:30 New York), per capire i ritardi
+    if (info.isWeekday && info.minutes >= 565 && info.minutes <= 630) {
+      const k = `ticklog:${info.date}`
+      await setMeta(k, [...((await getMeta(k)) || []), { min: info.minutes, ...tm, need: need.length, open: openSyms.length }].slice(-80)).catch(() => {})
+    }
+    // Reale: trade chiusi senza i dati veri di Bitunix → si riprovano (fuori dall'apertura)
+    if (info.minutes > 610 && info.minutes % 5 === 0) await repairLiveClosed().catch(e => errors.push(`dati Bitunix: ${e.message}`))
 
     // 2. scanner: titoli dalle 9:25 alla chiusura (New York), crypto sempre; le candele da 1 minuto già scaricate si riusano
     const stocksOn = info.isWeekday && info.minutes >= 565 && info.minutes < 965

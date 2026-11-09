@@ -82,6 +82,18 @@ async function strategyView(mode) {
     getMeta(`active:${mode}`),
     operableView(s.symbols).catch(e => ({ error: e.message })),
   ])
+  // Prova: differenze dalle impostazioni del Reale (capitale escluso), così il confronto Reale–Prova è sugli stessi segnali
+  let vsLive = null
+  if (mode === 'paper') {
+    const liveAcc = await q(db().from('wt_accounts').select('settings').eq('mode', 'live').maybeSingle())
+    if (liveAcc) {
+      const ls = settingsFor('live', liveAcc.settings)
+      const CAP = new Set(['capitalMode', 'capitalFixed', 'capitalPct', 'capitalDedicated', 'slip', 'funding', 'apiOnly'])
+      const diff = Object.keys(ls).filter(k => !CAP.has(k) && JSON.stringify(ls[k]) !== JSON.stringify(s[k]))
+        .map(k => k === 'symbols' ? { key: k, paper: `${s.symbols.length} titoli`, live: `${ls.symbols.length} titoli`, onlyPaper: s.symbols.filter(x => !ls.symbols.includes(x)).length, onlyLive: ls.symbols.filter(x => !s.symbols.includes(x)).length } : { key: k, paper: s[k], live: ls[k] })
+      vsLive = { diff, liveSettings: ls }
+    }
+  }
   let gp = 0, gl = 0, wins = 0
   for (const p of closed) { if (p.pnl > 0) { gp += p.pnl; wins++ } else gl -= p.pnl || 0 }
   // capitale dedicato: attuale, partenza, risultato dalla partenza e storico delle modifiche
@@ -93,27 +105,30 @@ async function strategyView(mode) {
     halted: cap.halted || null, dayStop: cap.dayStop?.day === n.date ? cap.dayStop : null, dayPnl, history: (cap.history || []).slice().reverse(),
   } : null
   const sizeBase = mode === 'live' && s.capitalMode === 'dedicated' ? (platform.available ?? 0) : (platform.balance ?? 0)
-  // slittamento nel Reale: prezzo del segnale e prezzo eseguito su Bitunix, in entrata e in uscita (in % per lato, + = contro di te)
+  // slittamento nel Reale: prezzo del segnale e prezzo eseguito su Bitunix, in entrata e in uscita (in % per lato).
+  // Segnale = soglia d'entrata (apertura ± 1,25 × movimento) e livello d'uscita (stop, livello che segue, chiusura della candela).
+  // Convenzione: negativo = peggio per te. rilevazione = soglia → prezzo letto al segnale (entrata veloce), esecuzione = prezzo letto → eseguito.
   let slippage = null
   if (mode === 'live') {
     const rows = closed.filter(p => p.exchange?.slip?.fillIn && p.exchange.slip.sigIn).slice(0, 300)
     const paper = rows.length ? await q(db().from('wt_positions').select('day, symbol, side, entry, exit, pnl, qty, status').eq('mode', 'paper').in('day', [...new Set(rows.map(r => r.day))])) : []
     const list = rows.map(p => {
       const x = p.exchange.slip
-      const inPct = p.side * (x.fillIn - x.sigIn) / x.sigIn * 100
-      const outPct = x.fillOut && x.sigOut ? -p.side * (x.fillOut - x.sigOut) / x.sigOut * 100 : null
+      const inPct = p.side * (x.sigIn - x.fillIn) / x.sigIn * 100
+      const outPct = x.fillOut && x.sigOut ? p.side * (x.fillOut - x.sigOut) / x.sigOut * 100 : null
+      const detPct = x.sigPx && x.sigPx !== x.sigIn ? p.side * (x.sigIn - x.sigPx) / x.sigIn * 100 : null
       const pp = paper.find(z => z.day === p.day && z.symbol === p.symbol && z.side === p.side)
       const tm = p.exchange.timing || null
       return {
         src: tm?.src || null, signalAt: tm?.signalAt ?? null, orderAt: tm?.orderAt ?? null, fillAt: tm?.fillAt ?? null,
         delay: tm?.fillAt && tm?.signalAt ? (tm.fillAt - tm.signalAt) / 1000 : null, orderDelay: tm?.orderAt && tm?.signalAt ? (tm.orderAt - tm.signalAt) / 1000 : null,
         id: p.id, day: p.day, symbol: p.symbol, side: p.side, sigIn: x.sigIn, fillIn: x.fillIn, sigOut: x.sigOut ?? null, fillOut: x.fillOut ?? null,
-        inPct, outPct, fee: x.fee ?? p.fees, funding: x.funding ?? null, byExchange: !!x.byExchange, pnl: p.pnl, pct: p.pnl / (p.entry * p.qty) * 100,
+        inPct, outPct, detPct, sigPx: x.sigPx ?? null, fee: x.fee ?? p.fees, funding: x.funding ?? null, byExchange: !!x.byExchange, pnl: p.pnl, pct: p.pnl / (p.entry * p.qty) * 100,
         paper: pp ? { entry: pp.entry, exit: pp.exit, pnl: pp.pnl, pct: pp.status === 'closed' && pp.qty ? pp.pnl / (pp.entry * pp.qty) * 100 : null } : null,
       }
     })
     const avg = a => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null)
-    const outs = list.filter(r => r.outPct !== null && !r.byExchange)
+    const outs = list.filter(r => r.outPct !== null)
     const both = list.filter(r => r.paper?.pct !== null && r.paper?.pct !== undefined)
     const dl = list.filter(r => r.delay !== null && r.delay >= 0)
     slippage = { n: list.length, avgIn: avg(list.map(r => r.inPct)), avgOut: avg(outs.map(r => r.outPct)), nOut: outs.length, list,
@@ -123,7 +138,7 @@ async function strategyView(mode) {
   return {
     mode, enabled: acc.enabled, settings: s, platform, capital, slippage,
     // titoli scelti non operabili via API su Bitunix (non si tentano: stessa lista per Prova e Reale)
-    operable: apiList,
+    operable: apiList, vsLive,
     // configurazione attiva: nome (impostazione salvata da cui viene, o "personalizzata") e data dell'ultima modifica
     active: { name: active?.name || (Object.keys(acc.settings || {}).length ? 'personalizzata' : 'default dell\'app'), presetId: active?.presetId ?? null, edited: !!active?.edited, at: active?.at || acc.updated_at || null },
     sizing: sizing(s, sizeBase, s.capitalMode === 'dedicated' ? (cap?.current ?? 0) : undefined),
@@ -154,7 +169,13 @@ async function route(req, url) {
   // in background fino a ~12 minuti (waitUntil, entro il limite di 800 s delle funzioni Vercel Pro)
   if (path === '/cron/fast') {
     requireCron(req, url)
-    const job = fastEntries().then(r => setMeta('last:fast', { at: Date.now(), ...r })).catch(e => setMeta('last:fast', { at: Date.now(), error: e.message }))
+    // ogni chiamata resta nel registro del giorno (fast:runs:<giorno>), non solo l'ultima
+    const save = async r => {
+      await setMeta('last:fast', r)
+      const k = `fast:runs:${r.day || nyInfo().date}`
+      await setMeta(k, [...((await getMeta(k)) || []), r].slice(-10))
+    }
+    const job = fastEntries().then(r => save({ at: Date.now(), ...r })).catch(e => save({ at: Date.now(), error: e.message }))
     waitUntil(job)
     return { started: true, at: Date.now() }
   }

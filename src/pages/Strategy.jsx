@@ -45,16 +45,16 @@ function DedicatedCapital({ c, s, set, mode }) {
   )
 }
 
-// Slittamento nel Reale: prezzo del segnale contro prezzo eseguito su Bitunix (+ = contro di te), e confronto con la Prova
+// Slittamento nel Reale: prezzo del segnale contro prezzo eseguito su Bitunix (negativo = peggio per te), e confronto con la Prova
 function Slippage({ sl }) {
   const pc = v => (v === null || v === undefined ? '—' : `${fmtSigned(v, 3)}%`)
   return (
     <>
       <div className="lab section-title">Slittamento nel Reale · {sl.n} trade</div>
       <div className="stat-grid">
-        <div className="tile"><div className="lab">Medio in entrata</div><div className="mono big">{pc(sl.avgIn)}</div><div className="note">per lato, rispetto al prezzo del segnale</div></div>
+        <div className="tile"><div className="lab">Medio in entrata</div><div className="mono big">{pc(sl.avgIn)}</div><div className="note">per lato, rispetto alla soglia del segnale · negativo = peggio per te</div></div>
         <div className="tile"><div className="lab">Ritardo medio</div><div className="mono big">{sl.avgDelay !== null && sl.avgDelay !== undefined ? `${fmtUsd(sl.avgDelay, 1)} s` : '—'}</div><div className="note">dal segnale all'esecuzione su Bitunix{sl.nFast ? ` · entrata veloce ${fmtUsd(sl.avgDelayFast, 1)} s (${sl.nFast} trade)` : ''}</div></div>
-        <div className="tile"><div className="lab">Medio in uscita</div><div className="mono big">{pc(sl.avgOut)}</div><div className="note">{sl.nOut} uscite a mercato (stop di Bitunix esclusi)</div></div>
+        <div className="tile"><div className="lab">Medio in uscita</div><div className="mono big">{pc(sl.avgOut)}</div><div className="note">{sl.nOut} uscite, rispetto al livello d'uscita (stop di Bitunix compresi)</div></div>
         <div className="tile"><div className="lab">Reale · Prova</div><div className="mono big">{sl.vsPaper ? `${fmtSigned(sl.vsPaper.live, 2)}% · ${fmtSigned(sl.vsPaper.paper, 2)}%` : '—'}</div><div className="note">{sl.vsPaper ? `risultato medio per trade su ${sl.vsPaper.n} segnali uguali` : 'servono trade sugli stessi segnali in Prova'}</div></div>
       </div>
       {sl.list.length > 0 && (
@@ -68,9 +68,9 @@ function Slippage({ sl }) {
                 <td className="mono">{r.signalAt ? new Date(r.signalAt).toLocaleTimeString('it-CH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}{r.src ? <span className="note"> {r.src}</span> : null}</td>
                 <td className="mono" title={r.orderDelay !== null ? `ordine dopo ${fmtUsd(r.orderDelay, 1)} s` : ''}>{r.delay !== null ? `${fmtUsd(r.delay, 1)} s` : '—'}</td>
                 <td className="mono">{fmtPrice(r.sigIn)} → {fmtPrice(r.fillIn)}</td>
-                <td className={`mono ${r.inPct > 0 ? 'down' : 'up'}`}>{pc(r.inPct)}</td>
+                <td className={`mono ${r.inPct < 0 ? 'down' : 'up'}`} title={r.detPct !== null && r.detPct !== undefined ? `soglia → prezzo letto ${fmtSigned(r.detPct, 3)}%` : undefined}>{pc(r.inPct)}</td>
                 <td className="mono">{r.fillOut ? `${fmtPrice(r.sigOut)} → ${fmtPrice(r.fillOut)}${r.byExchange ? ' (stop Bitunix)' : ''}` : '—'}</td>
-                <td className={`mono ${r.outPct > 0 ? 'down' : 'up'}`}>{r.byExchange ? '—' : pc(r.outPct)}</td>
+                <td className={`mono ${r.outPct < 0 ? 'down' : 'up'}`}>{pc(r.outPct)}</td>
                 <td className="mono">{r.fee !== null && r.fee !== undefined ? fmtUsd(Math.abs(r.fee), 3) : '—'}</td>
                 <td className={r.pnl >= 0 ? 'up' : 'down'}>{fmtSigned(r.pct, 2)}%</td>
                 <td className={r.paper?.pct >= 0 ? 'up' : 'down'}>{r.paper?.pct !== null && r.paper?.pct !== undefined ? `${fmtSigned(r.paper.pct, 2)}%` : '—'}</td>
@@ -213,6 +213,23 @@ export default function Strategy() {
   return (
     <>
       {tabs}
+
+      {/* Prova diversa dal Reale: il confronto tra le due non è sugli stessi segnali */}
+      {mode === 'paper' && view.vsLive?.diff?.length > 0 && (
+        <div className="card" style={{ padding: '10px 14px', borderColor: 'var(--warn)' }}>
+          <div className="lab" style={{ color: 'var(--warn)' }}>La Prova ha regole diverse dal Reale</div>
+          <div className="note" style={{ marginTop: 4 }}>
+            {view.vsLive.diff.map(d => d.key === 'symbols' ? `titoli: ${d.paper} in Prova, ${d.live} nel Reale (${d.onlyPaper} solo in Prova, ${d.onlyLive} solo nel Reale)` : `${d.key}: ${JSON.stringify(d.paper)} in Prova, ${JSON.stringify(d.live)} nel Reale`).join(' · ')}
+          </div>
+          <button className="btn ghost small" style={{ marginTop: 8 }} disabled={busy} onClick={() => {
+            const ls = view.vsLive.liveSettings, cur = view.settings
+            const ns = normalizeSettings({ ...ls, capitalMode: cur.capitalMode, capitalFixed: cur.capitalFixed, capitalPct: cur.capitalPct, capitalDedicated: cur.capitalDedicated })
+            setDraft(ns)
+            setDraftFrom({ name: `come il Reale (${ls.symbols.length} titoli)`, presetId: null, settings: ns })
+            setMsg('Regole del Reale caricate in Prova (il capitale resta quello della Prova): premi Salva per applicarle.')
+          }}>Usa le regole del Reale</button>
+        </div>
+      )}
 
       {/* Configurazione attiva in questa scheda */}
       <div className="card" style={{ padding: '10px 14px' }}>
