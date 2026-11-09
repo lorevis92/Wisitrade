@@ -148,7 +148,6 @@ function SimSetup({ r }) {
         <div key={x.g} className="kv"><span className="sec">{GROUP_NAME[x.g]}</span><span className="mono">{x.n}{x.data < x.n ? ` · ${x.data} con dati nel periodo` : ''}</span></div>
       ))}
       {excl.length > 0 && <div className="note">Esclusi perché non operabili via API su Bitunix: {excl.length} su {(s.symbols || []).length} ({excl.map(x => x.symbol).join(', ')}).</div>}
-      {s.apiOnly === false && <div className="note">Simulazione su tutti i titoli scelti, anche quelli che Bitunix non accetta via API.</div>}
       {r.symbolsWithData && withData.size < syms.length && <div className="note">Titoli con dati nel periodo: {withData.size} su {syms.length} (gli altri sono quotati su Bitunix dopo l'inizio del periodo).</div>}
       <div className="kv" style={{ marginTop: 6 }}><span className="sec">Dimensione dei trade</span>
         <span className="mono">{compound ? `${s.capitalMode === 'dedicated' ? 'capitale dedicato (100% del saldo)' : num(s.capitalPct) + '% del saldo'} · margine ${s.marginPct}% · ${s.leverage}x` : `${num(s.capitalFixed)} USDT fissi · margine ${s.marginPct}% · ${s.leverage}x`}</span></div>
@@ -347,9 +346,11 @@ export default function Simulation({ onAuthError }) {
             hint="su entrata e uscita a mercato" />
           <Select label="Funding medio" value={s.funding} options={OPTIONS.funding} fmt={v => `${num(v)}% a periodo`} onChange={v => set('funding', v)}
             hint="pagato a ogni orario del funding di Bitunix con la posizione aperta" />
-          <Select label="Titoli" value={s.apiOnly === false ? 'all' : 'api'} options={['api', 'all']} fmt={v => (v === 'api' ? 'solo operabili via API' : 'tutti quelli scelti')}
-            onChange={v => set('apiOnly', v === 'api')} hint="operabili via API su Bitunix: la stessa lista di Prova e Reale (oggi)" />
         </div>
+        <label className="toggle">
+          <span>Solo titoli operabili su Bitunix<div className="note">Usa solo i titoli che oggi Bitunix accetta via API: lo stesso elenco con cui il Reale sceglie i titoli.</div></span>
+          <input type="checkbox" checked={!!s.onlyBitunix} onChange={e => set('onlyBitunix', e.target.checked)} />
+        </label>
         <ExposureInfo s={s} sz={sz} mins={mins} />
       </div>
 

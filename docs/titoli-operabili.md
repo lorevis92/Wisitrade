@@ -67,13 +67,13 @@ Nella pagina Strategia, nella scheda "Titoli operabili via API", vedi quale dei 
 - ordine rifiutato (caso AXTI): nessuna posizione, titolo segnato, una sola notifica;
 - coppia con `isApiSupported = false`: esclusa senza nessuna chiamata a Bitunix;
 - segno più vecchio di 7 giorni: il titolo torna nella lista;
-- Simulazione: opzione attiva di default.
+- Simulazione: opzione spenta di default (era accesa nella prima versione).
 
 Passano anche le prove precedenti: 13 sugli ordini (`tests/live.test.mjs`) e 7 sul controllo veloce (`tests/fast.test.mjs`).
 
 ## 4. Simulazione: solo titoli operabili
 
-Nuova opzione **"Titoli: solo operabili via API"**, attiva di default, accanto a commissione e slittamento. Usa la lista di oggi, la stessa di Prova e Reale. La scheda "Titoli usati" mostra quali titoli sono stati esclusi.
+Nuova opzione **"Solo titoli operabili su Bitunix"**: è un interruttore sotto commissione e slittamento, **spento di default** (cambiato dopo: prima era attiva di default). Usa la lista di oggi, la stessa di Prova e Reale. La scheda "Titoli usati" mostra quali titoli sono stati esclusi.
 
 ### Test con la configurazione del Reale
 

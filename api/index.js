@@ -88,7 +88,7 @@ async function strategyView(mode) {
     const liveAcc = await q(db().from('wt_accounts').select('settings').eq('mode', 'live').maybeSingle())
     if (liveAcc) {
       const ls = settingsFor('live', liveAcc.settings)
-      const CAP = new Set(['capitalMode', 'capitalFixed', 'capitalPct', 'capitalDedicated', 'slip', 'funding', 'apiOnly'])
+      const CAP = new Set(['capitalMode', 'capitalFixed', 'capitalPct', 'capitalDedicated', 'slip', 'funding', 'onlyBitunix'])
       const diff = Object.keys(ls).filter(k => !CAP.has(k) && JSON.stringify(ls[k]) !== JSON.stringify(s[k]))
         .map(k => k === 'symbols' ? { key: k, paper: `${s.symbols.length} titoli`, live: `${ls.symbols.length} titoli`, onlyPaper: s.symbols.filter(x => !ls.symbols.includes(x)).length, onlyLive: ls.symbols.filter(x => !s.symbols.includes(x)).length } : { key: k, paper: s[k], live: ls[k] })
       vsLive = { diff, liveSettings: ls }
@@ -363,9 +363,9 @@ async function route(req, url) {
     if (!(capital > 0 && capital < 1e9)) throw new HttpError(400, 'Capitale iniziale non valido')
     const s0 = normalizeSettings(body.settings || {})
     if (!s0.symbols.length) throw new HttpError(400, 'Scegli almeno un titolo')
-    // opzione "solo titoli operabili via API" (lista di oggi, la stessa di Prova e Reale)
+    // opzione "Solo titoli operabili su Bitunix" (lista di oggi, la stessa di Prova e Reale)
     let s = s0, apiExcluded = []
-    if (s0.apiOnly) {
+    if (s0.onlyBitunix) {
       const op = await operable()
       apiExcluded = s0.symbols.filter(x => op.check(x)).map(x => ({ symbol: x, why: op.check(x).why }))
       s = { ...s0, symbols: keepOperable(s0.symbols, op) }

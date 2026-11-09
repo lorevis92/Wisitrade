@@ -135,9 +135,10 @@ try {
     assert.equal(D.tables.wt_positions[0].exchange.slVia, 'tpsl')
   })
 
-  await test('Simulazione: opzione "solo titoli operabili via API" attiva di default', async () => {
-    assert.equal(normalizeSettings({}).apiOnly, true)
-    assert.equal(normalizeSettings({ apiOnly: false }).apiOnly, false)
+  await test('Simulazione: opzione "Solo titoli operabili su Bitunix" spenta di default', async () => {
+    assert.equal(normalizeSettings({}).onlyBitunix, false)
+    assert.equal(normalizeSettings({ onlyBitunix: true }).onlyBitunix, true)
+    assert.equal(normalizeSettings({ apiOnly: true }).onlyBitunix, false) // vecchia opzione salvata nel browser: ignorata
   })
 } finally {
   globalThis.fetch = realFetch
