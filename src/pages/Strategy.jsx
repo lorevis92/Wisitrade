@@ -83,6 +83,32 @@ function Slippage({ sl }) {
   )
 }
 
+// Titoli scelti che Bitunix non accetta via API: non si tentano (stessa lista per Prova e Reale)
+const KIND = { bitunix: 'Bitunix: non operabile via API', ordini: 'ordine rifiutato nel Reale', stop: 'stop loss non accettato nel Reale' }
+const dmy = t => (t ? new Date(t).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—')
+function Operable({ op, busy, onRecheck }) {
+  if (!op || op.error) return op?.error ? <div className="note">Titoli operabili via API: {op.error}</div> : null
+  return (
+    <details className="card">
+      <summary className="lab" style={{ cursor: 'pointer' }}>Titoli operabili via API · {op.ok} su {op.total}{op.list.length ? ` · ${op.list.length} esclusi` : ''}</summary>
+      <div className="note" style={{ marginTop: 8 }}>
+        Si usano solo i titoli che Bitunix accetta via API (Prova e Reale, stessa lista). Coppie di Bitunix rilette ogni giorno: ultimo controllo {dmy(op.pairsAt)}.
+        Un titolo rifiutato nel Reale (ordine o stop loss) si ritenta da solo dopo {op.recheckDays} giorni.
+      </div>
+      {op.list.length > 0 && (
+        <div className="table-wrap" style={{ marginTop: 8 }}>
+          <table className="tbl"><thead><tr><th>Titolo</th><th>Motivo</th><th>Dal</th><th>Si riprova</th></tr></thead>
+            <tbody>{op.list.map(x => (
+              <tr key={x.symbol}><td className="mono">{x.symbol}</td><td title={x.why}>{KIND[x.kind] || x.kind}</td><td className="mono">{dmy(x.at)}</td><td className="mono">{x.until ? dmy(x.until) : 'quando Bitunix lo abilita'}</td></tr>
+            ))}</tbody></table>
+        </div>
+      )}
+      <button className="btn ghost small" style={{ marginTop: 8 }} disabled={busy} onClick={onRecheck}>Ricontrolla ora</button>
+      <div className="note">Rilegge le coppie di Bitunix e toglie i segni del Reale: al prossimo segnale quei titoli si ritentano davvero.</div>
+    </details>
+  )
+}
+
 function CodeGate({ onOk }) {
   const [code, setCode] = useState('')
   const [err, setErr] = useState(null)
@@ -285,6 +311,8 @@ export default function Strategy() {
           </div>
         )}
       </div>
+
+      <Operable op={view.operable} busy={busy} onRecheck={() => act(() => post('/api/strategy/operable/recheck', { mode }), 'Lista ricontrollata.')} />
 
       {/* Regole */}
       <RulesCard s={s} set={set} showFee={mode === 'paper'} />

@@ -19,6 +19,7 @@ import { ensureIndex, getIndexRaw, indexOf } from '../server/mindex.js'
 import { spreadSummary } from '../server/spreads.js'
 import { waitUntil } from '@vercel/functions'
 import { fastEntries } from '../server/fast-run.js'
+import { operable, keepOperable, operableView, clearMarks } from '../server/operable.js'
 
 const TF = {
   '1m': { bx: '1m', n: 400, ttl: 20 },
@@ -71,7 +72,7 @@ async function strategyView(mode) {
   ])
   const prices = open.length ? await tickers(open.map(p => ASSET_MAP[p.symbol].perp)) : {}
   const n = nyInfo()
-  const [skips, mindex, last, prepRows, brake, daystop, active] = await Promise.all([
+  const [skips, mindex, last, prepRows, brake, daystop, active, apiList] = await Promise.all([
     getMeta(`orbskip:${n.date}`),
     getMeta(`mindex:${n.date}`),
     getMeta('last:tick'),
@@ -79,6 +80,7 @@ async function strategyView(mode) {
     getMeta(`brake:${n.date}`),
     getMeta(`daystop:${mode}:${n.date}`),
     getMeta(`active:${mode}`),
+    operableView(s.symbols).catch(e => ({ error: e.message })),
   ])
   let gp = 0, gl = 0, wins = 0
   for (const p of closed) { if (p.pnl > 0) { gp += p.pnl; wins++ } else gl -= p.pnl || 0 }
@@ -120,6 +122,8 @@ async function strategyView(mode) {
   }
   return {
     mode, enabled: acc.enabled, settings: s, platform, capital, slippage,
+    // titoli scelti non operabili via API su Bitunix (non si tentano: stessa lista per Prova e Reale)
+    operable: apiList,
     // configurazione attiva: nome (impostazione salvata da cui viene, o "personalizzata") e data dell'ultima modifica
     active: { name: active?.name || (Object.keys(acc.settings || {}).length ? 'personalizzata' : 'default dell\'app'), presetId: active?.presetId ?? null, edited: !!active?.edited, at: active?.at || acc.updated_at || null },
     sizing: sizing(s, sizeBase, s.capitalMode === 'dedicated' ? (cap?.current ?? 0) : undefined),
@@ -310,6 +314,16 @@ async function route(req, url) {
     return { ...r, view: await strategyView(mode) }
   }
 
+  // Ricontrollo dei titoli non operabili via API: rilegge le coppie di Bitunix e toglie i segni del Reale
+  // (al prossimo segnale si riprova davvero)
+  if (path === '/strategy/operable/recheck' && m === 'POST') {
+    requireAdmin(req)
+    await setMeta('pairs', null)
+    await clearMarks(body.symbol ? String(body.symbol) : null)
+    const mode = body.mode === 'live' ? 'live' : 'paper'
+    return strategyView(mode)
+  }
+
   // ---- Simulazione (solo con il codice di controllo) ----
   if (path === '/sim/status' && m === 'GET') { requireAdmin(req); return archiveStatus() }
 
@@ -326,8 +340,16 @@ async function route(req, url) {
     if (!isDate(body.from) || !isDate(body.to) || body.from > body.to) throw new HttpError(400, 'Periodo non valido')
     const capital = Number(body.capital)
     if (!(capital > 0 && capital < 1e9)) throw new HttpError(400, 'Capitale iniziale non valido')
-    const s = normalizeSettings(body.settings || {})
-    if (!s.symbols.length) throw new HttpError(400, 'Scegli almeno un titolo')
+    const s0 = normalizeSettings(body.settings || {})
+    if (!s0.symbols.length) throw new HttpError(400, 'Scegli almeno un titolo')
+    // opzione "solo titoli operabili via API" (lista di oggi, la stessa di Prova e Reale)
+    let s = s0, apiExcluded = []
+    if (s0.apiOnly) {
+      const op = await operable()
+      apiExcluded = s0.symbols.filter(x => op.check(x)).map(x => ({ symbol: x, why: op.check(x).why }))
+      s = { ...s0, symbols: keepOperable(s0.symbols, op) }
+      if (!s.symbols.length) throw new HttpError(400, 'Nessuno dei titoli scelti è operabile via API su Bitunix')
+    }
     const t0 = Date.now()
     // 40 giorni prima dell'inizio: preparazione (livelli, volatilità, volume normale) e Analisi (volatilità a 20 giorni).
     // QQQ, SPY e BTC servono solo per l'Analisi.
@@ -344,7 +366,7 @@ async function route(req, url) {
     // titoli scelti che hanno davvero dati nel periodo (senza decomprimere niente)
     const inPeriod = Object.keys(days).filter(d => d >= body.from && d <= body.to)
     const withData = s.symbols.filter(sym => inPeriod.some(d => sym in days[d]))
-    return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: s, symbolsWithData: withData, ms: { load: loadMs, run: Date.now() - t0 - loadMs } }
+    return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: s0, symbolsUsed: s.symbols, apiExcluded, symbolsWithData: withData, ms: { load: loadMs, run: Date.now() - t0 - loadMs } }
   }
 
   // ---- Valore minimo di un ordine per titolo (quantità minima di Bitunix × prezzo attuale), in cache per un'ora ----

@@ -30,6 +30,7 @@ export const STRATEGY_DEFAULTS = {
   entryDelay: 0,          // ritardo d'entrata: nessuna entrata prima di questi minuti dall'apertura (0 = come sempre)
   volIn: 0,               // filtro volume all'entrata: candela chiusa prima del segnale ≥ volIn × volume normale di quel minuto (0 = spento)
   volConfirm: 0,          // conferma volume dopo l'entrata: nei primi N minuti, volume sotto il normale e prezzo tornato all'entrata → chiudi (0 = spenta)
+  apiOnly: true,          // solo titoli operabili via API su Bitunix (Simulazione; Prova e Reale li usano sempre e solo quelli)
   pick: 'list',           // segnali nello stesso minuto con posti insufficienti: list = ordine della lista | move = movimento più forte | volume = più liquido | volat = più volatile
   movePct: 1,             // segnale: movimento dall'apertura (entrata a 1,25 × questo valore)
   sl: 1.5,                // stop loss in unità di volatilità
@@ -124,6 +125,7 @@ export function normalizeSettings(s = {}) {
   for (const k of ['fee', 'liqFee', 'funding', 'slip']) out[k] = Math.min(Math.max(out[k] || 0, 0), 5)
   out.mmr = Math.min(Math.max(out.mmr || 1, 0.1), 50)
   out.liqGuard = out.liqGuard !== false
+  out.apiOnly = out.apiOnly !== false
   out.leverage = Math.min(Math.max(out.leverage || 1, 1), 20)
   out.marginPct = Math.min(Math.max(Math.round((out.marginPct || 10) * 2) / 2, 1), 100) // a passi di 0,5%
   out.maxPos = Math.min(Math.max(Math.round(out.maxPos) || 0, 0), 40)

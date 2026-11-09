@@ -17,6 +17,7 @@ import { db, q, getMeta, setMeta } from './db.js'
 import { notifyTrades } from './push.js'
 import { ny, OPEN_MIN } from './session.js'
 import { getPairs } from './scanner.js'
+import { operable, keepOperable, markNotOperable, isApiReject, RECHECK_DAYS } from './operable.js'
 
 export const liveAllowed = () => process.env.LIVE_TRADING === 'on' && hasKeys()
 
@@ -75,7 +76,7 @@ async function prepare(symbols, today, urgent) {
 const API = {
   openPositions: bx.openPositions, pendingOrders: bx.pendingOrders, leverageMarginMode: bx.leverageMarginMode,
   setIsolated: bx.setIsolated, setLeverage: bx.setLeverage, openMarket: bx.openMarket, placeStopLoss: bx.placeStopLoss,
-  closePosition: bx.closePosition, closePartial: bx.closePartial,
+  pendingStopLoss: bx.pendingStopLoss, modifyStopLoss: bx.modifyStopLoss, closePosition: bx.closePosition, closePartial: bx.closePartial,
 }
 const pairOf = async sym => {
   const pair = (await getPairs()).find(p => p.symbol === ASSET_MAP[sym].perp)
@@ -410,6 +411,14 @@ export async function openSignal(env, ctx, gate, dayPos, { sym, sig, prep, price
       // prezzo di liquidazione vero di Bitunix, altrimenti calcolato sul prezzo eseguito
       pos.liq_price = r.liqPrice || liqPriceOf(pos, risk.mmr, s.liqFee)
     } catch (e) {
+      // Bitunix non accetta questo titolo via API (ordine o stop loss): segnato come non operabile, non si ritenta per qualche giorno
+      if (e.noSl || isApiReject(e.message)) {
+        const kind = e.noSl ? 'stop' : 'ordini'
+        const fresh = await markNotOperable(sym, kind, e.message).catch(() => false)
+        env.skip(mode, sym, `non operabile via API: ${kind === 'stop' ? 'stop loss non accettato' : 'ordine rifiutato'} (${e.message})`)
+        if (fresh) notes.push({ title: `⚠ ${sym}: non operabile via API`, body: `${kind === 'stop' ? 'Bitunix non accetta lo stop loss via API (posizione chiusa subito)' : 'Bitunix rifiuta gli ordini via API'}. Non lo tento più per ${RECHECK_DAYS} giorni (Prova e Reale). Reale`, url: '/strategia?mode=live', tag: `api-${sym}` })
+        return null
+      }
       if (e instanceof LiveSkip) {
         env.skip(mode, sym, e.message)
         if (e.notify) notes.push({ title: `⚠ ${sym}: trade non aperto`, body: `${e.message} · Reale`, url: '/strategia?mode=live', tag: `err-${sym}` })
@@ -439,6 +448,9 @@ export async function openSignal(env, ctx, gate, dayPos, { sym, sig, prep, price
   })
   return row
 }
+
+// Prova e Reale: solo i titoli operabili via API su Bitunix (stessa lista per tutte e due, vedi server/operable.js)
+export const onlyOperable = (list, op) => list.map(a => ({ ...a, s: { ...a.s, symbols: keepOperable(a.s.symbols, op) } }))
 
 // Controllo ogni minuto: segnali dalle candele da 1 minuto chiuse. Le modalità seguite in quel momento dal controllo
 // veloce dell'apertura (ctx.fastModes) qui non aprono niente.
@@ -481,7 +493,8 @@ export async function presetLive(info, budgetMs = 15000) {
   if (!liveAllowed()) return null
   const acc = await q(db().from('wt_accounts').select('*').eq('mode', 'live').maybeSingle())
   if (!acc?.enabled) return null
-  const s = settingsFor('live', acc.settings)
+  const s0 = settingsFor('live', acc.settings)
+  const s = { ...s0, symbols: keepOperable(s0.symbols, await operable()) }
   const key = `preset:${info.date}`
   const st = (await getMeta(key)) || {}
   const todo = s.symbols.filter(x => ASSET_MAP[x] && !st[x])
@@ -515,8 +528,9 @@ export async function strategyNeeds(info) {
   ])
   const need = new Set(openPos.map(p => p.symbol))
   if (nowMin < OPEN_MIN || nowMin > ENTRY_UNTIL) return [...need]
-  const active = accRows.filter(a => a.enabled && (a.mode !== 'live' || liveAllowed())).map(a => ({ mode: a.mode, s: settingsFor(a.mode, a.settings) }))
-  if (!active.length) return [...need]
+  const active0 = accRows.filter(a => a.enabled && (a.mode !== 'live' || liveAllowed())).map(a => ({ mode: a.mode, s: settingsFor(a.mode, a.settings) }))
+  if (!active0.length) return [...need]
+  const active = onlyOperable(active0, await operable())
   const [dayPos, skips, prepRows] = await Promise.all([
     q(db().from('wt_positions').select('mode, symbol').eq('day', today)),
     getMeta(`orbskip:${today}`),
@@ -541,7 +555,8 @@ export async function runStrategy(series, info) {
   const closeMin = closeMinute(today)
   const accRows = await q(db().from('wt_accounts').select('*'))
   const accounts = Object.fromEntries(accRows.map(a => [a.mode, a]))
-  const active = accRows.filter(a => a.enabled).map(a => ({ ...a, s: settingsFor(a.mode, a.settings) }))
+  const active0 = accRows.filter(a => a.enabled).map(a => ({ ...a, s: settingsFor(a.mode, a.settings) }))
+  const active = active0.length ? onlyOperable(active0, await operable()) : active0
   const openPos = await q(db().from('wt_positions').select('*').eq('status', 'open'))
   if (!active.length && !openPos.length) return { ...log, skipped: 'nessuna modalità attiva' }
 

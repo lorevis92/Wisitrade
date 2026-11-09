@@ -14,7 +14,8 @@ const fmtPct = v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
 // Elenco dei perpetual aperti su Bitunix (con precisione), aggiornato una volta al giorno
 export async function getPairs() {
   const v = await getMeta('pairs')
-  if (v && Date.now() - v.at < 24 * 60 * MIN) return v.list
+  // (si rilegge subito anche se l'elenco salvato non ha ancora il campo api)
+  if (v && Date.now() - v.at < 24 * 60 * MIN && (!v.list?.length || 'api' in v.list[0])) return v.list
   try {
     const list = await tradingPairs()
     await setMeta('pairs', { at: Date.now(), list })

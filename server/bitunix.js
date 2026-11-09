@@ -86,6 +86,7 @@ export async function tradingPairs() {
     basePrecision: Number.isFinite(+p.basePrecision) ? +p.basePrecision : 3,
     minQty: +p.minTradeVolume || 0,
     quotePrecision: Number.isFinite(+p.quotePrecision) ? +p.quotePrecision : null,
+    api: p.isApiSupported !== false, // false = Bitunix non accetta ordini via API su questa coppia
   }))
 }
 
@@ -165,11 +166,23 @@ export async function leverageMarginMode(symbol) {
   return { leverage: +x?.leverage || null, marginMode: x?.marginMode || null }
 }
 
-// Ordine a mercato in apertura (lo stop loss si mette dopo, solo sulla posizione nata da questo ordine)
-export const openMarket = ({ symbol, side, qty, clientId }) =>
+// Ordine a mercato in apertura, con lo stop loss dentro l'ordine (slPrice: Bitunix lo lega alla posizione nata dall'ordine).
+// Dopo l'apertura lo stop si verifica sempre con pendingStopLoss (server/live.js).
+export const openMarket = ({ symbol, side, qty, clientId, slPrice }) =>
   signed('POST', '/api/v1/futures/trade/place_order', {
-    body: { symbol, qty: String(qty), side: side > 0 ? 'BUY' : 'SELL', tradeSide: 'OPEN', orderType: 'MARKET', reduceOnly: false, ...(clientId ? { clientId } : {}) },
+    body: {
+      symbol, qty: String(qty), side: side > 0 ? 'BUY' : 'SELL', tradeSide: 'OPEN', orderType: 'MARKET', reduceOnly: false, ...(clientId ? { clientId } : {}),
+      ...(slPrice ? { slPrice: String(slPrice), slStopType: 'LAST_PRICE', slOrderType: 'MARKET' } : {}),
+    },
   })
+
+// Stop loss attivi di una posizione (tpsl/get_pending_orders)
+export async function pendingStopLoss(symbol, positionId) {
+  const d = await signed('GET', '/api/v1/futures/tpsl/get_pending_orders', { query: { symbol, positionId: String(positionId), limit: 100 } })
+  const list = Array.isArray(d) ? d : (d?.orderList || [])
+  return list.filter(o => String(o.positionId) === String(positionId) && +o.slPrice > 0)
+    .map(o => ({ id: String(o.id ?? o.orderId), positionId: String(o.positionId), slPrice: +o.slPrice, slQty: +o.slQty || null }))
+}
 
 export async function openPositions(symbol) {
   const d = await signed('GET', '/api/v1/futures/position/get_pending_positions', { query: symbol ? { symbol } : {} })

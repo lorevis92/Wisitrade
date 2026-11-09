@@ -6,8 +6,10 @@
 //     chiusure, metà posizione e stop loss sono sempre per quel positionId e per la quantità della strategia.
 //  3. Margine sempre isolato: prima dell'ordine si imposta e si RILEGGE da Bitunix; se non risulta isolato (o la leva non è
 //     quella giusta) non si apre e si avvisa. Dopo l'apertura si controlla anche la posizione: se non è isolata si chiude subito.
-//  4. Stop loss su Bitunix solo sulla posizione della strategia e per la sua quantità; se non si riesce a metterlo la posizione
-//     della strategia si chiude subito.
+//  4. Stop loss su Bitunix solo sulla posizione della strategia: va DENTRO l'ordine d'apertura (slPrice) e dopo l'apertura
+//     si verifica che ci sia davvero (tpsl/get_pending_orders di quel positionId). Se non c'è si prova con la chiamata tpsl
+//     separata; se non si riesce la posizione della strategia si chiude subito (mai posizioni senza stop su Bitunix) e il
+//     titolo viene segnato come "stop non accettato via API" (LiveSkip con noSl).
 // Le funzioni di Bitunix arrivano da fuori (api), così questo modulo si può provare con un Bitunix finto (scratchpad).
 import { roundQty } from './bitunix.js'
 
@@ -17,7 +19,8 @@ const isOurOrder = o => (o.clientId || '').startsWith(CLIENT_PREFIX)
 
 export class LiveSkip extends Error {
   // notify = va mandata una notifica (es. margine isolato non verificabile); altrimenti è solo un titolo scartato
-  constructor(msg, { notify = false } = {}) { super(msg); this.skip = true; this.notify = notify }
+  // noSl = posizione chiusa perché Bitunix non ha accettato lo stop loss (il titolo va segnato come non operabile)
+  constructor(msg, { notify = false, noSl = false } = {}) { super(msg); this.skip = true; this.notify = notify; this.noSl = noSl }
 }
 
 const round = (x, prec) => (prec !== null && prec !== undefined ? Number(x.toFixed(prec)) : Number(x.toPrecision(6)))
@@ -35,9 +38,10 @@ export async function ensureIsolated(api, perp, leverage) {
   let cur
   try { cur = await api.leverageMarginMode(perp) } catch (e) { throw new LiveSkip(`margine non verificabile su Bitunix (${e.message})`, { notify: true }) }
   if (cur.marginMode !== 'ISOLATION') {
-    await api.setIsolated(perp).catch(() => {})
+    let setErr = null
+    await api.setIsolated(perp).catch(e => { setErr = e })
     try { cur = await api.leverageMarginMode(perp) } catch (e) { throw new LiveSkip(`margine non verificabile su Bitunix (${e.message})`, { notify: true }) }
-    if (cur.marginMode !== 'ISOLATION') throw new LiveSkip(`margine isolato non impostabile su Bitunix (risulta ${cur.marginMode || 'sconosciuto'})`, { notify: true })
+    if (cur.marginMode !== 'ISOLATION') throw new LiveSkip(`margine isolato non impostabile su Bitunix (risulta ${cur.marginMode || 'sconosciuto'}${setErr ? `: ${setErr.message}` : ''})`, { notify: true })
   }
   if (cur.leverage !== leverage) {
     await api.setLeverage(perp, leverage).catch(() => {})
@@ -66,9 +70,10 @@ export async function openLive(api, { perp, pair, side, notional, price, leverag
   // 3. margine isolato e leva, verificati su Bitunix
   await ensureIsolated(api, perp, leverage)
 
-  // 4. ordine a mercato
+  // 4. ordine a mercato con lo stop loss dentro l'ordine (dal prezzo attuale; dopo l'esecuzione si sposta su quello eseguito)
   const sentAt = now()
-  const order = await api.openMarket({ symbol: perp, side, qty, clientId })
+  const slAtt = round(price - side * stopDist, pair.quotePrecision)
+  const order = await api.openMarket({ symbol: perp, side, qty, clientId, slPrice: slAtt })
   const orderId = order?.orderId ? String(order.orderId) : null
 
   // 5. la posizione nata da questo ordine: positionId nuovo, stesso lato, creata dopo l'invio
@@ -94,18 +99,45 @@ export async function openLive(api, { perp, pair, side, notional, price, leverag
     throw new LiveSkip(`la posizione risultava in margine ${pos.marginMode}: chiusa subito`, { notify: true })
   }
 
-  // 7. stop loss di sicurezza solo su questa posizione, calcolato dal prezzo eseguito
+  // 7. stop loss di sicurezza solo su questa posizione: si verifica quello messo nell'ordine, altrimenti chiamata separata
   const entry = pos.entry || price
   const slPrice = round(entry - side * stopDist, pair.quotePrecision)
-  let slOrderId = null
-  try { const r = await api.placeStopLoss({ symbol: perp, positionId, slPrice, qty: ourQty }); slOrderId = r?.orderId ? String(r.orderId) : null }
-  catch (e) {
+  const sl = await secureStop(api, { perp, positionId, slPrice, qty: ourQty, tick: 10 ** -(pair.quotePrecision ?? 6) })
+  if (!sl.ok) {
     await closeOurs(api, { perp, positionId, side, qty: ourQty, step: pair.step }).catch(() => {})
-    throw new LiveSkip(`stop loss non impostabile su Bitunix (${e.message}): posizione chiusa subito`, { notify: true })
+    throw new LiveSkip(`stop loss non impostabile su Bitunix (${sl.why}): posizione chiusa subito`, { notify: true, noSl: true })
   }
+  const slOrderId = sl.id
   return {
     qty: ourQty, entry, liqPrice: pos.liqPrice || null, leverage,
-    exchange: { orderId, clientId, positionId, slOrderId, sl: slPrice, sentAt, fillAt: pos.ctime || now(), marginMode: pos.marginMode || 'ISOLATION', positionMode: pos.raw?.positionMode || null },
+    exchange: { orderId, clientId, positionId, slOrderId, sl: sl.price, slVia: sl.via, sentAt, fillAt: pos.ctime || now(), marginMode: pos.marginMode || 'ISOLATION', positionMode: pos.raw?.positionMode || null },
+  }
+}
+
+// Stop loss della posizione: { ok, id, price, via: 'ordine' | 'tpsl', why }.
+// 1. stop messo nell'ordine: si cerca tra gli stop attivi di quel positionId (qualche tentativo, Bitunix può metterci un attimo);
+//    se il prezzo è diverso da quello calcolato sul prezzo eseguito si prova a spostarlo (se non si riesce resta quello dell'ordine).
+// 2. se non c'è (o non si può leggere): chiamata tpsl separata, solo per questo positionId e la sua quantità.
+export async function secureStop(api, { perp, positionId, slPrice, qty, tick }) {
+  let found = null, readErr = null
+  if (api.pendingStopLoss) {
+    for (let i = 0; i < 3 && !found; i++) {
+      if (i) await wait(400)
+      try { found = (await api.pendingStopLoss(perp, positionId))[0] || null; readErr = null } catch (e) { readErr = e }
+    }
+  }
+  if (found) {
+    let price = found.slPrice
+    if (Math.abs(price - slPrice) > tick / 2 && api.modifyStopLoss) {
+      try { await api.modifyStopLoss({ orderId: found.id, slPrice, qty }); price = slPrice } catch { /* resta lo stop dell'ordine */ }
+    }
+    return { ok: true, id: found.id, price, via: 'ordine' }
+  }
+  try {
+    const r = await api.placeStopLoss({ symbol: perp, positionId, slPrice, qty })
+    return { ok: true, id: r?.orderId ? String(r.orderId) : null, price: slPrice, via: 'tpsl' }
+  } catch (e) {
+    return { ok: false, why: readErr ? `stop non verificabile: ${readErr.message}; chiamata separata: ${e.message}` : e.message }
   }
 }
 

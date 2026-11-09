@@ -65,7 +65,10 @@ export function fakeDb(seed = {}) {
 
 // ---------- Bitunix finto (modalità HEDGE, come da documentazione API) ----------
 // Una posizione per titolo e per lato; margine e leva per titolo, modificabili solo senza posizioni né ordini sul titolo.
-export function fakeBitunix({ prices = {}, settings = {}, available = 1000 } = {}) {
+// noApi = coppie che rifiutano tutto via API; noTpsl = coppie dove le chiamate tpsl separate (nuovo stop, modifica) sono rifiutate;
+// attachSl = per ogni coppia, se lo stop dentro l'ordine viene davvero creato (default sì); tpslReadFails = lettura stop rifiutata
+const API_MSG = 'This trading pair does not currently support trading via OpenAPI.'
+export function fakeBitunix({ prices = {}, settings = {}, available = 1000, noApi = [], noTpsl = [], attachSl = {}, tpslReadFails = [] } = {}) {
   let idSeq = 5000
   const ex = { calls: [], positions: [], orders: [], tpsl: [], settings: { ...settings }, prices, available, clock: () => Date.now() }
   const set = sym => (ex.settings[sym] ||= { marginMode: 'CROSS', leverage: 10 })
@@ -75,6 +78,8 @@ export function fakeBitunix({ prices = {}, settings = {}, available = 1000 } = {
   ex.fetch = async (url, init = {}) => {
     const u = new URL(url), path = u.pathname, q = Object.fromEntries(u.searchParams), body = init.body ? JSON.parse(init.body) : {}
     ex.calls.push({ path, q, body, method: init.method || 'GET' })
+    const sym0 = body.symbol || q.symbol
+    if (sym0 && noApi.includes(sym0) && (path.endsWith('/trade/place_order') || path.includes('/tpsl/'))) return err(10001, API_MSG)
     if (path.endsWith('/market/tickers')) return ok(Object.entries(ex.prices).map(([symbol, p]) => ({ symbol, lastPrice: String(p), last: String(p) })))
     if (path.endsWith('/futures/account')) return ok([{ available: String(ex.available), margin: '0', frozen: '0', crossUnrealizedPNL: '0', isolationUnrealizedPNL: '0' }])
     if (path.endsWith('/position/get_pending_positions')) return ok(ex.positions.filter(p => !q.symbol || p.symbol === q.symbol).map(p => ({ positionId: p.positionId, symbol: p.symbol, qty: String(p.qty), side: p.side > 0 ? 'LONG' : 'SHORT', avgOpenPrice: String(p.entry), marginMode: p.marginMode, leverage: p.leverage, liqPrice: '0', ctime: p.ctime, positionMode: 'HEDGE' })))
@@ -87,7 +92,11 @@ export function fakeBitunix({ prices = {}, settings = {}, available = 1000 } = {
       if (body.tradeSide === 'OPEN') {
         const cur = ex.positions.find(p => p.symbol === sym && p.side === side)
         if (cur) cur.qty += qty
-        else ex.positions.push({ positionId: String(++idSeq), symbol: sym, side, qty, entry: ex.prices[sym] * (1 + side * 0.0005), marginMode: s.marginMode, leverage: s.leverage, ctime: ex.clock() + 150 })
+        else {
+          const pid = String(++idSeq)
+          ex.positions.push({ positionId: pid, symbol: sym, side, qty, entry: ex.prices[sym] * (1 + side * 0.0005), marginMode: s.marginMode, leverage: s.leverage, ctime: ex.clock() + 150 })
+          if (body.slPrice && attachSl[sym] !== false) ex.tpsl.push({ id: String(++idSeq), positionId: pid, symbol: sym, slPrice: +body.slPrice, qty: qty, via: 'ordine' })
+        }
         return ok({ orderId: String(++idSeq), clientId: body.clientId })
       }
       const p = ex.positions.find(x => x.positionId === String(body.positionId))
@@ -95,7 +104,13 @@ export function fakeBitunix({ prices = {}, settings = {}, available = 1000 } = {
       p.qty = +(p.qty - Math.min(qty, p.qty)).toFixed(8); if (p.qty <= 0) ex.positions = ex.positions.filter(x => x !== p)
       return ok({ orderId: String(++idSeq) })
     }
-    if (path.endsWith('/tpsl/place_order')) { const id = String(++idSeq); ex.tpsl.push({ id, positionId: body.positionId, slPrice: +body.slPrice, qty: +body.slQty }); return ok({ orderId: id }) }
+    if (path.includes('/tpsl/') && !path.endsWith('/get_pending_orders') && noTpsl.includes(sym0)) return err(10001, API_MSG)
+    if (path.endsWith('/tpsl/get_pending_orders')) {
+      if (tpslReadFails.includes(q.symbol)) return err(10001, API_MSG)
+      return ok(ex.tpsl.filter(t => ex.positions.some(p => p.positionId === String(t.positionId)) && (!q.positionId || String(t.positionId) === q.positionId)).map(t => ({ id: t.id, positionId: t.positionId, symbol: t.symbol, slPrice: String(t.slPrice), slQty: String(t.qty) })))
+    }
+    if (path.endsWith('/tpsl/modify_order')) { const t = ex.tpsl.find(x => x.id === body.orderId); if (!t) return err(20001, 'order not exist'); t.slPrice = +body.slPrice; t.qty = +body.slQty; return ok({ orderId: t.id }) }
+    if (path.endsWith('/tpsl/place_order')) { const id = String(++idSeq); ex.tpsl.push({ id, positionId: body.positionId, symbol: body.symbol, slPrice: +body.slPrice, qty: +body.slQty, via: 'tpsl' }); return ok({ orderId: id }) }
     if (path.endsWith('/trade/flash_close_position')) { ex.positions = ex.positions.filter(p => p.positionId !== String(body.positionId)); return ok(body) }
     return err(404, `finto: ${path} non previsto`)
   }

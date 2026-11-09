@@ -1,6 +1,7 @@
 // Collegamento del controllo veloce (server/fast.js) con Bitunix, Supabase e le regole d'entrata di server/strategy.js
 import { runFast } from './fast.js'
-import { entryEnv, accountGate, openSignal, liveAllowed } from './strategy.js'
+import { entryEnv, accountGate, openSignal, liveAllowed, onlyOperable } from './strategy.js'
+import { operable } from './operable.js'
 import { allTickers, klines } from './bitunix.js'
 import { db, q, getMeta, setMeta } from './db.js'
 import { notifyTrades } from './push.js'
@@ -45,7 +46,8 @@ export const realFastDeps = () => ({
       getMeta(`brake:${day}`), getMeta(`mindex:${day}`), getMeta(`orbskip:${day}`),
     ])
     const accounts = Object.fromEntries(accRows.map(a => [a.mode, a]))
-    const active = accRows.filter(a => a.enabled && (a.mode !== 'live' || liveAllowed())).map(a => ({ ...a, s: settingsFor(a.mode, a.settings) }))
+    // solo i titoli operabili via API (stessa lista per Prova e Reale)
+    const active = onlyOperable(accRows.filter(a => a.enabled && (a.mode !== 'live' || liveAllowed())).map(a => ({ ...a, s: settingsFor(a.mode, a.settings) })), await operable())
     return {
       accounts, active, dayPos, skips: skips || { paper: {}, live: {} },
       preps: Object.fromEntries(prepRows.map(r => [r.symbol, r.data])),
