@@ -105,7 +105,7 @@ export async function openLive(api, { perp, pair, side, notional, price, leverag
   }
   return {
     qty: ourQty, entry, liqPrice: pos.liqPrice || null, leverage,
-    exchange: { orderId, clientId, positionId, slOrderId, sl: slPrice, sentAt, marginMode: pos.marginMode || 'ISOLATION', positionMode: pos.raw?.positionMode || null },
+    exchange: { orderId, clientId, positionId, slOrderId, sl: slPrice, sentAt, fillAt: pos.ctime || now(), marginMode: pos.marginMode || 'ISOLATION', positionMode: pos.raw?.positionMode || null },
   }
 }
 

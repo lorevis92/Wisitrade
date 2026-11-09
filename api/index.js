@@ -17,6 +17,8 @@ import { closeManual, liveAllowed } from '../server/strategy.js'
 import { getLimits } from '../server/limits.js'
 import { ensureIndex, getIndexRaw, indexOf } from '../server/mindex.js'
 import { spreadSummary } from '../server/spreads.js'
+import { waitUntil } from '@vercel/functions'
+import { fastEntries } from '../server/fast-run.js'
 
 const TF = {
   '1m': { bx: '1m', n: 400, ttl: 20 },
@@ -99,7 +101,10 @@ async function strategyView(mode) {
       const inPct = p.side * (x.fillIn - x.sigIn) / x.sigIn * 100
       const outPct = x.fillOut && x.sigOut ? -p.side * (x.fillOut - x.sigOut) / x.sigOut * 100 : null
       const pp = paper.find(z => z.day === p.day && z.symbol === p.symbol && z.side === p.side)
+      const tm = p.exchange.timing || null
       return {
+        src: tm?.src || null, signalAt: tm?.signalAt ?? null, orderAt: tm?.orderAt ?? null, fillAt: tm?.fillAt ?? null,
+        delay: tm?.fillAt && tm?.signalAt ? (tm.fillAt - tm.signalAt) / 1000 : null, orderDelay: tm?.orderAt && tm?.signalAt ? (tm.orderAt - tm.signalAt) / 1000 : null,
         id: p.id, day: p.day, symbol: p.symbol, side: p.side, sigIn: x.sigIn, fillIn: x.fillIn, sigOut: x.sigOut ?? null, fillOut: x.fillOut ?? null,
         inPct, outPct, fee: x.fee ?? p.fees, funding: x.funding ?? null, byExchange: !!x.byExchange, pnl: p.pnl, pct: p.pnl / (p.entry * p.qty) * 100,
         paper: pp ? { entry: pp.entry, exit: pp.exit, pnl: pp.pnl, pct: pp.status === 'closed' && pp.qty ? pp.pnl / (pp.entry * pp.qty) * 100 : null } : null,
@@ -108,7 +113,9 @@ async function strategyView(mode) {
     const avg = a => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null)
     const outs = list.filter(r => r.outPct !== null && !r.byExchange)
     const both = list.filter(r => r.paper?.pct !== null && r.paper?.pct !== undefined)
+    const dl = list.filter(r => r.delay !== null && r.delay >= 0)
     slippage = { n: list.length, avgIn: avg(list.map(r => r.inPct)), avgOut: avg(outs.map(r => r.outPct)), nOut: outs.length, list,
+      avgDelay: avg(dl.map(r => r.delay)), nDelay: dl.length, avgDelayFast: avg(dl.filter(r => r.src === 'veloce').map(r => r.delay)), nFast: dl.filter(r => r.src === 'veloce').length,
       vsPaper: both.length ? { n: both.length, live: avg(both.map(r => r.pct)), paper: avg(both.map(r => r.paper.pct)) } : null }
   }
   return {
@@ -139,6 +146,14 @@ async function route(req, url) {
 
   // ---- Controllo ogni minuto e Contesto (cron-job.org) ----
   if (path === '/cron/tick') { requireCron(req, url); return tick() }
+  // Controllo veloce dell'apertura (cron-job.org 9:29 e 9:41 New York): risponde subito e continua a lavorare
+  // in background fino a ~12 minuti (waitUntil, entro il limite di 800 s delle funzioni Vercel Pro)
+  if (path === '/cron/fast') {
+    requireCron(req, url)
+    const job = fastEntries().then(r => setMeta('last:fast', { at: Date.now(), ...r })).catch(e => setMeta('last:fast', { at: Date.now(), error: e.message }))
+    waitUntil(job)
+    return { started: true, at: Date.now() }
+  }
   if (path === '/cron/context') { requireCron(req, url); return refreshContexts() }
 
   // ---- Asset ----

@@ -53,17 +53,20 @@ function Slippage({ sl }) {
       <div className="lab section-title">Slittamento nel Reale · {sl.n} trade</div>
       <div className="stat-grid">
         <div className="tile"><div className="lab">Medio in entrata</div><div className="mono big">{pc(sl.avgIn)}</div><div className="note">per lato, rispetto al prezzo del segnale</div></div>
+        <div className="tile"><div className="lab">Ritardo medio</div><div className="mono big">{sl.avgDelay !== null && sl.avgDelay !== undefined ? `${fmtUsd(sl.avgDelay, 1)} s` : '—'}</div><div className="note">dal segnale all'esecuzione su Bitunix{sl.nFast ? ` · entrata veloce ${fmtUsd(sl.avgDelayFast, 1)} s (${sl.nFast} trade)` : ''}</div></div>
         <div className="tile"><div className="lab">Medio in uscita</div><div className="mono big">{pc(sl.avgOut)}</div><div className="note">{sl.nOut} uscite a mercato (stop di Bitunix esclusi)</div></div>
         <div className="tile"><div className="lab">Reale · Prova</div><div className="mono big">{sl.vsPaper ? `${fmtSigned(sl.vsPaper.live, 2)}% · ${fmtSigned(sl.vsPaper.paper, 2)}%` : '—'}</div><div className="note">{sl.vsPaper ? `risultato medio per trade su ${sl.vsPaper.n} segnali uguali` : 'servono trade sugli stessi segnali in Prova'}</div></div>
       </div>
       {sl.list.length > 0 && (
         <div className="table-wrap">
           <table className="tbl">
-            <thead><tr><th>Titolo</th><th>Giorno</th><th>Entrata: segnale → eseguito</th><th>Slitt.</th><th>Uscita: segnale → eseguito</th><th>Slitt.</th><th>Commissioni</th><th>Reale</th><th>Prova</th></tr></thead>
+            <thead><tr><th>Titolo</th><th>Giorno</th><th>Segnale</th><th>Ritardo</th><th>Entrata: segnale → eseguito</th><th>Slitt.</th><th>Uscita: segnale → eseguito</th><th>Slitt.</th><th>Commissioni</th><th>Reale</th><th>Prova</th></tr></thead>
             <tbody>{sl.list.map(r => (
               <tr key={r.id}>
                 <td><b>{r.symbol}</b> <span className={`pill ${r.side > 0 ? 'long' : 'short'}`}>{r.side > 0 ? 'L' : 'S'}</span></td>
                 <td>{dayFmt(r.day, { day: '2-digit', month: '2-digit' })}</td>
+                <td className="mono">{r.signalAt ? new Date(r.signalAt).toLocaleTimeString('it-CH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}{r.src ? <span className="note"> {r.src}</span> : null}</td>
+                <td className="mono" title={r.orderDelay !== null ? `ordine dopo ${fmtUsd(r.orderDelay, 1)} s` : ''}>{r.delay !== null ? `${fmtUsd(r.delay, 1)} s` : '—'}</td>
                 <td className="mono">{fmtPrice(r.sigIn)} → {fmtPrice(r.fillIn)}</td>
                 <td className={`mono ${r.inPct > 0 ? 'down' : 'up'}`}>{pc(r.inPct)}</td>
                 <td className="mono">{r.fillOut ? `${fmtPrice(r.sigOut)} → ${fmtPrice(r.fillOut)}${r.byExchange ? ' (stop Bitunix)' : ''}` : '—'}</td>

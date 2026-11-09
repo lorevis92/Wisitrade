@@ -9,7 +9,7 @@ import { loadDays } from './archive.js'
 import { addDays } from '../shared/time.js'
 import * as bx from './bitunix.js'
 import { klinesBack, account, openPositions, positionHistory, hasKeys, tickers } from './bitunix.js'
-import { openLive as openLiveSafe, closeOurs, closePart, LiveSkip, CLIENT_PREFIX } from './live.js'
+import { openLive as openLiveSafe, closeOurs, closePart, ensureIsolated, LiveSkip, CLIENT_PREFIX } from './live.js'
 import { getCapital, applyTrade, checkLimits, markHalted, markDayStop } from './capital.js'
 import { getLimits } from './limits.js'
 import { todayIndex, INDEX_READY_MIN } from './mindex.js'
@@ -287,139 +287,219 @@ async function manage(p, ctx) {
 }
 
 // ---------- Entrate ----------
-async function entries(ctx, active, dayPos) {
-  const { series, today, preps, notes, accounts } = ctx
-  let limits = null
-  const lim = async sym => { if (!limits) limits = await getLimits().catch(() => ({})); return limits[sym] || null }
-  const skipKey = `orbskip:${today}`
-  const skips = (await getMeta(skipKey)) || { paper: {}, live: {} }
-  let skipsChanged = false
-  const skip = (mode, sym, why) => { (skips[mode] ||= {})[sym] = why; skipsChanged = true }
-  const now = Date.now()
-  let liveBalance = null, liveIds = null
+// Diviso in pezzi usati sia dal controllo ogni minuto (entries) sia dal controllo veloce dell'apertura (server/fast.js):
+// entryEnv = stato comune di un giro (titoli scartati, limiti Bitunix, saldo), accountGate = controlli del conto
+// (freno, limiti di perdita, capitale dedicato, indice), openSignal = apertura di un segnale con tutte le regole.
 
-  for (const acc of active) {
-    const s = acc.s, mode = acc.mode
-    if (mode === 'live' && !liveAllowed()) continue
-    const taken = dayPos.filter(p => p.mode === mode)
-    const skipAll = why => { for (const sym of s.symbols) if (!taken.some(p => p.symbol === sym) && !skips[mode]?.[sym]) skip(mode, sym, why) }
-    // freno di mercato già scattato oggi: niente nuovi trade fino a domani
-    if (ctx.braked?.[mode]) { skipAll('freno di mercato: niente nuovi trade fino a domani'); continue }
-    const dayPnl = taken.filter(p => p.status === 'closed').reduce((a, p) => a + (p.pnl || 0), 0)
+// Prenotazione di un titolo per oggi in una modalità: una riga in wt_meta (chiave primaria), quindi un secondo
+// tentativo, anche da un altro processo, fallisce. Serve a non aprire mai due volte lo stesso titolo.
+export async function claimSymbol(mode, day, sym, by) {
+  const { error } = await db().from('wt_meta').insert({ key: `claim:${mode}:${day}:${sym}`, value: { by, at: Date.now() } })
+  return !error
+}
+
+export async function entryEnv(ctx) {
+  const { today } = ctx
+  let limits = null
+  const env = {
+    skipKey: `orbskip:${today}`,
+    skips: (await getMeta(`orbskip:${today}`)) || { paper: {}, live: {} },
+    changed: false,
+    liveBalance: null, liveIds: null,
+    lim: async sym => { if (!limits) limits = await getLimits().catch(() => ({})); return limits[sym] || null },
+  }
+  env.skip = (mode, sym, why) => { (env.skips[mode] ||= {})[sym] = why; env.changed = true }
+  env.save = async () => { if (env.changed) { await setMeta(env.skipKey, env.skips); env.changed = false } }
+  return env
+}
+
+// Controlli del conto prima di cercare segnali. Restituisce null se oggi non si apre niente (i titoli sono già segnati
+// come scartati), altrimenti { s, mode, taken, ded, rule }.
+export async function accountGate(env, ctx, acc, dayPos) {
+  const { today, notes } = ctx
+  const s = acc.s, mode = acc.mode
+  if (mode === 'live' && !liveAllowed()) return null
+  const taken = dayPos.filter(p => p.mode === mode)
+  const skipAll = why => { for (const sym of s.symbols) if (!taken.some(p => p.symbol === sym) && !env.skips[mode]?.[sym]) env.skip(mode, sym, why) }
+  // freno di mercato già scattato oggi: niente nuovi trade fino a domani
+  if (ctx.braked?.[mode]) { skipAll('freno di mercato: niente nuovi trade fino a domani'); return null }
+  const dayPnl = taken.filter(p => p.status === 'closed').reduce((a, p) => a + (p.pnl || 0), 0)
+  let ded = null
+  if (s.capitalMode !== 'dedicated') {
+    // senza capitale dedicato: limite giornaliero sul capitale usato dal primo trade di oggi (la perdita totale vale solo con il capitale dedicato)
+    const dayRef = taken.slice().sort((a, b) => a.opened_at - b.opened_at)[0]?.capital ?? null
+    if (dayRef && lossCheck(s, { dayRef, dayPnl }).dayStop) {
+      const k = `daystop:${mode}:${today}`
+      if (!(await getMeta(k))) {
+        await setMeta(k, { at: Date.now() })
+        notes.push({ title: `⏸ ${modeName(mode)}: niente nuovi trade fino a domani`, body: `perdita massima giornaliera superata: ${dayPnl.toFixed(2)} USDT oggi (limite ${s.maxDayLoss}% di ${dayRef.toFixed(2)})`, url: `/strategia?mode=${mode}`, tag: `daystop-${mode}-${today}` })
+      }
+      skipAll('perdita massima giornaliera superata')
+      return null
+    }
+  } else {
     // capitale dedicato e limiti di perdita (in % del capitale dedicato)
-    let ded = null
-    if (s.capitalMode !== 'dedicated') {
-      // senza capitale dedicato: limite giornaliero sul capitale usato dal primo trade di oggi (la perdita totale vale solo con il capitale dedicato)
-      const dayRef = taken.slice().sort((a, b) => a.opened_at - b.opened_at)[0]?.capital ?? null
-      if (dayRef && lossCheck(s, { dayRef, dayPnl }).dayStop) {
-        const k = `daystop:${mode}:${today}`
-        if (!(await getMeta(k))) {
-          await setMeta(k, { at: Date.now() })
-          notes.push({ title: `⏸ ${modeName(mode)}: niente nuovi trade fino a domani`, body: `perdita massima giornaliera superata: ${dayPnl.toFixed(2)} USDT oggi (limite ${s.maxDayLoss}% di ${dayRef.toFixed(2)})`, url: `/strategia?mode=${mode}`, tag: `daystop-${mode}-${today}` })
-        }
-        skipAll('perdita massima giornaliera superata')
-        continue
+    ded = await getCapital(mode)
+    if (!ded || !(ded.current > 0)) { skipAll('capitale dedicato non impostato'); return null }
+    const lim = checkLimits(ded, s, dayPnl, today)
+    if (!lim.ok) {
+      if (lim.total && lim.fresh) await haltAccount(mode, lim.why, notes)
+      if (lim.day && lim.fresh) {
+        await markDayStop(mode, today)
+        notes.push({ title: `⏸ ${modeName(mode)}: niente nuovi trade fino a domani`, body: lim.why, url: `/strategia?mode=${mode}`, tag: `daystop-${mode}-${today}` })
       }
+      skipAll(lim.total ? 'strategia fermata: perdita massima totale' : 'perdita massima giornaliera superata')
+      return null
     }
-    if (s.capitalMode === 'dedicated') {
-      ded = await getCapital(mode)
-      if (!ded || !(ded.current > 0)) { skipAll('capitale dedicato non impostato'); continue }
-      const lim = checkLimits(ded, s, dayPnl, today)
-      if (!lim.ok) {
-        if (lim.total && lim.fresh) await haltAccount(mode, lim.why, notes)
-        if (lim.day && lim.fresh) {
-          await markDayStop(mode, today)
-          notes.push({ title: `⏸ ${modeName(mode)}: niente nuovi trade fino a domani`, body: lim.why, url: `/strategia?mode=${mode}`, tag: `daystop-${mode}-${today}` })
-        }
-        skipAll(lim.total ? 'strategia fermata: perdita massima totale' : 'perdita massima giornaliera superata')
-        continue
+  }
+  // indice di attività del mercato: con la regola attiva si aspetta le 9:35
+  if (s.idxMode !== 'off' && ctx.nowMin < INDEX_READY_MIN) return null
+  const rule = indexRule(s, ctx.mindex?.idx ?? null)
+  if (!rule.ok) { skipAll(rule.why); return null }
+  return { s, mode, taken, ded, rule, acc }
+}
+
+// Apertura di un segnale con tutte le regole (posti liberi, capitale, leva massima, liquidazione, prenotazione del titolo,
+// nel Reale ordine vero con le regole di server/live.js). timing = { src: 'veloce' | 'minuto', signalAt, sigPx }.
+// price = prezzo attuale (per la quantità dell'ordine nel Reale). Restituisce la posizione salvata o null.
+export async function openSignal(env, ctx, gate, dayPos, { sym, sig, prep, price, timing }) {
+  const { today, notes, accounts } = ctx
+  const { s, mode, taken, ded, rule, acc } = gate
+  const now = Date.now()
+  if (taken.some(p => p.symbol === sym)) return null
+  if (rule.maxPos > 0 && taken.length >= rule.maxPos) { env.skip(mode, sym, 'limite posizioni al giorno'); return null }
+  const { k, side } = sig
+  // nel Reale si entra solo se il segnale è appena scattato (niente entrate in ritardo a prezzi peggiori)
+  if (mode === 'live' && now - (k.t + MIN) > 2 * MIN) { env.skip(mode, sym, 'segnale scattato mentre il controllo era fermo'); return null }
+
+  let base = acc.balance
+  if (mode === 'live') {
+    // nel Reale: con il capitale dedicato mai più del saldo DISPONIBILE su Bitunix
+    if (env.liveBalance === null) env.liveBalance = await account().catch(() => null)
+    base = s.capitalMode === 'dedicated' ? (env.liveBalance?.available ?? 0) : (env.liveBalance?.equity ?? 0)
+  }
+  const { capital, margin, notional } = sizing(s, base, ded ? ded.current : undefined)
+  if (!(margin >= 1)) { env.skip(mode, sym, 'capitale insufficiente'); return null }
+  if (mode === 'live' && env.liveBalance && margin > env.liveBalance.available) { env.skip(mode, sym, 'saldo disponibile su Bitunix insufficiente'); return null }
+  const unit = prep.unit
+  // margine di mantenimento e leva massima di Bitunix per questo titolo e questo valore della posizione
+  const risk = riskFor(await env.lim(sym), notional, s)
+  if (mode === 'live' && risk.maxLev && s.leverage > risk.maxLev) { env.skip(mode, sym, `leva ${s.leverage}x oltre il massimo Bitunix (${risk.maxLev}x)`); return null }
+  let pos = newPosition({ mode, day: today, symbol: sym, sig, s, prep, size: { capital, margin, notional }, risk })
+  // stop loss oltre il prezzo di liquidazione: non si apre (nel Reale sempre)
+  if ((mode === 'live' || s.liqGuard) && liqBlocks(pos)) { env.skip(mode, sym, 'stop oltre la liquidazione'); return null }
+  // prenotazione del titolo: se un altro controllo l'ha già preso (o lo sta aprendo) non si fa niente
+  if (!(await claimSymbol(mode, today, sym, timing?.src || 'minuto'))) return null
+  const tm = { src: timing?.src || 'minuto', signalAt: timing?.signalAt ?? now, sigPx: timing?.sigPx ?? sig.entry, level: sig.entry }
+  if (mode === 'live') {
+    const pair = await pairOf(sym)
+    if (!pair) { env.skip(mode, sym, 'perpetual non disponibile su Bitunix'); return null }
+    if (env.liveIds === null) env.liveIds = await ourLiveIds()
+    try {
+      tm.orderAt = Date.now()
+      const r = await openLiveSafe(API, { perp: ASSET_MAP[sym].perp, pair, side, notional, price, leverage: s.leverage, stopDist: s.sl * unit, ourIds: env.liveIds, clientId: `${CLIENT_PREFIX}${Date.now()}${sym}`.slice(0, 32) })
+      if (r.unidentified) {
+        env.skip(mode, sym, `ordine inviato ma posizione non riconosciuta (${r.why}): da controllare`)
+        notes.push({ title: `⚠ ${sym}: controlla Bitunix`, body: `Ordine ${r.orderId || ''} inviato ma la posizione non è riconoscibile con certezza (${r.why}). La strategia non la gestisce: controllala e chiudila a mano. Reale`, url: '/strategia?mode=live', tag: `err-${sym}` })
+        return null
       }
+      tm.fillAt = r.exchange.fillAt ?? Date.now()
+      pos = { ...pos, entry: r.entry, qty: r.qty, leverage: r.leverage, best: r.entry, init_stop: r.entry - side * s.sl * unit, opened_at: now,
+        exchange: { ...r.exchange, slip: { sigIn: tm.sigPx, fillIn: r.entry }, timing: tm } }
+      env.liveIds.add(String(r.exchange.positionId))
+      // prezzo di liquidazione vero di Bitunix, altrimenti calcolato sul prezzo eseguito
+      pos.liq_price = r.liqPrice || liqPriceOf(pos, risk.mmr, s.liqFee)
+    } catch (e) {
+      if (e instanceof LiveSkip) {
+        env.skip(mode, sym, e.message)
+        if (e.notify) notes.push({ title: `⚠ ${sym}: trade non aperto`, body: `${e.message} · Reale`, url: '/strategia?mode=live', tag: `err-${sym}` })
+        return null
+      }
+      env.skip(mode, sym, `ordine non riuscito: ${e.message}`)
+      notes.push({ title: `⚠ ${sym}: ordine non riuscito`, body: `${e.message} · Reale`, url: '/strategia?mode=live', tag: `err-${sym}` })
+      return null
     }
-    // indice di attività del mercato: con la regola attiva si aspetta le 9:35
-    if (s.idxMode !== 'off' && ctx.nowMin < INDEX_READY_MIN) continue
-    const rule = indexRule(s, ctx.mindex?.idx ?? null)
-    if (!rule.ok) { for (const sym of s.symbols) if (!taken.some(p => p.symbol === sym) && !skips[mode]?.[sym]) skip(mode, sym, rule.why); continue }
+  } else {
+    // Prova: eseguito subito al prezzo del segnale
+    tm.orderAt = tm.fillAt = Date.now()
+    pos = { ...pos, exchange: { timing: tm } }
+  }
+  const [row] = await insertPos(pos)
+  taken.push(row); dayPos.push(row)
+  // Reale: se dopo l'esecuzione lo stop risulta oltre la liquidazione di Bitunix, chiudi subito
+  if (mode === 'live' && stopPastLiq(pos)) {
+    await closePos({ ...pos, ...row }, pos.entry, 'stop oltre la liquidazione', accounts, notes)
+    env.skip(mode, sym, 'stop oltre la liquidazione (chiusa subito)')
+    return null
+  }
+  notes.push({
+    title: `${side > 0 ? '▲ LONG' : '▼ SHORT'} ${sym} a ${fmt(pos.entry)}`,
+    body: `${sgn(pos.move_pct)}% dall'apertura · stop ${fmt(pos.init_stop)} · margine ${pos.margin.toFixed(0)} USDT × ${pos.leverage}x · ${modeName(mode)}${tm.src === 'veloce' ? ' · entrata veloce' : ''}`,
+    url: `/strategia?mode=${mode}`, tag: `pos-${row.id}`,
+  })
+  return row
+}
+
+// Controllo ogni minuto: segnali dalle candele da 1 minuto chiuse. Le modalità seguite in quel momento dal controllo
+// veloce dell'apertura (ctx.fastModes) qui non aprono niente.
+async function entries(ctx, active, dayPos) {
+  const { series, today, preps } = ctx
+  const env = await entryEnv(ctx)
+  for (const acc of active) {
+    if (ctx.fastModes?.includes(acc.mode)) continue
+    const gate = await accountGate(env, ctx, acc, dayPos)
+    if (!gate) continue
+    const { s, mode, taken, rule } = gate
     // segnali di questo controllo: per minuto del segnale, poi secondo la regola di scelta tra segnali contemporanei
     const cands = []
     s.symbols.forEach((sym, idx) => {
-      if (taken.some(p => p.symbol === sym) || skips[mode]?.[sym]) return
+      if (taken.some(p => p.symbol === sym) || env.skips[mode]?.[sym]) return
       const prep = preps[sym]
       if (!prep) return
       const bars = (series[sym]?.['1m'] || []).map(b => ({ ...b, ...ny(b.t) })).filter(b => b.date === today && b.min >= OPEN_MIN && b.min < entryUntil(s))
       const sig = findEntry(bars, s, prep, entryFrom(s, rule))
       if (!sig) return
-      if (sig.skip) { skip(mode, sym, sig.skip); return }
+      if (sig.skip) { env.skip(mode, sym, sig.skip); return }
       const vb = volInBlock(s, sig, bars, prep)
-      if (vb) { skip(mode, sym, vb); return }
+      if (vb) { env.skip(mode, sym, vb); return }
       cands.push({ sym, sig, prep, idx, rank: signalRank(s, { sig, prep, bars, idx }) })
     })
     cands.sort((a, b) => bySignal(a, b) || a.idx - b.idx)
     for (const { sym, sig, prep } of cands) {
-      if (rule.maxPos > 0 && taken.length >= rule.maxPos) { skip(mode, sym, 'limite posizioni al giorno'); continue }
-      const { k, side } = sig
-      // nel Reale si entra solo se il segnale è appena scattato (niente entrate in ritardo a prezzi peggiori)
-      if (mode === 'live' && now - (k.t + MIN) > 2 * MIN) { skip(mode, sym, 'segnale scattato mentre il controllo era fermo'); continue }
-
-      let base = acc.balance
-      if (mode === 'live') {
-        // nel Reale: con il capitale dedicato mai più del saldo DISPONIBILE su Bitunix
-        if (liveBalance === null) liveBalance = await account().catch(() => null)
-        base = s.capitalMode === 'dedicated' ? (liveBalance?.available ?? 0) : (liveBalance?.equity ?? 0)
-      }
-      const { capital, margin, notional } = sizing(s, base, ded ? ded.current : undefined)
-      if (!(margin >= 1)) { skip(mode, sym, 'capitale insufficiente'); continue }
-      if (mode === 'live' && liveBalance && margin > liveBalance.available) { skip(mode, sym, 'saldo disponibile su Bitunix insufficiente'); continue }
-      const unit = prep.unit
-      // margine di mantenimento e leva massima di Bitunix per questo titolo e questo valore della posizione
-      const risk = riskFor(await lim(sym), notional, s)
-      if (mode === 'live' && risk.maxLev && s.leverage > risk.maxLev) { skip(mode, sym, `leva ${s.leverage}x oltre il massimo Bitunix (${risk.maxLev}x)`); continue }
-      let pos = newPosition({ mode, day: today, symbol: sym, sig, s, prep, size: { capital, margin, notional }, risk })
-      // stop loss oltre il prezzo di liquidazione: non si apre (nel Reale sempre)
-      if ((mode === 'live' || s.liqGuard) && liqBlocks(pos)) { skip(mode, sym, 'stop oltre la liquidazione'); continue }
-      if (mode === 'live') {
-        const pair = await pairOf(sym)
-        if (!pair) { skip(mode, sym, 'perpetual non disponibile su Bitunix'); continue }
-        if (liveIds === null) liveIds = await ourLiveIds()
-        try {
-          const price = series[sym]['1m'].at(-1).c
-          const r = await openLiveSafe(API, { perp: ASSET_MAP[sym].perp, pair, side, notional, price, leverage: s.leverage, stopDist: s.sl * unit, ourIds: liveIds, clientId: `${CLIENT_PREFIX}${Date.now()}${sym}`.slice(0, 32) })
-          if (r.unidentified) {
-            skip(mode, sym, `ordine inviato ma posizione non riconosciuta (${r.why}): da controllare`)
-            notes.push({ title: `⚠ ${sym}: controlla Bitunix`, body: `Ordine ${r.orderId || ''} inviato ma la posizione non è riconoscibile con certezza (${r.why}). La strategia non la gestisce: controllala e chiudila a mano. Reale`, url: '/strategia?mode=live', tag: `err-${sym}` })
-            continue
-          }
-          pos = { ...pos, entry: r.entry, qty: r.qty, leverage: r.leverage, best: r.entry, init_stop: r.entry - side * s.sl * unit, opened_at: now,
-            exchange: { ...r.exchange, slip: { sigIn: sig.entry, fillIn: r.entry } } }
-          liveIds.add(String(r.exchange.positionId))
-          // prezzo di liquidazione vero di Bitunix, altrimenti calcolato sul prezzo eseguito
-          pos.liq_price = r.liqPrice || liqPriceOf(pos, risk.mmr, s.liqFee)
-        } catch (e) {
-          if (e instanceof LiveSkip) {
-            skip(mode, sym, e.message)
-            if (e.notify) notes.push({ title: `⚠ ${sym}: trade non aperto`, body: `${e.message} · Reale`, url: '/strategia?mode=live', tag: `err-${sym}` })
-            continue
-          }
-          skip(mode, sym, `ordine non riuscito: ${e.message}`)
-          notes.push({ title: `⚠ ${sym}: ordine non riuscito`, body: `${e.message} · Reale`, url: '/strategia?mode=live', tag: `err-${sym}` })
-          continue
-        }
-      }
-      const [row] = await insertPos(pos)
-      taken.push(row); dayPos.push(row)
-      // Reale: se dopo l'esecuzione lo stop risulta oltre la liquidazione di Bitunix, chiudi subito
-      if (mode === 'live' && stopPastLiq(pos)) {
-        await closePos({ ...pos, ...row }, pos.entry, 'stop oltre la liquidazione', accounts, notes)
-        skip(mode, sym, 'stop oltre la liquidazione (chiusa subito)')
-        continue
-      }
-      notes.push({
-        title: `${side > 0 ? '▲ LONG' : '▼ SHORT'} ${sym} a ${fmt(pos.entry)}`,
-        body: `${sgn(pos.move_pct)}% dall'apertura · stop ${fmt(pos.init_stop)} · margine ${pos.margin.toFixed(0)} USDT × ${pos.leverage}x · ${modeName(mode)}`,
-        url: `/strategia?mode=${mode}`, tag: `pos-${row.id}`,
-      })
+      await openSignal(env, ctx, gate, dayPos, { sym, sig, prep, price: series[sym]['1m'].at(-1).c, timing: { src: 'minuto', signalAt: Date.now(), sigPx: sig.entry } })
     }
   }
-  if (skipsChanged) await setMeta(skipKey, skips)
+  await env.save()
+}
+
+// ---------- Preparazione del Reale prima dell'apertura ----------
+// Dalle 9:05 alle 9:28 di New York: margine isolato e leva impostati e verificati su Bitunix per i titoli della strategia
+// dove NON hai posizioni né ordini (dove ce li hai non si tocca niente). Così al segnale parte solo l'ordine
+// (che comunque riverifica il margine prima di partire). Stato del giorno in wt_meta `preset:YYYY-MM-DD`.
+export async function presetLive(info, budgetMs = 15000) {
+  const t0 = Date.now()
+  if (!liveAllowed()) return null
+  const acc = await q(db().from('wt_accounts').select('*').eq('mode', 'live').maybeSingle())
+  if (!acc?.enabled) return null
+  const s = settingsFor('live', acc.settings)
+  const key = `preset:${info.date}`
+  const st = (await getMeta(key)) || {}
+  const todo = s.symbols.filter(x => ASSET_MAP[x] && !st[x])
+  if (!todo.length) return { done: Object.keys(st).length }
+  const [positions, orders, ours, pairs] = await Promise.all([bx.openPositions(), bx.pendingOrders(), ourLiveIds(), getPairs()])
+  const perps = new Set(pairs.map(p => p.symbol))
+  let n = 0
+  for (const sym of todo) {
+    if (Date.now() - t0 > budgetMs) break
+    const perp = ASSET_MAP[sym].perp
+    if (!perps.has(perp)) { st[sym] = 'non disponibile su Bitunix'; continue }
+    if (positions.some(p => p.symbol === perp && !ours.has(String(p.positionId)))) { st[sym] = 'posizione manuale: nessuna modifica'; continue }
+    if (orders.some(o => o.symbol === perp && !(o.clientId || '').startsWith(CLIENT_PREFIX))) { st[sym] = 'ordine in attesa: nessuna modifica'; continue }
+    try { await ensureIsolated(API, perp, s.leverage); st[sym] = 'ok' } catch (e) { st[sym] = `errore: ${e.message}` }
+    n++
+  }
+  await setMeta(key, st)
+  return { done: n, left: s.symbols.filter(x => !st[x]).length }
 }
 
 // ---------- Titoli che servono in questo controllo ----------
@@ -487,6 +567,9 @@ export async function runStrategy(series, info) {
   }
   if (info.minutes >= OPEN_MIN && info.minutes <= ENTRY_UNTIL && active.length) {
     const dayPos = await q(db().from('wt_positions').select('*').eq('day', today))
+    // modalità seguite in questo momento dal controllo veloce dell'apertura: le entrate le fa lui
+    const fl = await getMeta('fast:lock').catch(() => null)
+    if (fl?.until > Date.now() && fl.day === today) { ctx.fastModes = fl.modes || []; if (ctx.fastModes.length) log.fast = ctx.fastModes }
     try { await entries(ctx, active, dayPos) } catch (e) { (log.errors ||= []).push(`entrate: ${e.message}`) }
   }
   log.opened = notes.filter(n => /^(▲|▼)/.test(n.title)).length

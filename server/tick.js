@@ -11,6 +11,7 @@ import { runStrategy, strategyNeeds } from './strategy.js'
 import { fillArchive } from './archive.js'
 import { ensureIndex } from './mindex.js'
 import { getLimits } from './limits.js'
+import { presetLive } from './strategy.js'
 import { recordSpreads } from './spreads.js'
 import { isTradingDay } from '../shared/opening.js'
 
@@ -38,6 +39,8 @@ export async function tick() {
 
     // limiti di Bitunix (leva massima, margine di mantenimento) aggiornati prima dell'apertura, non durante le entrate
     if (info.isWeekday && info.minutes >= 480 && info.minutes < 565) await getLimits().catch(() => null)
+    // Reale: margine isolato e leva impostati prima dell'apertura (9:05–9:28), sui titoli dove non hai posizioni
+    if (info.isWeekday && info.minutes >= 545 && info.minutes <= 568) { try { out.preset = await presetLive(info, 15000) } catch (e) { errors.push(`preparazione Reale: ${e.message}`) } }
 
     // 1. strategia: solo i titoli che servono in questo minuto
     let need = []

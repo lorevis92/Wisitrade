@@ -69,6 +69,14 @@ export async function depth(symbol, limit = 50) {
   return { bids: lv(d?.bids), asks: lv(d?.asks) }
 }
 
+// Ultimo prezzo di TUTTI i perpetual con una sola richiesta: { SIMBOLOUSDT: prezzo }
+export async function allTickers() {
+  const data = await getJson('/api/v1/futures/market/tickers', { timeout: 4000 })
+  const out = {}
+  for (const t of data || []) { const p = +t.lastPrice || +t.last; if (p > 0) out[t.symbol] = p }
+  return out
+}
+
 // Coppie disponibili con precisione e quantità minima (servono per gli ordini)
 export async function tradingPairs() {
   const data = await getJson('/api/v1/futures/market/trading_pairs')
@@ -174,8 +182,8 @@ export async function openPositions(symbol) {
 
 // Ordini in attesa su un titolo (limite, non ancora eseguiti)
 export async function pendingOrders(symbol) {
-  const d = await signed('GET', '/api/v1/futures/trade/get_pending_orders', { query: { symbol, limit: 100 } })
-  return (d?.orderList || (Array.isArray(d) ? d : [])).map(o => ({ orderId: String(o.orderId), clientId: o.clientId || '', side: o.side, qty: +o.qty, status: o.status }))
+  const d = await signed('GET', '/api/v1/futures/trade/get_pending_orders', { query: { ...(symbol ? { symbol } : {}), limit: 100 } })
+  return (d?.orderList || (Array.isArray(d) ? d : [])).map(o => ({ orderId: String(o.orderId), symbol: o.symbol, clientId: o.clientId || '', side: o.side, qty: +o.qty, status: o.status }))
 }
 
 // Dettaglio di un ordine (quantità eseguita, stato, commissione)

@@ -61,7 +61,7 @@ export function findEntry(bars, s, prep, fromMin = OPEN_MIN) {
   if (!prep.ok) return { skip: prep.why || 'dati insufficienti' }
   if (!bars.length) return null
   if (bars[0].min !== OPEN_MIN) return { skip: 'manca la candela delle 9:30' }
-  const open = bars[0].o, X = s.movePct / 100, cu = open * (1 + 1.25 * X), cd = open * (1 - 1.25 * X)
+  const open = bars[0].o, { cu, cd } = thresholds(s, open)
   let k = null, side = 0, entry = 0
   for (const b of bars) {
     if (b.min < fromMin) continue
@@ -74,11 +74,19 @@ export function findEntry(bars, s, prep, fromMin = OPEN_MIN) {
     if (k) break
   }
   if (!k) return null
-  // spazio fino al livello più vicino nella direzione del trade
+  const rc = roomCheck(s, prep, open, side, entry)
+  if (rc.skip) return rc
+  return { k, side, entry, open, R: rc.R }
+}
+
+// Soglie d'entrata dall'apertura: long sopra cu, short sotto cd (1,25 × il movimento)
+export const thresholds = (s, open) => ({ cu: open * (1 + 1.25 * s.movePct / 100), cd: open * (1 - 1.25 * s.movePct / 100) })
+// Spazio fino al livello più vicino nella direzione del trade: { skip } se è troppo vicino, altrimenti { R } (livello o null)
+export function roomCheck(s, prep, open, side, entry) {
   const ahead = prep.levels.filter(l => (side > 0 ? l.p > entry : l.p < entry)).sort((a, b) => (side > 0 ? a.p - b.p : b.p - a.p))
   const R = ahead[0] || null, done = Math.abs(entry - open)
   if (s.room > 0 && R && Math.abs(R.p - entry) < s.room * done) return { skip: `${R.t} troppo vicino` }
-  return { k, side, entry, open, R }
+  return { R }
 }
 
 // Margine di mantenimento per un titolo: quello di Bitunix per lo scaglione del valore della posizione,
