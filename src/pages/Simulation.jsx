@@ -5,7 +5,7 @@ import { get, post, fmtPrice, fmtUsd, fmtSigned } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
 import { OPTIONS, STRATEGY_DEFAULTS, normalizeSettings, sizing, ORIGINAL_SYMBOLS, NEW_SYMBOLS, LOW_LIQ_SYMBOLS, LEV_SYMBOLS } from '@shared/opening.js'
 import { addDays } from '@shared/time.js'
-import { Select, RulesCard, PresetsCard, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
+import { Select, RulesCard, PresetsCard, MarginField, PositionsField, ExposureInfo, useMins, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
 import CalendarOverview from '../components/CalendarOverview.jsx'
 import TradeChart from '../components/TradeChart.jsx'
 import Analysis from '../components/Analysis.jsx'
@@ -290,6 +290,7 @@ export default function Simulation({ onAuthError }) {
 
   const set = (k, v) => setS(d => ({ ...d, [k]: v }))
   const sz = sizing(s, +capital || 0)
+  const mins = useMins()
   const range = useMemo(() => {
     if (!status?.first) return null
     const end = status.last
@@ -333,11 +334,10 @@ export default function Simulation({ onAuthError }) {
             </div>
             <span className="note">all'inizio = <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.capital)} USDT</b></span>
           </div>
-          <Select label="Margine per trade" value={s.marginPct} options={OPTIONS.marginPct} fmt={v => `${v}% del capitale`} onChange={v => set('marginPct', v)}
-            hint={<>= <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.margin)} USDT</b> a trade all'inizio</>} />
+          <MarginField s={s} set={set} sz={sz} />
           <Select label="Leva" value={s.leverage} options={OPTIONS.leverage} fmt={v => `${v}x`} onChange={v => set('leverage', v)}
             hint={<>posizione da <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.notional)} USDT</b></>} />
-          <Select label="Posizioni al giorno" value={s.maxPos} options={OPTIONS.maxPos} fmt={v => lab('maxPos', v) || `massimo ${v}`} onChange={v => set('maxPos', v)} />
+          <PositionsField s={s} set={set} />
           <Select label="Commissione per lato" value={s.fee} options={OPTIONS.fee} fmt={v => `${num(v)}%`} onChange={v => set('fee', v)}
             hint="Bitunix taker 0,06%, sul valore della posizione" />
           <Select label="Slittamento per lato" value={s.slip} options={OPTIONS.slip} fmt={v => `${num(v)}%`} onChange={v => set('slip', v)}
@@ -345,6 +345,7 @@ export default function Simulation({ onAuthError }) {
           <Select label="Funding medio" value={s.funding} options={OPTIONS.funding} fmt={v => `${num(v)}% a periodo`} onChange={v => set('funding', v)}
             hint="pagato a ogni orario del funding di Bitunix con la posizione aperta" />
         </div>
+        <ExposureInfo s={s} sz={sz} mins={mins} />
       </div>
 
       <RulesCard s={s} set={set} showFee={false} sim />

@@ -207,3 +207,51 @@ export function PresetsCard({ current, onLoad }) {
     </details>
   )
 }
+
+// ---------- Margine per trade, posizioni al giorno ed esposizione ----------
+// Margine da 1% a 100% del capitale a passi di 0,5% (campo numerico e cursore)
+export function MarginField({ s, set, sz }) {
+  const v = s.marginPct
+  const put = x => set('marginPct', x === '' ? '' : Math.min(100, Math.max(1, Math.round(+x * 2) / 2)))
+  return (
+    <label className="field">
+      <span className="lab">Margine per trade</span>
+      <div className="input-suffix"><input type="number" inputMode="decimal" min="1" max="100" step="0.5" value={v} onChange={e => set('marginPct', e.target.value === '' ? '' : +e.target.value)} onBlur={e => put(e.target.value || 10)} /><span>% del capitale</span></div>
+      <input type="range" min="1" max="100" step="0.5" value={+v || 1} onChange={e => put(e.target.value)} className="range" />
+      <span className="note">= <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsdLocal(sz.margin)} USDT</b> a trade</span>
+    </label>
+  )
+}
+
+export function PositionsField({ s, set }) {
+  return <Select label="Posizioni al giorno" value={s.maxPos} options={OPTIONS.maxPos} fmt={v => lab('maxPos', v) || `massimo ${v}`} onChange={v => set('maxPos', v)} />
+}
+
+// Riepilogo: margine a trade, valore della posizione, esposizione massima e avviso sul minimo di Bitunix.
+// mins = { SIMBOLO: valore minimo di un ordine in USDT (quantità minima × prezzo) }
+export function ExposureInfo({ s, sz, mins }) {
+  const pos = s.maxPos > 0 ? s.maxPos : null
+  const expo = pos ? sz.notional * pos : null
+  const marginTot = pos ? sz.margin * pos : null
+  const cap = sz.capital || 0
+  const under = mins ? (s.symbols || []).filter(x => mins[x] && sz.notional < mins[x] * 1.05) : []
+  return (
+    <div className="card" style={{ padding: '10px 14px', marginTop: 10 }}>
+      <div className="kv" style={{ borderTop: 0 }}><span className="sec">Margine a trade</span><span className="mono">{fmtUsdLocal(sz.margin)} USDT ({num(s.marginPct)}%)</span></div>
+      <div className="kv"><span className="sec">Valore della posizione</span><span className="mono">{fmtUsdLocal(sz.notional)} USDT ({s.leverage}x)</span></div>
+      <div className="kv"><span className="sec">Esposizione massima (margine × leva × posizioni)</span><span className="mono">{expo !== null ? `${fmtUsdLocal(expo, 0)} USDT · ${cap > 0 ? Math.round(expo / cap * 100) : '—'}% del capitale` : 'senza limite di posizioni'}</span></div>
+      <div className="kv"><span className="sec">Margine impegnato con tutte le posizioni aperte</span><span className="mono">{marginTot !== null ? `${fmtUsdLocal(marginTot, 0)} USDT · ${cap > 0 ? Math.round(marginTot / cap * 100) : '—'}% del capitale` : '—'}</span></div>
+      {marginTot !== null && cap > 0 && marginTot > cap * 1.0001 && <div className="note" style={{ color: 'var(--warn)' }}>Con tutte le posizioni aperte insieme il margine supererebbe il capitale: nel Reale le ultime si salterebbero per saldo insufficiente (la Simulazione non lo considera).</div>}
+      {under.length > 0 && <div className="warn">Con {fmtUsdLocal(sz.notional)} USDT a posizione, {under.length} titoli su {s.symbols.length} sono sotto o vicini al minimo di Bitunix e nel Reale verrebbero saltati: {under.slice(0, 12).join(', ')}{under.length > 12 ? '…' : ''}.</div>}
+    </div>
+  )
+}
+const fmtUsdLocal = (v, d = 2) => (v === null || v === undefined || !Number.isFinite(v) ? '—' : v.toLocaleString('it-CH', { minimumFractionDigits: d, maximumFractionDigits: d }))
+
+// Valore minimo di un ordine per titolo (dal server, una volta per pagina)
+let minsCache = null
+export function useMins() {
+  const [mins, setMins] = useState(minsCache)
+  useEffect(() => { if (!minsCache) get('/api/minnotional').then(r => { minsCache = r.mins; setMins(r.mins) }).catch(() => {}) }, [])
+  return mins
+}

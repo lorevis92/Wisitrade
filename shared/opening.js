@@ -63,7 +63,7 @@ export const OPTIONS = {
   trail: steps(0.25, 3, 0.25),
   giveback: [0, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6],
   room: [0, 0.25, 0.5, 0.75, 1, 1.5],
-  maxPos: [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 0],
+  maxPos: [...Array.from({ length: 40 }, (_, i) => i + 1), 0], // da 1 a 40, più nessun limite
   maxDayLoss: [0, 3, 5, 7.5, 10, 15, 20, 30],
   maxTotalLoss: [0, 10, 15, 20, 25, 30, 40, 50],
   brakePct: [0, 3, 5, 8, 10, 15],
@@ -116,7 +116,8 @@ export function normalizeSettings(s = {}) {
   out.mmr = Math.min(Math.max(out.mmr || 1, 0.1), 50)
   out.liqGuard = out.liqGuard !== false
   out.leverage = Math.min(Math.max(out.leverage || 1, 1), 20)
-  out.marginPct = Math.min(Math.max(out.marginPct || 10, 1), 100)
+  out.marginPct = Math.min(Math.max(Math.round((out.marginPct || 10) * 2) / 2, 1), 100) // a passi di 0,5%
+  out.maxPos = Math.min(Math.max(Math.round(out.maxPos) || 0, 0), 40)
   out.capitalPct = Math.min(Math.max(out.capitalPct || 100, 1), 100)
   out.capitalFixed = Math.max(out.capitalFixed || 0, 0)
   if (!['fixed', 'percent', 'dedicated'].includes(out.capitalMode)) out.capitalMode = 'percent'

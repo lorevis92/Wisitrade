@@ -332,6 +332,23 @@ async function route(req, url) {
     return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: s, symbolsWithData: withData, ms: { load: loadMs, run: Date.now() - t0 - loadMs } }
   }
 
+  // ---- Valore minimo di un ordine per titolo (quantità minima di Bitunix × prezzo attuale), in cache per un'ora ----
+  if (path === '/minnotional' && m === 'GET') {
+    const c = await getMeta('mins')
+    if (c && Date.now() - c.at < 3600000) return { mins: c.mins, at: c.at }
+    const pairs = await getPairs()
+    const byPerp = Object.fromEntries(pairs.map(p => [p.symbol, p]))
+    const perps = STRATEGY_SYMBOLS.map(x => ASSET_MAP[x]?.perp).filter(x => x && byPerp[x])
+    const tk = await tickers(perps)
+    const mins = {}
+    for (const sym of STRATEGY_SYMBOLS) {
+      const perp = ASSET_MAP[sym]?.perp, pair = byPerp[perp], px = tk[perp]?.last
+      if (pair && px) mins[sym] = +(Math.max(pair.minQty || 0, 10 ** -(pair.basePrecision ?? 3)) * px).toFixed(4)
+    }
+    await setMeta('mins', { at: Date.now(), mins }).catch(() => {})
+    return { mins, at: Date.now() }
+  }
+
   // ---- Spread e profondità registrati alle 9:30–9:35 (mediana per titolo degli ultimi giorni di borsa) ----
   if (path === '/spreads' && m === 'GET') {
     requireAdmin(req)

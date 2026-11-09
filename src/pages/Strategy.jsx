@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { get, post, fmtPrice, fmtUsd, fmtSigned, ago } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
 import { OPTIONS, exitLevel, normalizeSettings, sizing } from '@shared/opening.js'
-import { Select, RulesCard, PresetsCard, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
+import { Select, RulesCard, PresetsCard, MarginField, PositionsField, ExposureInfo, useMins, num, lab, dayFmt, hm } from '../components/StrategyForm.jsx'
 import Simulation from './Simulation.jsx'
 import CalendarOverview from '../components/CalendarOverview.jsx'
 
@@ -112,7 +112,8 @@ export default function Strategy() {
   const [resetBal, setResetBal] = useState('')
   const [armReset, setArmReset] = useState(false)
   const [armStart, setArmStart] = useState(false)
-  const [selDay, setSelDay] = useState(null) // giorno scelto nella panoramica: filtra le operazioni chiuse
+  const [selDay, setSelDay] = useState(null)
+  const mins = useMins() // giorno scelto nella panoramica: filtra le operazioni chiuse
   const [draftFrom, setDraftFrom] = useState(null) // { name, presetId, settings }: impostazione salvata caricata nella bozza
 
   const refresh = useCallback(() => mode === 'sim' ? Promise.resolve() : get(`/api/strategy?mode=${mode}`)
@@ -260,13 +261,12 @@ export default function Strategy() {
               ? <span className="note">cifra di partenza · ora si usano <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.capital)} USDT</b>{dedNow > sz.capital ? (mode === 'live' ? ' (limitato al saldo disponibile)' : ' (limitato al saldo)') : ''}. Cambiandola si riparte da questa cifra.</span>
               : <span className="note">= <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.capital)} USDT</b>{s.capitalMode === 'fixed' && view.platform.balance !== null && s.capitalFixed > view.platform.balance ? ' (limitato al saldo)' : ''}</span>}
           </div>
-          <Select label="Margine per trade" value={s.marginPct} options={OPTIONS.marginPct} fmt={v => `${v}% del capitale`} onChange={v => set('marginPct', v)}
-            hint={<>= <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.margin)} USDT</b> a trade</>} />
+          <MarginField s={s} set={set} sz={sz} />
           <Select label="Leva" value={s.leverage} options={OPTIONS.leverage} fmt={v => `${v}x`} onChange={v => set('leverage', v)}
             hint={<>posizione da <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.notional)} USDT</b></>} />
-          <Select label="Posizioni al giorno" value={s.maxPos} options={OPTIONS.maxPos} fmt={v => lab('maxPos', v) || `massimo ${v}`} onChange={v => set('maxPos', v)}
-            hint={s.maxPos > 0 ? `esposizione massima ${fmtUsd(sz.notional * s.maxPos, 0)} USDT` : 'senza limite'} />
+          <PositionsField s={s} set={set} />
         </div>
+        <ExposureInfo s={s} sz={sz} mins={mins} />
         {s.capitalMode === 'dedicated' && <DedicatedCapital c={view.capital} s={s} set={set} mode={mode} />}
         {mode === 'paper' && (
           <div style={{ marginTop: 12, borderTop: '1px solid var(--border-soft)', paddingTop: 10 }}>

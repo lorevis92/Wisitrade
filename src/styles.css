@@ -170,3 +170,4 @@ details > summary::-webkit-details-marker { display: none; }
 .cal-usd { font-size: 10px; opacity: .85; overflow-wrap: anywhere; }
 .cal-sub { font-size: 10px; color: var(--text-muted); }
 .cal-filter { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; }
+.range { width: 100%; margin-top: 6px; accent-color: var(--primary); }
