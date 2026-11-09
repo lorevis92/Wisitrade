@@ -27,6 +27,9 @@ export const STRATEGY_DEFAULTS = {
   maxDayLoss: 10,         // perdita massima giornaliera in % del capitale (0 = spenta): superata, niente nuovi trade fino a domani
   maxTotalLoss: 30,       // perdita massima totale in % (0 = spenta): superata, la strategia si ferma (Reale/Prova: con capitale dedicato)
   brakePct: 0,            // freno di mercato "chiudi tutto": perdita del giorno (chiusi + aperti) in % del capitale; superata, chiude tutto e niente nuovi trade fino a domani (0 = spento)
+  entryDelay: 0,          // ritardo d'entrata: nessuna entrata prima di questi minuti dall'apertura (0 = come sempre)
+  volIn: 0,               // filtro volume all'entrata: candela chiusa prima del segnale ≥ volIn × volume normale di quel minuto (0 = spento)
+  volConfirm: 0,          // conferma volume dopo l'entrata: nei primi N minuti, volume sotto il normale e prezzo tornato all'entrata → chiudi (0 = spenta)
   pick: 'list',           // segnali nello stesso minuto con posti insufficienti: list = ordine della lista | move = movimento più forte | volume = più liquido | volat = più volatile
   movePct: 1,             // segnale: movimento dall'apertura (entrata a 1,25 × questo valore)
   sl: 1.5,                // stop loss in unità di volatilità
@@ -68,6 +71,9 @@ export const OPTIONS = {
   maxTotalLoss: [0, 10, 15, 20, 25, 30, 40, 50],
   brakePct: [0, 3, 5, 8, 10, 15],
   pick: ['list', 'move', 'volume', 'volat'],
+  entryDelay: [0, 1, 2, 3, 5],
+  volIn: [0, 1, 1.5, 2, 3],
+  volConfirm: [0, 2, 3, 5],
   stale: ['run', 'half', 'close'],
   fee: [0.06, 0.05, 0.042, 0.03, 0.02, 0.014, 0],
   mmr: [0.5, 1, 1.5, 2, 2.5, 3, 5],
@@ -97,6 +103,9 @@ export const LABELS = {
   halfAt: { 0: 'spenta' },
   pick: { list: 'ordine della lista', move: 'movimento più forte', volume: 'più liquido (volume)', volat: 'più volatile' },
   brakePct: { 0: 'spento' },
+  entryDelay: { 0: 'nessuno (come sempre)' },
+  volIn: { 0: 'spento' },
+  volConfirm: { 0: 'spenta' },
   idxMode: { off: 'spento', min: 'opera solo se l\'indice è almeno…', reduce: 'sotto la soglia meno posizioni' },
 }
 
@@ -104,7 +113,7 @@ export function normalizeSettings(s = {}) {
   const out = { ...STRATEGY_DEFAULTS }
   for (const k of Object.keys(STRATEGY_DEFAULTS)) if (s[k] !== undefined && s[k] !== null) out[k] = s[k]
   out.symbols = Array.isArray(out.symbols) ? [...new Set(out.symbols.filter(x => STRATEGY_SET.has(x)))] : ORB_SYMBOLS
-  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt', 'idxMin', 'idxPos', 'entryWin', 'capitalDedicated', 'maxDayLoss', 'maxTotalLoss', 'brakePct']) out[k] = Number(out[k])
+  for (const k of ['leverage', 'marginPct', 'capitalFixed', 'capitalPct', 'movePct', 'sl', 'trail', 'giveback', 'room', 'maxPos', 'fee', 'mmr', 'liqFee', 'funding', 'slip', 'npMin', 'npUnits', 'halfAt', 'idxMin', 'idxPos', 'entryWin', 'capitalDedicated', 'maxDayLoss', 'maxTotalLoss', 'brakePct', 'entryDelay', 'volIn', 'volConfirm']) out[k] = Number(out[k])
   out.entryWin = Math.min(Math.max(Math.round(out.entryWin) || 30, 1), 30)
   if (!['off', 'min', 'reduce'].includes(out.idxMode)) out.idxMode = 'off'
   out.idxMin = Math.min(Math.max(out.idxMin || 0, 0), 100)
@@ -126,6 +135,9 @@ export function normalizeSettings(s = {}) {
   out.maxTotalLoss = Math.min(Math.max(out.maxTotalLoss || 0, 0), 100)
   out.brakePct = Math.min(Math.max(out.brakePct || 0, 0), 100)
   if (!['list', 'move', 'volume', 'volat'].includes(out.pick)) out.pick = 'list'
+  out.entryDelay = Math.min(Math.max(Math.round(out.entryDelay) || 0, 0), 29)
+  out.volIn = Math.min(Math.max(out.volIn || 0, 0), 20)
+  out.volConfirm = Math.min(Math.max(Math.round(out.volConfirm) || 0, 0), 30)
   if (!['run', 'half', 'close'].includes(out.stale)) out.stale = 'run'
   return out
 }

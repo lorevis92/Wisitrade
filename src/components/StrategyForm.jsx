@@ -100,6 +100,15 @@ export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (P
         <Select label="Segnali nello stesso minuto" value={s.pick} options={OPTIONS.pick} fmt={v => lab('pick', v)} onChange={v => set('pick', v)}
           hint="quale titolo prendere quando i posti liberi del giorno non bastano" />
       </div>
+      <div className="lab" style={{ marginTop: 14 }}>Entrata e volumi · spenti di default</div>
+      <div className="grid2" style={{ marginTop: 6, alignItems: 'start' }}>
+        <Select label="Ritardo d'entrata" value={s.entryDelay} options={OPTIONS.entryDelay} fmt={v => lab('entryDelay', v) || `dopo ${v} ${v === 1 ? 'minuto' : 'minuti'}`} onChange={v => set('entryDelay', v)}
+          hint="niente entrate prima; se allo scadere il titolo è già oltre la soglia si entra all'apertura della candela successiva" />
+        <Select label="Filtro volume all'entrata" value={s.volIn} options={OPTIONS.volIn} fmt={v => lab('volIn', v) || `almeno ${num(v)}× il normale`} onChange={v => set('volIn', v)}
+          hint="volume della candela chiusa prima del segnale contro il normale di quel minuto (10 giorni); segnali nella prima candela scartati" />
+        <Select label="Conferma volume dopo l'entrata" value={s.volConfirm} options={OPTIONS.volConfirm} fmt={v => lab('volConfirm', v) || `nei primi ${v} minuti`} onChange={v => set('volConfirm', v)}
+          hint="se il volume cala sotto il normale e il prezzo torna all'entrata, chiude" />
+      </div>
       <div className="lab" style={{ marginTop: 14 }}>Limiti di perdita e freno · in % del capitale</div>
       <div className="grid2" style={{ marginTop: 6, alignItems: 'start' }}>
         <Select label="Perdita massima giornaliera" value={s.maxDayLoss} options={OPTIONS.maxDayLoss} fmt={v => (v ? `${num(v)}%` : 'spenta')} onChange={v => set('maxDayLoss', v)}

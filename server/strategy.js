@@ -4,7 +4,9 @@
 // Gira ogni minuto dentro /api/cron/tick con le candele da 1 minuto già scaricate.
 import { ASSET_MAP } from '../shared/assets.js'
 import { normalizeSettings, settingsFor, sizing, exitLevel, exitReason, pnlOf, closeMinute, isTradingDay, liqPriceOf, stopPastLiq } from '../shared/opening.js'
-import { prepFromBars, findEntry, newPosition, stepBar, riskFor, liqBlocks, indexRule, entryUntil, signalRank, bySignal, lossCheck, openPnlOf, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
+import { prepFromBars, findEntry, newPosition, stepBar, riskFor, liqBlocks, indexRule, entryUntil, entryFrom, volInBlock, minuteNormals, signalRank, bySignal, lossCheck, openPnlOf, ENTRY_UNTIL, MIN, PREP_BARS } from '../shared/engine.js'
+import { loadDays } from './archive.js'
+import { addDays } from '../shared/time.js'
 import * as bx from './bitunix.js'
 import { klinesBack, account, openPositions, positionHistory, hasKeys, tickers } from './bitunix.js'
 import { openLive as openLiveSafe, closeOurs, closePart, LiveSkip, CLIENT_PREFIX } from './live.js'
@@ -44,7 +46,16 @@ async function insertPos(pos) {
 // ---------- Preparazione del giorno (livelli, volatilità, volume normale) ----------
 async function prepSymbol(sym, today) {
   const bars = await klinesBack(ASSET_MAP[sym].perp, '15m', PREP_BARS) // ~13 giorni di candele da 15 min
-  return prepFromBars(bars, today)
+  const prep = prepFromBars(bars, today)
+  // volume normale minuto per minuto dalle 9:30 alle 10:05 (10 giorni precedenti, dall'archivio da 1 minuto)
+  if (prep.ok) {
+    try {
+      const d = await loadDays([sym], addDays(today, -21), addDays(today, -1))
+      const prev = Object.keys(d).sort().slice(-10).map(x => d[x][sym]).filter(b => b?.length)
+      prep.minVol = minuteNormals(prev)
+    } catch { prep.minVol = null }
+  }
+  return prep
 }
 
 async function prepare(symbols, today, urgent) {
@@ -335,9 +346,11 @@ async function entries(ctx, active, dayPos) {
       const prep = preps[sym]
       if (!prep) return
       const bars = (series[sym]?.['1m'] || []).map(b => ({ ...b, ...ny(b.t) })).filter(b => b.date === today && b.min >= OPEN_MIN && b.min < entryUntil(s))
-      const sig = findEntry(bars, s, prep, rule.from)
+      const sig = findEntry(bars, s, prep, entryFrom(s, rule))
       if (!sig) return
       if (sig.skip) { skip(mode, sym, sig.skip); return }
+      const vb = volInBlock(s, sig, bars, prep)
+      if (vb) { skip(mode, sym, vb); return }
       cands.push({ sym, sig, prep, idx, rank: signalRank(s, { sig, prep, bars, idx }) })
     })
     cands.sort((a, b) => bySignal(a, b) || a.idx - b.idx)

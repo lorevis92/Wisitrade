@@ -126,6 +126,13 @@ export function stepBar(p, s, b, dayBars, prep) {
   const hit = walk(p, s, pathOf(b), gap)
   p.last_bar = b.t
   if (hit !== null) return { exit: hit.px, reason: hit.liq ? 'liquidazione' : exitReason(p, hit.px), liq: hit.liq }
+  // Conferma volume dopo l'entrata: nei primi volConfirm minuti, candela con volume sotto il normale di quel minuto e prezzo
+  // tornato al livello d'entrata (o peggio) alla chiusura → si chiude (come le altre uscite decise a candela chiusa)
+  if (s.volConfirm > 0 && prep?.minVol) {
+    const el = Math.round((b.t - (p.entry_bar ?? p.opened_at)) / MIN)
+    const norm = prep.minVol[b.min]
+    if (el >= 1 && el <= s.volConfirm && norm && b.v < norm && p.side * (b.c - p.entry) <= 0) return { exit: b.c, reason: 'volume in calo' }
+  }
   // "Nessun progresso": passati npMin minuti dall'entrata senza aver mai raggiunto npUnits unità di guadagno
   if (s.npMin > 0 && !p.np_done && b.t + MIN - (p.entry_bar ?? p.opened_at) >= s.npMin * MIN) {
     p.np_done = true
@@ -158,6 +165,35 @@ export function stepBar(p, s, b, dayBars, prep) {
     if (R && inProfit(b15.c) && (p.side > 0 ? b15.h >= R.p && b15.c < R.p : b15.l <= R.p && b15.c > R.p)) return { exit: b15.c, reason: 'resistenza' }
   }
   return null
+}
+
+// ---------- Volume normale minuto per minuto e filtri di volume ----------
+export const VOL_FROM = OPEN_MIN, VOL_TO = OPEN_MIN + 35 // 9:30–10:05 New York (finestra d'entrata + conferma)
+// prevDays = candele da 1 minuto (con .min) dei giorni precedenti, al massimo 10, dal più vecchio al più recente.
+// Volume normale di ogni minuto = media dei giorni che hanno quel minuto (servono almeno 5 giorni).
+export function minuteNormals(prevDays) {
+  const sum = {}, cnt = {}
+  for (const bars of prevDays.slice(-10)) for (const b of bars) {
+    const m = b.min ?? ny(b.t).min
+    if (m < VOL_FROM || m > VOL_TO) continue
+    sum[m] = (sum[m] || 0) + b.v; cnt[m] = (cnt[m] || 0) + 1
+  }
+  const out = {}
+  for (const m in sum) if (cnt[m] >= 5) out[m] = sum[m] / cnt[m]
+  return Object.keys(out).length ? out : null
+}
+// Primo minuto in cui si può entrare (regola dell'indice e ritardo d'entrata)
+export const entryFrom = (s, rule) => Math.max(rule.from, OPEN_MIN + (s.entryDelay || 0))
+// Filtro volume all'entrata (solo dati noti): volume della candela chiusa PRIMA di quella del segnale rispetto al normale di quel minuto.
+// Restituisce null se va bene, altrimenti il motivo per cui il titolo si scarta.
+export function volInBlock(s, sig, bars, prep) {
+  if (!(s.volIn > 0)) return null
+  const prev = bars.find(b => b.min === sig.k.min - 1)
+  if (!prev) return 'filtro volume: nessuna candela chiusa prima del segnale'
+  const norm = prep?.minVol?.[prev.min]
+  if (!norm) return 'filtro volume: volume normale non disponibile'
+  const x = prev.v / norm
+  return x >= s.volIn ? null : `filtro volume: ${x.toFixed(1).replace('.', ',')}× sotto ${String(s.volIn).replace('.', ',')}×`
 }
 
 // ---------- Scelta tra segnali dello stesso minuto ----------
@@ -229,6 +265,15 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
   // candele di oggi e indice per minuto: tenute tra una simulazione e l'altra solo con la cache (ottimizzazione);
   // senza cache si rifanno ogni giorno, così la memoria non cresce con il numero di titoli
   let todayC = cache ? (C.today ||= {}) : {}, byMinC = cache ? (C.byMin ||= {}) : {}
+  // volume normale minuto per minuto (10 giorni precedenti con dati), unito alla preparazione
+  const mvC = C.minVol ||= {}
+  const minVolFor = (sym, day) => {
+    const key = sym + '|' + day
+    if (key in mvC) return mvC[key]
+    const prev = []
+    for (let i = allDates.indexOf(day) - 1; i >= 0 && prev.length < 10; i--) { const b = days[allDates[i]]?.[sym]; if (b?.length) prev.unshift(b) }
+    return (mvC[key] = minuteNormals(prev))
+  }
   const prepFor = (sym, day, openTs) => {
     const key = sym + '|' + day
     if (prepC[key]) return prepC[key]
@@ -272,10 +317,13 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     const sigs = []
     for (const sym of rule.ok ? syms : []) {
       const openTs = today[sym][0].t - (today[sym][0].min - OPEN_MIN) * MIN
-      const prep = prepFor(sym, day, openTs)
-      const sig = findEntry(today[sym].filter(b => b.min < entryUntil(s)), s, prep, rule.from)
+      const prep0 = prepFor(sym, day, openTs)
+      const prep = (s.volIn > 0 || s.volConfirm > 0) && prep0.ok ? { ...prep0, minVol: minVolFor(sym, day) } : prep0
+      const sig = findEntry(today[sym].filter(b => b.min < entryUntil(s)), s, prep, entryFrom(s, rule))
       if (!sig) continue
       if (sig.skip) { const why = sig.skip.replace(/^solo \d+ giorni.*/, 'storico insufficiente'); skips[why] = (skips[why] || 0) + 1; continue }
+      const vb = volInBlock(s, sig, today[sym], prep)
+      if (vb) { const why = vb.replace(/: \d.*/, ': sotto la soglia'); skips[why] = (skips[why] || 0) + 1; continue }
       sigs.push({ sym, sig, prep, rank: signalRank(s, { sig, prep, bars: today[sym], idx: symOrder[sym] }) })
     }
     // per minuto del segnale, poi secondo la regola di scelta (a parità: ordine della lista)
