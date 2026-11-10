@@ -7,6 +7,7 @@ import { Select, RulesCard, PresetsCard, MarginField, PositionsField, ExposureIn
 import Simulation from './Simulation.jsx'
 import CalendarOverview from '../components/CalendarOverview.jsx'
 import PositionChart from '../components/PositionChart.jsx'
+import { LiveSphere } from '../components/Sphere.jsx'
 
 // Capitale dedicato: valore attuale, partenza, risultato, limiti di perdita e storico delle modifiche
 function DedicatedCapital({ c, s, set, mode }) {
@@ -151,13 +152,16 @@ export default function Strategy() {
     .then(v => { setView(v); setErr(null) })
     .catch(e => { if (/codice/i.test(e.message)) { save('adminCode', ''); setAuthed(false) } setErr(e.message) }), [mode])
 
+  const hasOpen = !!view?.open?.length
+  // trade chiusi oggi (per la sfera)
+  const todayClosed = useMemo(() => (view ? view.trades.filter(p => p.day === view.today.date) : []), [view])
   useEffect(() => { setView(null); setDraft(null); setDraftFrom(null); setArmStart(false); setArmReset(false) }, [mode])
   useEffect(() => {
     if (!authed || mode === 'sim') return
     refresh()
-    const id = setInterval(refresh, 30000)
+    const id = setInterval(refresh, hasOpen ? 15000 : 30000) // con posizioni aperte più spesso (sfera e risultati aggiornati)
     return () => clearInterval(id)
-  }, [authed, refresh])
+  }, [authed, refresh, hasOpen])
 
   const s = draft || view?.settings
   const dirty = !!draft && JSON.stringify(normalizeSettings(draft)) !== JSON.stringify(normalizeSettings(view?.settings))
@@ -215,6 +219,11 @@ export default function Strategy() {
   return (
     <>
       {tabs}
+
+      {/* Sfera di oggi: posizioni aperte che galleggiano, trade chiusi depositati sul fondo */}
+      {(view.open.length > 0 || todayClosed.length > 0) && (
+        <LiveSphere open={view.open} closed={todayClosed} capital={sz?.capital} mode={mode} onBubble={setChartId} />
+      )}
 
       {/* Prova diversa dal Reale: il confronto tra le due non è sugli stessi segnali */}
       {mode === 'paper' && view.vsLive?.diff?.length > 0 && (

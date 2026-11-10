@@ -9,6 +9,7 @@ import { Select, RulesCard, PresetsCard, MarginField, PositionsField, ExposureIn
 import CalendarOverview from '../components/CalendarOverview.jsx'
 import TradeChart from '../components/TradeChart.jsx'
 import Analysis from '../components/Analysis.jsx'
+import { SimSphere } from '../components/Sphere.jsx'
 
 const PERIODS = [['1w', '1 settimana', 7], ['1m', '1 mese', 30], ['3m', '3 mesi', 91], ['6m', '6 mesi', 182], ['all', 'tutto'], ['custom', 'date a scelta']]
 const dShort = d => (d ? dayFmt(d, { day: '2-digit', month: 'short', year: '2-digit' }) : '—')
@@ -375,6 +376,7 @@ export default function Simulation({ onAuthError }) {
         <button className="btn" style={{ marginTop: 10 }} disabled={busy || !range || !s.symbols.length || !(+capital > 0)} onClick={run}>
           {busy ? 'Simulo…' : 'Avvia la simulazione'}
         </button>
+        {(busy || result) && <SimSphere running={busy} result={result} />}
         {err && <div className="note" style={{ color: 'var(--short)', marginTop: 6 }}>{err}</div>}
         <p className="note" style={{ marginTop: 8 }}>Stesso motore di Prova e Reale, minuto per minuto, sulle candele da 1 minuto di Bitunix. Con slittamento, funding e liquidazione (margine isolato, margine di mantenimento di Bitunix): un trade liquidato perde tutto il margine.</p>
       </div>

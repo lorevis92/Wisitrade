@@ -173,3 +173,17 @@ details > summary::-webkit-details-marker { display: none; }
 .cal-sub { font-size: 10px; color: var(--text-muted); }
 .cal-filter { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; }
 .range { width: 100%; margin-top: 6px; accent-color: var(--primary); }
+
+/* Sfera dei risultati (Prova, Reale, Simulazione) */
+.sphere-card { padding: 10px 12px 12px; background: radial-gradient(120% 70% at 50% 0%, #0E1424 0%, var(--surface-deep) 70%); }
+.sphere-card.sim { margin-top: 12px; border: 1px solid var(--border); border-radius: 6px; }
+.sphere-box { display: flex; justify-content: center; }
+.sphere-box canvas { display: block; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.sphere-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
+.sphere-stats > div { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 4px; padding: 8px 9px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sphere-stats .lab { font-size: 9px; letter-spacing: .07em; line-height: 1.3; }
+.sphere-stats b { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sphere-stats .note { font-size: 11px; line-height: 1.3; }
+.sphere-hint { text-align: center; margin-top: 6px; }
+.sphere-replay { margin-top: 8px; }
+@media (max-width: 380px) { .sphere-stats b { font-size: 13px; } .sphere-stats > div { padding: 7px; } }
