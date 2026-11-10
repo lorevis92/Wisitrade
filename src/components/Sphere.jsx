@@ -49,14 +49,24 @@ function addToLayer(sc, value, count = 1) {
 
 // zona dove galleggiano le bolle e superficie del deposito
 const zone = g => ({ x: g.cx, y: g.cy + 0.1 * g.R, rx: 0.64 * g.R, ry: 0.22 * g.R })
+// area del segmento di cerchio alto h dal fondo, e la sua inversa: gli strati hanno area proporzionale agli USDT
+// (in basso la sfera è stretta: a parità di altezza uno strato sul fondo conterrebbe molto meno)
+const segArea = (R, h) => { const x = clamp(h, 0, 2 * R); return R * R * Math.acos((R - x) / R) - (R - x) * Math.sqrt(Math.max(0, 2 * R * x - x * x)) }
+function segHeight(R, A) {
+  let lo = 0, hi = 2 * R
+  for (let i = 0; i < 22; i++) { const mid = (lo + hi) / 2; if (segArea(R, mid) < A) lo = mid; else hi = mid }
+  return (lo + hi) / 2
+}
 function depositTargets(sc) {
   const { R } = sc.geo, g = sc.layers.gain, l = sc.layers.loss, tot = g.v + l.v
   if (!(tot > 0)) return [0, 0]
-  const H = R * HMAX
   const fill = sc.kind === 'sim' ? clamp(tot / Math.max(sc.scale, 1e-9), 0, 1) * 0.92 : clamp(tot / Math.max(sc.scale, tot), 0.18, 1)
+  const A = segArea(R, R * HMAX) * fill
   const MIN = Math.max(16, R * 0.13) // spazio minimo per scrivere dentro lo strato
-  let hg = H * fill * g.v / tot, hl = H * fill * l.v / tot
+  let hg = g.v > 0 ? segHeight(R, A * g.v / tot) : 0
   if (g.n) hg = Math.max(hg, MIN)
+  const top = segHeight(R, segArea(R, hg) + A * l.v / tot)
+  let hl = l.v > 0 ? top - hg : 0
   if (l.n) hl = Math.max(hl, MIN)
   return [hg, hl]
 }
@@ -94,6 +104,16 @@ function land(sc, b) {
   }
 }
 
+// esplosione in piccole particelle (segnale rimasto fuori)
+function burst(sc, b) {
+  b.dead = true
+  const n = 14, col = [245, 184, 61]
+  for (let i = 0; i < n && sc.drops.length < 160; i++) {
+    const ang = (i / n) * TAU + Math.random() * 0.4, sp = sc.geo.R * (0.25 + Math.random() * 0.45)
+    sc.drops.push({ x: b.x + Math.cos(ang) * b.r * 0.6, y: b.y + Math.sin(ang) * b.r * 0.6, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 1, r: 1.2 + Math.random() * 1.4, col: i % 3 ? COL.calm : col, g: 0.35 })
+  }
+}
+
 // ---------- movimento ----------
 function step(sc, dt, realDt = dt) {
   const g = sc.geo
@@ -114,7 +134,7 @@ function step(sc, dt, realDt = dt) {
   // raggio delle bolle aperte: proporzionale alla radice del risultato, ridotto se non ci stanno
   const floats = sc.bubbles.filter(b => b.state === 'float')
   if (floats.length) {
-    const ref = Math.max(0.5, ...floats.map(b => Math.abs(b.pnl)))
+    const ref = sc.refAbs || Math.max(0.5, ...floats.map(b => Math.abs(b.pnl)))
     const raw = floats.map(b => R * (0.1 + 0.11 * Math.sqrt(Math.abs(b.pnl) / ref)))
     const area = raw.reduce((a, r) => a + Math.PI * r * r, 0), room = Math.PI * ez.rx * (ez.ry + R * 0.08) * 0.78
     const k = Math.min(1, Math.sqrt(room / area))
@@ -127,10 +147,11 @@ function step(sc, dt, realDt = dt) {
       b.y = b.rise ? zBottom + R * 0.1 : ez.y + (Math.random() - 0.5) * ez.ry
       if (b.rise) b.vy = -R * 0.9
     }
-    b.c += (sgn(b.state === 'fall' ? b.value : b.pnl) - b.c) * ease(3, dt)
+    b.c += ((b.state === 'pop' ? 0 : sgn(b.state === 'fall' ? b.value : b.pnl)) - b.c) * ease(b.fast ? 8 : 3, dt)
     if (b.state === 'float') {
-      b.a += (1 - b.a) * ease(4, dt)
-      b.r += (b.rT - b.r) * ease(5, dt)
+      const grow = sc.kind === 'sim' ? 12 : 5 // nella Simulazione il tempo corre: le bolle compaiono più in fretta
+      b.a += (1 - b.a) * ease(grow * 0.8, dt)
+      b.r += (b.rT - b.r) * ease(grow, dt)
       const s = R / 150
       let ax = Math.sin(sc.t * 0.62 + b.ph) * 9 * s, ay = Math.cos(sc.t * 0.81 + b.ph * 1.7) * 7 * s
       // dentro l'ellisse della zona (con il fondo che sale insieme al deposito)
@@ -145,6 +166,9 @@ function step(sc, dt, realDt = dt) {
       b.vy += R * (b.fast ? 3.4 : 2.3) * dt
       b.vx += Math.sin(sc.t * 5 + b.ph) * R * 0.25 * dt
       b.vx *= Math.exp(-1.5 * dt)
+    } else if (b.state === 'pop') { // segnale rimasto fuori: compare un attimo, poi esplode
+      b.a += (1 - b.a) * ease(10, dt); b.r += (b.rT - b.r) * ease(10, dt); b.life -= dt
+      if (b.life <= 0) burst(sc, b)
     } else if (b.state === 'fade') {
       b.a += (0 - b.a) * ease(5, dt); b.r *= Math.exp(-1.2 * dt)
       if (b.a < 0.02) b.dead = true
@@ -160,14 +184,16 @@ function step(sc, dt, realDt = dt) {
     b.x += b.vx * dt; b.y += b.vy * dt
     // sempre dentro la sfera
     const dx = b.x - cx, dy = b.y - cy, d = Math.hypot(dx, dy), max = R - b.r - 3
-    if (d > max && d > 0) { b.x = cx + dx / d * max; b.y = cy + dy / d * max; if (b.state === 'float') { b.vx *= 0.5; b.vy *= 0.5 } }
+    const touch = d > max && d > 0
+    if (touch) { b.x = cx + dx / d * max; b.y = cy + dy / d * max; if (b.state === 'float') { b.vx *= 0.5; b.vy *= 0.5 } }
     // le bolle aperte restano sotto il risultato scritto in alto
     if (b.state === 'float' && b.y - b.r < cy - R * 0.24) { b.y = cy - R * 0.24 + b.r; if (b.vy < 0) b.vy *= -0.3 }
-    if (b.state === 'fall' && b.y + b.r * 0.45 >= surfaceAt(sc, b.x)) land(sc, b)
+    // una bolla che cade si scioglie appena tocca lo strato o il fondo della sfera: sul fondo non restano mai palline
+    if (b.state === 'fall' && (b.y + b.r * 0.45 >= surfaceAt(sc, b.x) || (touch && b.y > cy))) land(sc, b)
   }
   if (sc.bubbles.some(b => b.dead)) sc.bubbles = sc.bubbles.filter(b => !b.dead)
 
-  for (const p of sc.drops) { p.vy += R * 3 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt * 1.7 }
+  for (const p of sc.drops) { p.vy += R * (p.g ?? 3) * dt; p.x += p.vx * dt; p.y += p.vy * dt; if (p.g !== undefined) { p.vx *= Math.exp(-2 * dt); p.vy *= Math.exp(-2 * dt) } p.life -= dt * 1.7 }
   sc.drops = sc.drops.filter(p => p.life > 0)
   sc.ripples = sc.ripples.filter(r => sc.t - r.at < 2.5)
 
@@ -212,7 +238,7 @@ function draw(ctx, sc) {
   ctx.fillStyle = gr; ctx.fillRect(cx - R, cy - R, R * 2, R * 2)
   drawDeposit(ctx, sc)
   for (const b of sc.bubbles) drawBubble(ctx, sc, b)
-  for (const p of sc.drops) { ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, TAU); ctx.fillStyle = rgba(light(p.col, 0.3), p.life * 0.9); ctx.fill() }
+  for (const p of sc.drops) { ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (p.g === undefined ? 1 : 0.4 + 0.6 * p.life), 0, TAU); ctx.fillStyle = rgba(light(p.col, 0.3), p.life * 0.9); ctx.fill() }
   ctx.restore()
 
   drawHeader(ctx, sc)
@@ -452,57 +478,91 @@ export function LiveSphere({ open, closed, capital, mode, onBubble }) {
 }
 
 // ---------- Simulazione ----------
+// Il motore calcola tutto sul server in un colpo; qui si rigioca giorno per giorno a velocità sostenuta:
+// segnali e posizioni aperte galleggiano (colore dal risultato non realizzato minuto per minuto, tr.path),
+// i segnali rimasti fuori esplodono, i trade chiusi cadono e si sciolgono nel loro strato.
 const pct95 = list => { const a = list.map(Math.abs).sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(a.length * 0.95))] : 1 }
 const dayShort = d => new Date(`${d}T12:00:00Z`).toLocaleDateString('it-CH', { day: '2-digit', month: 'short', year: '2-digit', timeZone: 'UTC' })
+// tempo della giornata compresso: 9:30–10:00 (le entrate) è il 40% del giorno, fino alle 16:00 un altro 50%, l'ultimo 10% è la chiusura
+const uOf = m => (m <= 600 ? 0.4 * clamp((m - 570) / 30, 0, 1) : 0.4 + 0.5 * Math.sqrt(clamp((m - 600) / 360, 0, 1)))
+const minAt = u => (u <= 0.4 ? 570 + 30 * Math.max(0, u) / 0.4 : 600 + 360 * clamp((u - 0.4) / 0.5, 0, 1) ** 2)
+function pathAt(t, m) {
+  const p = t.path, k = t.kmin ?? 570
+  if (!p?.length) return m > k ? t.pnl * 0.5 : 0
+  if (m <= p[0][0]) return p[0][1] * clamp((m - k) / Math.max(1, p[0][0] - k), 0, 1)
+  for (let i = 1; i < p.length; i++) if (m <= p[i][0]) { const [m0, v0] = p[i - 1], [m1, v1] = p[i]; return lerp(v0, v1, (m - m0) / Math.max(1e-9, m1 - m0)) }
+  return p.at(-1)[1]
+}
+const finalStats = r => ({ win: r.wins, winPnl: r.grossWin, loss: r.n - r.wins, lossPnl: -r.grossLoss })
 
-// Ripasso dei giorni simulati: ogni giorno i suoi trade cadono come bolle veloci (i più grandi) e il resto va dritto negli strati
-function buildReplay(r, instant) {
+function buildReplay(r) {
   const byDay = new Map()
   for (const t of r.trades) { if (!byDay.has(t.day)) byDay.set(t.day, []); byDay.get(t.day).push(t) }
-  const days = r.daily, N = Math.max(1, r.trades.length), BUDGET = 260
-  const T = instant ? 0 : clamp(days.length * 0.045, 3.5, 9)
-  return { r, days, byDay, i: 0, time: 0, T, slot: days.length ? T / days.length : 0, pending: [], ref: Math.max(0.01, pct95(r.trades.map(t => t.pnl))), share: Math.min(1, BUDGET / N), instant }
+  const days = r.daily
+  return { r, days, byDay, i: 0, time: 0, nextStart: 0, cur: null, dayDur: clamp(40 / Math.max(1, days.length), 0.35, 2.6) }
+}
+function startDay(sc, rp) {
+  const d = rp.days[rp.i], list = rp.byDay.get(d.day) || [], ev = []
+  for (const t of list) {
+    const k = t.kmin ?? 570, cm = k + Math.max(1, Math.round((t.closed_at - t.opened_at) / 60000))
+    ev.push({ u: uOf(k), type: 'open', t }, { u: Math.max(uOf(k) + 0.04, uOf(cm)), type: 'close', t })
+  }
+  for (const [sym, m] of (d.skipped || []).slice(0, 14)) ev.push({ u: uOf(m) + 0.005, type: 'skip', sym })
+  ev.sort((a, b) => a.u - b.u)
+  rp.cur = { d, ev, k: 0, start: rp.nextStart, live: new Map(), closedPnl: 0, startBal: d.balance - d.pnl, cut: !list.length && d.n > 0 }
+}
+function finishReplay(sc, rp) {
+  // fine: restano solo i due strati, con i valori esatti di tutta la simulazione
+  for (const b of sc.bubbles) if (b.sim) b.dead = true
+  sc.bubbles = sc.bubbles.filter(b => !b.dead)
+  const f = finalStats(rp.r), g = sc.layers.gain, l = sc.layers.loss
+  g.v = f.winPnl; g.n = f.win; l.v = -f.lossPnl; l.n = f.loss
+  sc.replay = null; sc.done = true; sc.final = f
+  sc.totalT = rp.r.net; sc.ring.pT = 1; sc.dayIdx = rp.days.length
+  sc.label = 'Risultato finale'
+  sc.sub = `${fmtSigned(rp.r.pct, 1)}% · ${rp.days.length} giorni`.replace('-', '−')
+  const tot = g.v + l.v
+  sc.moodT = tot > 0 ? clamp(sc.totalT / tot * 1.4, -1, 1) : 0
+  sc.onTick?.(sc)
 }
 function stepReplay(sc, dt) {
-  const rp = sc.replay, { R, cx, cy } = sc.geo
+  const rp = sc.replay, { R } = sc.geo, cap = rp.r.capital
+  if (rp.skip) return finishReplay(sc, rp)
   rp.time += dt
-  while (rp.i < rp.days.length && (rp.instant || rp.time >= rp.i * rp.slot)) {
-    const d = rp.days[rp.i], list = rp.byDay.get(d.day) || []
-    if (list.length) {
-      const k = rp.instant ? 0 : Math.max(1, Math.round(list.length * rp.share))
-      const big = new Set(list.slice().sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl)).slice(0, k))
-      for (const t of list) {
-        if (big.has(t)) rp.pending.push({ t, at: rp.time + Math.random() * rp.slot * 0.9 })
-        else addToLayer(sc, t.pnl)
-      }
-    } else if (d.n > 0) addToLayer(sc, d.pnl, d.n) // trade non arrivati (elenco tagliato): il risultato del giorno
-    sc.totalT = d.balance - rp.r.capital
-    sc.sub = `${fmtSigned(rp.r.capital > 0 ? (d.balance / rp.r.capital - 1) * 100 : 0, 1)}% · ${dayShort(d.day)}`.replace('-', '−')
-    sc.ring.pT = (rp.i + 1) / rp.days.length
-    sc.dayIdx = rp.i + 1
-    rp.i++
-  }
-  if (rp.pending.length) {
-    const now = rp.pending.filter(p => p.at <= rp.time)
-    if (now.length) {
-      rp.pending = rp.pending.filter(p => p.at > rp.time)
-      for (const { t } of now) {
-        const r = R * (0.05 + 0.065 * Math.sqrt(Math.min(1.6, Math.abs(t.pnl) / rp.ref)))
-        const half = R * 0.55
-        addBubble(sc, { sym: t.symbol, pnl: t.pnl, value: t.pnl, state: 'fall', fast: true, r, rT: r, a: 0,
-          x: cx + (Math.random() - 0.5) * 2 * half, y: cy - R * 0.2 + Math.random() * R * 0.1, vy: R * (0.5 + Math.random() * 0.4) })
-      }
+  for (;;) {
+    if (!rp.cur) { if (rp.i >= rp.days.length) return finishReplay(sc, rp); startDay(sc, rp) }
+    const c = rp.cur, u = (rp.time - c.start) / rp.dayDur
+    while (c.k < c.ev.length && c.ev[c.k].u <= u) {
+      const e = c.ev[c.k++]
+      if (e.type === 'open') c.live.set(e.t, addBubble(sc, { sym: e.t.symbol, pnl: 0, sim: true }))
+      else if (e.type === 'close') {
+        const b = c.live.get(e.t)
+        if (b && !b.dead) { b.state = 'fall'; b.value = e.t.pnl; setPnl(b, e.t.pnl); b.vy = -R * 0.2 }
+        c.closedPnl += e.t.pnl
+      } else addBubble(sc, { sym: e.sym, pnl: 0, state: 'pop', rT: R * 0.075, life: clamp(rp.dayDur * 0.14, 0.2, 0.45), fast: true, sim: true })
     }
-  }
-  const absAll = sc.layers.gain.v + sc.layers.loss.v
-  sc.moodT = absAll > 0 ? clamp(sc.totalT / absAll * 1.4, -1, 1) : 0
-  if (rp.i >= rp.days.length && !rp.pending.length) {
-    sc.replay = null
-    sc.totalT = rp.r.net
-    sc.sub = `${fmtSigned(rp.r.pct, 1)}% · ${rp.days.length} giorni`.replace('-', '−')
-    sc.label = 'Risultato finale'
-    sc.done = true
-    sc.onTick?.(sc)
+    // risultato non realizzato delle posizioni aperte al minuto raggiunto
+    const m = minAt(Math.min(u, 0.9))
+    let openPnl = 0, openAbs = 0
+    for (const [t, b] of c.live) if (b.state === 'float' && !b.dead) { const v = pathAt(t, m); setPnl(b, v); openPnl += v; openAbs += Math.abs(v) }
+    sc.totalT = c.startBal - cap + c.closedPnl + openPnl
+    sc.ring.pT = (rp.i + clamp(u, 0, 1)) / rp.days.length
+    sc.dayIdx = rp.i + 1
+    sc.sub = `${fmtSigned(cap > 0 ? (c.startBal + c.closedPnl + openPnl - cap) / cap * 100 : 0, 1)}% · ${dayShort(c.d.day)}`.replace('-', '−')
+    const tot = sc.layers.gain.v + sc.layers.loss.v + openAbs
+    sc.moodT = tot > 0 ? clamp(sc.totalT / tot * 1.4, -1, 1) : 0
+    if (u < 1) return
+    // fine del giorno: i trade ancora in caduta si sciolgono negli strati, che così crescono giorno per giorno
+    for (const b of c.live.values()) {
+      if (b.dead) continue
+      if (b.x === null) { b.x = sc.geo.cx; b.y = sc.geo.cy }
+      if (b.value === undefined) b.value = b.pnl
+      land(sc, b)
+    }
+    if (c.cut) addToLayer(sc, c.d.pnl, c.d.n) // giorno senza l'elenco dei trade (elenco tagliato): il risultato del giorno
+    sc.totalT = c.d.balance - cap
+    rp.nextStart = c.start + rp.dayDur
+    rp.i++; rp.cur = null
   }
 }
 
@@ -511,27 +571,29 @@ export function SimSphere({ running, result }) {
   const [prog, setProg] = useState(null)
   const [runId, setRunId] = useState(0)
   useEffect(() => {
-    sc.onTick = s => setProg({
-      day: s.dayIdx || 0, days: s.replay?.days.length ?? result?.daily.length ?? 0, done: !!s.done && !s.replay,
+    sc.onTick = s => setProg(s.final ? { day: s.dayIdx, done: true, ...s.final } : {
+      day: s.dayIdx || 0, done: false,
       win: s.layers.gain.n, winPnl: s.layers.gain.v, loss: s.layers.loss.n, lossPnl: -s.layers.loss.v,
     })
     return () => { sc.onTick = null }
-  }, [sc, result])
+  }, [sc])
   useEffect(() => {
+    clearScene(sc); sc.done = false; sc.final = null; sc.dayIdx = 0; sc.refAbs = 0
+    setProg(null)
     if (running) {
-      clearScene(sc); sc.done = false; sc.dayIdx = 0
-      sc.ring.indet = true; sc.label = 'Simulazione in corso'; sc.sub = 'calcolo i giorni…'
-      setProg(null)
+      sc.ring.indet = true; sc.label = 'Simulazione in corso'; sc.sub = 'carico i dati e calcolo…'
       return
     }
     if (!result) return
-    clearScene(sc); sc.done = false; sc.dayIdx = 0
     sc.ring.indet = false
     sc.label = 'Risultato accumulato'
-    sc.scale = Math.max(1e-9, result.trades.reduce((a, t) => a + Math.abs(t.pnl), 0) + result.daily.filter(d => d.n && !result.trades.some(t => t.day === d.day)).reduce((a, d) => a + Math.abs(d.pnl), 0))
-    sc.replay = buildReplay(result, reducedMotion())
+    sc.scale = Math.max(1e-9, result.grossWin + result.grossLoss)
+    sc.refAbs = Math.max(0.01, pct95(result.trades.map(t => t.pnl)))
+    sc.replay = buildReplay(result)
+    if (reducedMotion()) sc.replay.skip = true
   }, [sc, running, result, runId])
 
+  const replaying = !running && result && !prog?.done
   return (
     <div className="sphere-card sim">
       <div className="sphere-box" ref={boxRef}>
@@ -539,11 +601,12 @@ export function SimSphere({ running, result }) {
       </div>
       {!running && result && (
         <div className="sphere-stats">
-          <div><span className="lab">Giorni</span><b className="mono">{prog ? `${prog.day} / ${prog.days}` : '—'}</b><span className="note">{prog?.done ? 'completata' : 'in riproduzione'}</span></div>
-          <div><span className="lab">In guadagno</span><b className="mono up">{prog ? money(prog.winPnl) : '—'}</b><span className="note">{prog ? `${fmtUsd(prog.win, 0)} trade` : ''}</span></div>
-          <div><span className="lab">In perdita</span><b className={`mono ${prog?.lossPnl < 0 ? 'down' : ''}`}>{prog ? money(prog.lossPnl) : '—'}</b><span className="note">{prog ? `${fmtUsd(prog.loss, 0)} trade` : ''}</span></div>
+          <div><span className="lab">Giorni</span><b className="mono">{prog ? `${prog.day} / ${result.daily.length}` : '—'}</b><span className="note">{prog?.done ? 'simulazione finita' : 'giorno per giorno'}</span></div>
+          <div><span className="lab">Trade vinti</span><b className="mono up">{prog ? money(prog.winPnl) : '—'}</b><span className="note">{prog ? `${fmtUsd(prog.win, 0)} trade` : ''}</span></div>
+          <div><span className="lab">Trade persi</span><b className={`mono ${prog?.lossPnl < 0 ? 'down' : ''}`}>{prog ? money(prog.lossPnl) : '—'}</b><span className="note">{prog ? `${fmtUsd(prog.loss, 0)} trade` : ''}</span></div>
         </div>
       )}
+      {replaying && <button className="btn ghost small sphere-replay" onClick={() => { if (sc.replay) sc.replay.skip = true }}>Salta alla fine</button>}
       {!running && result && prog?.done && <button className="btn ghost small sphere-replay" onClick={() => setRunId(x => x + 1)}>Rivedi l'animazione</button>}
     </div>
   )

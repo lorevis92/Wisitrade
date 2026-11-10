@@ -382,7 +382,7 @@ async function route(req, url) {
     const mindex = {}
     for (const d of Object.keys(days)) { const x = indexOf(raw, d); if (x) mindex[d] = x }
     const loadMs = Date.now() - t0
-    const r = runSimulation(days, s, { from: body.from, to: body.to, capital, limits, mindex })
+    const r = runSimulation(days, s, { from: body.from, to: body.to, capital, limits, mindex, story: true })
     const MAX_TRADES = 4000
     // titoli scelti che hanno davvero dati nel periodo (senza decomprimere niente)
     const inPeriod = Object.keys(days).filter(d => d >= body.from && d <= body.to)

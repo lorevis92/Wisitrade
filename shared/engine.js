@@ -75,7 +75,7 @@ export function findEntry(bars, s, prep, fromMin = OPEN_MIN) {
   }
   if (!k) return null
   const rc = roomCheck(s, prep, open, side, entry)
-  if (rc.skip) return rc
+  if (rc.skip) return { ...rc, k, side } // minuto e lato servono solo al racconto della Simulazione (story)
   return { k, side, entry, open, R: rc.R }
 }
 
@@ -240,6 +240,13 @@ export function openPnlOf(p, px) {
   return p.side * (px - p.entry) * (p.qty - hq) + (hq ? p.side * (p.half_px - p.entry) * hq : 0)
 }
 
+// Andamento di una posizione per l'animazione della Simulazione: al massimo 12 punti [minuto, risultato non realizzato]
+function storyPath(path) {
+  const N = 12
+  const pick = path.length <= N ? path : Array.from({ length: N }, (_, i) => path[Math.round(i * (path.length - 1) / (N - 1))])
+  return pick.map(([m, v]) => [m, Math.round(v * 100) / 100])
+}
+
 // ---------- Simulazione sui dati archiviati ----------
 // days: { 'YYYY-MM-DD': { SYM: [candele 1 min con t,o,h,l,c,v] } } (9:00–16:30 NY)
 // opts: { from, to, capital, limits }. Le regole sono le stesse del dal vivo; il saldo cresce e cala a ogni chiusura (guadagni reinvestiti).
@@ -250,8 +257,10 @@ export function openPnlOf(p, px) {
 // la candela d'entrata viene già controllata per l'uscita, e alle 15:59 si chiude tutto all'apertura di quel minuto.
 // cache (facoltativa): oggetto riusato tra simulazioni sugli stessi `days` (ottimizzazione): preparazione e candele
 // si calcolano una volta sola; i risultati sono identici. analysis = false salta i valori dell'Analisi (più veloce).
+// story = true registra anche, solo per l'animazione della Simulazione, l'andamento di ogni posizione aperta (tr.path, tr.kmin)
+// e i segnali rimasti fuori di ogni giorno (riga del giorno .skipped): non cambia nessuna regola né nessun risultato.
 // slipBy (facoltativo): slittamento per lato in % per singolo titolo, al posto di s.slip (per le analisi, es. dallo spread misurato)
-export function runSimulation(days, s, { from, to, capital, limits = {}, mindex = {}, cache = null, analysis = true, slipBy = null }) {
+export function runSimulation(days, s, { from, to, capital, limits = {}, mindex = {}, cache = null, analysis = true, slipBy = null, story = false }) {
   const slip0 = (s.slip || 0) / 100
   const slipOf = sym => (slipBy && slipBy[sym] !== undefined ? slipBy[sym] / 100 : slip0)
   const mmrFrom = {}
@@ -323,15 +332,17 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
     if (rule.reduced) skips['giorni con meno posizioni (indice basso)'] = (skips['giorni con meno posizioni (indice basso)'] || 0) + 1
     // segnali di entrata
     const sigs = []
+    const daySkips = [] // solo con story: [titolo, minuto, lato, motivo] dei segnali rimasti fuori
+    const noteSkip = (sym, sig, why) => { if (story && sig?.k && daySkips.length < 40) daySkips.push([sym, sig.k.min, sig.side || 0, why]) }
     for (const sym of rule.ok ? syms : []) {
       const openTs = today[sym][0].t - (today[sym][0].min - OPEN_MIN) * MIN
       const prep0 = prepFor(sym, day, openTs)
       const prep = (s.volIn > 0 || s.volConfirm > 0) && prep0.ok ? { ...prep0, minVol: minVolFor(sym, day) } : prep0
       const sig = findEntry(today[sym].filter(b => b.min < entryUntil(s)), s, prep, entryFrom(s, rule))
       if (!sig) continue
-      if (sig.skip) { const why = sig.skip.replace(/^solo \d+ giorni.*/, 'storico insufficiente'); skips[why] = (skips[why] || 0) + 1; continue }
+      if (sig.skip) { const why = sig.skip.replace(/^solo \d+ giorni.*/, 'storico insufficiente'); skips[why] = (skips[why] || 0) + 1; noteSkip(sym, sig, why); continue }
       const vb = volInBlock(s, sig, today[sym], prep)
-      if (vb) { const why = vb.replace(/: \d.*/, ': sotto la soglia'); skips[why] = (skips[why] || 0) + 1; continue }
+      if (vb) { const why = vb.replace(/: \d.*/, ': sotto la soglia'); skips[why] = (skips[why] || 0) + 1; noteSkip(sym, sig, why); continue }
       sigs.push({ sym, sig, prep, rank: signalRank(s, { sig, prep, bars: today[sym], idx: symOrder[sym] }) })
     }
     // per minuto del segnale, poi secondo la regola di scelta (a parità: ordine della lista)
@@ -368,6 +379,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
         signal: pos.signal, half: pos.half_done ? { px: pos.half_px, qty: pos.half_qty } : null, unit: pos.unit,
         states: analysis ? tradeStates(pos, byMin[pos.symbol], at) : null, ctx: pos.ctx,
       }
+      if (story) { tr.kmin = pos.kmin; tr.path = storyPath(pos.path || []) }
       trades.push(tr); dayTrades.push(tr)
       open = open.filter(x => x !== pos)
     }
@@ -395,6 +407,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
         lastPx[pos.symbol] = b
         const r = stepBar(pos, s, b, today[pos.symbol], pos.prep)
         if (r) close(pos, r.exit, r.reason, b.t + MIN, r.liq)
+        else if (story) pos.path.push([m + 1, openPnlOf(pos, b.c)])
       }
       // freno di mercato: perdita del giorno (chiusi + aperti al prezzo di chiusura del minuto) oltre la soglia → chiude tutto
       if (s.brakePct > 0 && open.length) {
@@ -418,20 +431,21 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
       // entrate scattate nel minuto m
       while (si < sigs.length && sigs[si].sig.k.min <= m) {
         const { sym, sig, prep } = sigs[si++]
-        if (stopNew) { skips[stopNew] = (skips[stopNew] || 0) + 1; continue }
-        if (rule.maxPos > 0 && taken >= rule.maxPos) { skips['limite posizioni al giorno'] = (skips['limite posizioni al giorno'] || 0) + 1; continue }
+        if (stopNew) { skips[stopNew] = (skips[stopNew] || 0) + 1; noteSkip(sym, sig, stopNew); continue }
+        if (rule.maxPos > 0 && taken >= rule.maxPos) { skips['limite posizioni al giorno'] = (skips['limite posizioni al giorno'] || 0) + 1; noteSkip(sym, sig, 'limite posizioni al giorno'); continue }
         const size = sizing(s, balance)
-        if (!(size.margin >= 1)) { skips['capitale insufficiente'] = (skips['capitale insufficiente'] || 0) + 1; continue }
+        if (!(size.margin >= 1)) { skips['capitale insufficiente'] = (skips['capitale insufficiente'] || 0) + 1; noteSkip(sym, sig, 'capitale insufficiente'); continue }
         // entrata a mercato: slittamento contro di te; lo stop si calcola dal prezzo eseguito, come nel Reale
         const fill = sig.entry * (1 + sig.side * slipOf(sym))
         const risk = riskFor(limits[sym], size.notional, s)
         mmrFrom[sym] = risk.fromBitunix ? 'bitunix' : 'impostato'
         const pos = newPosition({ mode: 'sim', day, symbol: sym, sig: { ...sig, entry: fill }, s, prep, size, risk })
-        if (s.liqGuard && liqBlocks(pos)) { skips['stop oltre la liquidazione'] = (skips['stop oltre la liquidazione'] || 0) + 1; continue }
+        if (s.liqGuard && liqBlocks(pos)) { skips['stop oltre la liquidazione'] = (skips['stop oltre la liquidazione'] || 0) + 1; noteSkip(sym, sig, 'stop oltre la liquidazione'); continue }
         pos.prep = prep; pos.stop0 = pos.init_stop; pos.signal = sig.entry; pos.kmin = sig.k.min
         pos.ctx = analysis ? tradeContext(days, allDates, day, sym, sig, s.symbols, info) : null
         pos.slipIn = Math.abs(fill - sig.entry) * pos.qty
         taken++; open.push(pos)
+        if (story) pos.path = []
         lastPx[sym] = sig.k
         const r = stepBar(pos, s, sig.k, today[sym], prep)
         if (r) { close(pos, r.exit, r.reason, sig.k.t + MIN, r.liq); checkAfterClose(m) }
@@ -449,6 +463,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
       const pnl = dayTrades.reduce((a, t) => a + t.pnl, 0)
       dayRows.push({ day, n: dayTrades.length, wins: dayTrades.filter(t => t.pnl > 0).length, pnl, pct: startBal > 0 ? pnl / startBal * 100 : null, balance, ctx })
     } else dayRows.push({ day, n: 0, wins: 0, pnl: 0, pct: 0, balance, ctx })
+    if (story) dayRows.at(-1).skipped = daySkips
   }
 
   let gp = 0, gl = 0, wins = 0, fees = 0
