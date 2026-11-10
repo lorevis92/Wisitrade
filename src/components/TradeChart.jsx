@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, HistogramSeries, createSeriesMarkers, LineStyle, CrosshairMode } from 'lightweight-charts'
 import { get, fmtPrice, fmtSigned } from '../lib/api.js'
 import { dayFmt, hm } from './StrategyForm.jsx'
+import { attachTip } from './chartTip.js'
 
 const C = { up: '#00E5C7', down: '#FF5C7A', warn: '#F5B83D', grid: '#121826', text: '#6B7590', line: '#9AA6C2' }
 const tzShift = t => Math.floor(t / 1000) - new Date(t).getTimezoneOffset() * 60
@@ -58,7 +59,8 @@ export default function TradeChart({ trade, onClose }) {
     const from = bars.findIndex(b => b.t >= trade.opened_at - 15 * 60000)
     const to = bars.findIndex(b => b.t >= trade.closed_at + 30 * 60000)
     chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, from), to: to < 0 ? bars.length + 2 : to })
-    return () => chart.remove()
+    const offTip = attachTip(chart, box.current, bars, t) // ora di New York della candela al passaggio del mouse
+    return () => { offTip(); chart.remove() }
   }, [bars, trade])
 
   return (

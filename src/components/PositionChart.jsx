@@ -7,6 +7,7 @@ import { createChart, CandlestickSeries, HistogramSeries, LineSeries, createSeri
 import { get, fmtPrice, fmtSigned } from '../lib/api.js'
 import { exitLevel } from '@shared/opening.js'
 import { dayFmt, hm } from './StrategyForm.jsx'
+import { attachTip } from './chartTip.js'
 
 const C = { up: '#00E5C7', down: '#FF5C7A', warn: '#F5B83D', grid: '#121826', text: '#6B7590', line: '#9AA6C2', open: '#6B7590' }
 const tzShift = t => Math.floor(t / 1000) - new Date(t).getTimezoneOffset() * 60
@@ -113,7 +114,8 @@ export default function PositionChart({ id, mode, onClose }) {
     }
     const onRange = r => { if (r) range.current = r }
     chart.timeScale().subscribeVisibleLogicalRangeChange(onRange)
-    return () => { chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange); chart.remove() }
+    const offTip = attachTip(chart, box.current, bars, t) // ora di New York della candela al passaggio del mouse
+    return () => { offTip(); chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange); chart.remove() }
   }, [data]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const slIn = live ? slipPct(p.side, slip.sigIn, slip.fillIn, false) : null

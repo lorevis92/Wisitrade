@@ -91,7 +91,9 @@ input { font-family: var(--font-num); }
 .toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border-soft); font-size: 14px; }
 .toggle input { width: 20px; height: 20px; accent-color: var(--primary); }
 
-.chart-box { height: 380px; margin: 6px 0 4px; }
+.chart-box { height: 380px; margin: 6px 0 4px; position: relative; }
+.chart-tip { position: absolute; z-index: 5; pointer-events: none; background: var(--surface-alt); border: 1px solid var(--border-hi); border-radius: 6px; padding: 6px 8px; font-family: 'DM Mono', monospace; font-size: 11px; line-height: 1.45; color: var(--text-sec); white-space: nowrap; }
+.chart-tip b { color: var(--text); }
 .empty { text-align: center; padding: 30px 10px; color: var(--text-muted); font-size: 14px; line-height: 1.6; }
 .note { font-size: 12px; color: var(--text-muted); line-height: 1.6; }
 .disclaimer { font-size: 11px; color: var(--text-muted); line-height: 1.6; margin: 20px 0 0; }
