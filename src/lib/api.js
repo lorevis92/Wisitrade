@@ -17,6 +17,30 @@ export async function post(path, body) {
   return j
 }
 
+// Risposta in streaming NDJSON (una riga JSON per evento): onEvent riceve ogni evento appena arriva.
+// signal (AbortController) annulla la richiesta; un errore prima dello streaming arriva come eccezione.
+export async function postStream(path, body, { onEvent, signal } = {}) {
+  const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() }, body: JSON.stringify(body), signal })
+  if (!res.ok || !res.body) {
+    const j = await res.json().catch(() => ({}))
+    throw new Error(j.error || `Errore ${res.status}`)
+  }
+  const reader = res.body.getReader(), dec = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (value) buf += dec.decode(value, { stream: true })
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim()
+      buf = buf.slice(i + 1)
+      if (line) onEvent?.(JSON.parse(line))
+    }
+    if (done) break
+  }
+  if (buf.trim()) onEvent?.(JSON.parse(buf))
+}
+
 export const fmtPrice = p => {
   if (p === null || p === undefined) return '—'
   const d = p >= 1000 ? 1 : p >= 100 ? 2 : p >= 1 ? 3 : 5

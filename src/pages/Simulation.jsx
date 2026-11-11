@@ -1,7 +1,7 @@
 // Scheda Simulazione della pagina Strategia: la strategia Apertura USA sulle candele da 1 minuto archiviate di Bitunix,
 // con lo stesso motore di Prova e Reale (shared/engine.js, eseguito sul server).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { get, post, fmtPrice, fmtUsd, fmtSigned } from '../lib/api.js'
+import { get, post, postStream, fmtPrice, fmtUsd, fmtSigned } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
 import { OPTIONS, STRATEGY_DEFAULTS, normalizeSettings, sizing, ORIGINAL_SYMBOLS, NEW_SYMBOLS, LOW_LIQ_SYMBOLS, LEV_SYMBOLS } from '@shared/opening.js'
 import { addDays } from '@shared/time.js'
@@ -280,6 +280,8 @@ export default function Simulation({ onAuthError }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [trade, setTrade] = useState(null)
+  const [live, setLive] = useState(null) // simulazione in corso, seguita dalla sfera mentre il calcolo gira
+  const abortRef = useRef(null)
   const authErr = useRef(onAuthError)
   authErr.current = onAuthError
 
@@ -304,12 +306,38 @@ export default function Simulation({ onAuthError }) {
     return { from: from < status.first ? status.first : from, to: end }
   }, [status, period, custom])
 
+  // Simulazione in streaming: il server manda i giorni appena calcolati (per la sfera) e alla fine il risultato completo.
+  // lv è scritto qui e letto dalla sfera a ogni fotogramma (non è stato di React: la grafica non rallenta niente).
   const run = async () => {
-    setBusy(true); setErr(null); setTrade(null)
-    try { setResult(await post('/api/sim/run', { settings: normalizeSettings(s), capital: +capital, ...range })) }
-    catch (e) { if (/codice/i.test(e.message)) onAuthError(); setErr(e.message) }
-    finally { setBusy(false) }
+    abortRef.current?.abort()
+    const ctl = new AbortController()
+    abortRef.current = ctl
+    const lv = { days: [], total: 0, phase: 'avvio', status: 'running', result: null, error: null }
+    setLive(lv); setBusy(true); setErr(null); setTrade(null)
+    let final = null
+    try {
+      await postStream('/api/sim/stream', { settings: normalizeSettings(s), capital: +capital, ...range }, {
+        signal: ctl.signal,
+        onEvent: e => {
+          if (e.t === 'phase') lv.phase = e.msg
+          else if (e.t === 'start') { lv.total = e.total; lv.phase = 'preparo i titoli' }
+          else if (e.t === 'days') { for (const d of e.list) lv.days.push(d) }
+          else if (e.t === 'result') final = e.result
+          else if (e.t === 'error') throw new Error(e.error)
+        },
+      })
+      if (!final) throw new Error('Simulazione interrotta: risposta incompleta dal server')
+      lv.result = final; lv.status = 'done'
+      setResult(final)
+    } catch (e) {
+      if (ctl.signal.aborted) lv.status = 'cancelled'
+      else { lv.status = 'error'; lv.error = e.message; if (/codice/i.test(e.message)) onAuthError(); setErr(e.message) }
+    } finally {
+      if (abortRef.current === ctl) { abortRef.current = null; setBusy(false) }
+    }
   }
+  const cancel = () => abortRef.current?.abort()
+  useEffect(() => () => abortRef.current?.abort(), []) // uscendo dalla pagina il calcolo si interrompe
 
   return (
     <>
@@ -373,10 +401,13 @@ export default function Simulation({ onAuthError }) {
         <div className="note" style={{ marginTop: 8 }}>
           {range ? <>dal <b className="mono" style={{ color: 'var(--text)' }}>{dShort(range.from)}</b> al <b className="mono" style={{ color: 'var(--text)' }}>{dShort(range.to)}</b>. I titoli entrano dal giorno in cui hanno abbastanza storico (5 giorni).</> : status && !status.first ? 'Prima scarica l\'archivio dei dati.' : 'Scegli le date.'}
         </div>
-        <button className="btn" style={{ marginTop: 10 }} disabled={busy || !range || !s.symbols.length || !(+capital > 0)} onClick={run}>
-          {busy ? 'Simulo…' : 'Avvia la simulazione'}
-        </button>
-        {(busy || result) && <SimSphere running={busy} result={result} />}
+        <div className="sim-actions" style={{ marginTop: 10 }}>
+          <button className="btn" disabled={busy || !range || !s.symbols.length || !(+capital > 0)} onClick={run}>
+            {busy ? 'Simulo…' : 'Avvia la simulazione'}
+          </button>
+          {busy && <button className="btn ghost" onClick={cancel}>Annulla</button>}
+        </div>
+        {(live || result) && <SimSphere live={live} result={result} capital={+capital} />}
         {err && <div className="note" style={{ color: 'var(--short)', marginTop: 6 }}>{err}</div>}
         <p className="note" style={{ marginTop: 8 }}>Stesso motore di Prova e Reale, minuto per minuto, sulle candele da 1 minuto di Bitunix. Con slittamento, funding e liquidazione (margine isolato, margine di mantenimento di Bitunix): un trade liquidato perde tutto il margine.</p>
       </div>

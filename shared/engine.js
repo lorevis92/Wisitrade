@@ -260,7 +260,15 @@ function storyPath(path) {
 // story = true registra anche, solo per l'animazione della Simulazione, l'andamento di ogni posizione aperta (tr.path, tr.kmin)
 // e i segnali rimasti fuori di ogni giorno (riga del giorno .skipped): non cambia nessuna regola né nessun risultato.
 // slipBy (facoltativo): slittamento per lato in % per singolo titolo, al posto di s.slip (per le analisi, es. dallo spread misurato)
-export function runSimulation(days, s, { from, to, capital, limits = {}, mindex = {}, cache = null, analysis = true, slipBy = null, story = false }) {
+export function runSimulation(days, s, opts) {
+  const g = simulationSteps(days, s, opts)
+  for (;;) { const x = g.next(); if (x.done) return x.value }
+}
+
+// Stessa simulazione, un giorno alla volta: dopo ogni giorno simulato restituisce (yield) { row, trades }, cioè la riga
+// del giorno e i trade chiusi quel giorno; alla fine restituisce (return) lo stesso risultato di runSimulation.
+// Serve alla Simulazione in streaming (la sfera si muove mentre il calcolo gira): le regole e i risultati non cambiano.
+export function* simulationSteps(days, s, { from, to, capital, limits = {}, mindex = {}, cache = null, analysis = true, slipBy = null, story = false }) {
   const slip0 = (s.slip || 0) / 100
   const slipOf = sym => (slipBy && slipBy[sym] !== undefined ? slipBy[sym] / 100 : slip0)
   const mmrFrom = {}
@@ -464,6 +472,7 @@ export function runSimulation(days, s, { from, to, capital, limits = {}, mindex 
       dayRows.push({ day, n: dayTrades.length, wins: dayTrades.filter(t => t.pnl > 0).length, pnl, pct: startBal > 0 ? pnl / startBal * 100 : null, balance, ctx })
     } else dayRows.push({ day, n: 0, wins: 0, pnl: 0, pct: 0, balance, ctx })
     if (story) dayRows.at(-1).skipped = daySkips
+    yield { row: dayRows.at(-1), trades: dayTrades }
   }
 
   let gp = 0, gl = 0, wins = 0, fees = 0

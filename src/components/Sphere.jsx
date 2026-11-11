@@ -335,7 +335,7 @@ function drawBubble(ctx, sc, b) {
   const twoLines = r >= 17 && !b.fast
   ctx.font = `700 ${Math.round(clamp(r * (twoLines ? 0.4 : 0.46), 8, 15))}px ${FONT_UI}`
   ctx.fillStyle = `rgba(244,247,252,${0.97 * a})`
-  ctx.fillText(b.sym, x, twoLines ? y - r * 0.17 : y + 0.5, r * 1.75)
+  ctx.fillText(b.side ? `${b.sym} ${b.side > 0 ? '↑' : '↓'}` : b.sym, x, twoLines ? y - r * 0.17 : y + 0.5, r * 1.75) // lato (long ↑, short ↓) solo nella Simulazione
   if (twoLines) {
     ctx.font = `500 ${Math.round(clamp(r * 0.32, 8, 12))}px ${FONT_NUM}`
     ctx.fillStyle = `rgba(232,236,245,${0.86 * a})`
@@ -478,8 +478,11 @@ export function LiveSphere({ open, closed, capital, mode, onBubble }) {
 }
 
 // ---------- Simulazione ----------
-// Il motore calcola tutto sul server in un colpo; qui si rigioca giorno per giorno a velocità sostenuta:
-// segnali e posizioni aperte galleggiano (colore dal risultato non realizzato minuto per minuto, tr.path),
+// Dal vivo: il server manda i giorni appena li ha calcolati (live.days cresce mentre il calcolo gira) e la sfera li gioca
+// uno dopo l'altro. Se i giorni arrivano più in fretta di quanto si riesca a mostrarli, se ne gioca più di uno alla volta
+// (giorni accorpati); a calcolo finito la sfera arriva in ~2,5 s allo stato finale, con i numeri esatti del riepilogo.
+// "Rivedi l'animazione" rigioca invece dal risultato completo, giorno per giorno.
+// In un giorno: segnali e posizioni aperte galleggiano (colore dal risultato non realizzato minuto per minuto, tr.path),
 // i segnali rimasti fuori esplodono, i trade chiusi cadono e si sciolgono nel loro strato.
 const pct95 = list => { const a = list.map(Math.abs).sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(a.length * 0.95))] : 1 }
 const dayShort = d => new Date(`${d}T12:00:00Z`).toLocaleDateString('it-CH', { day: '2-digit', month: 'short', year: '2-digit', timeZone: 'UTC' })
@@ -494,120 +497,212 @@ function pathAt(t, m) {
   return p.at(-1)[1]
 }
 const finalStats = r => ({ win: r.wins, winPnl: r.grossWin, loss: r.n - r.wins, lossPnl: -r.grossLoss })
+const MAX_BUBBLES = 14 // in un blocco di giorni accorpati si animano i trade più grandi; gli altri vanno dritti nel loro strato
 
 function buildReplay(r) {
   const byDay = new Map()
   for (const t of r.trades) { if (!byDay.has(t.day)) byDay.set(t.day, []); byDay.get(t.day).push(t) }
-  const days = r.daily
-  return { r, days, byDay, i: 0, time: 0, nextStart: 0, cur: null, dayDur: clamp(40 / Math.max(1, days.length), 0.35, 2.6) }
+  return { r, cap: r.capital, days: r.daily, total: r.daily.length, byDay, i: 0, time: 0, nextStart: 0, cur: null, dayDur: clamp(40 / Math.max(1, r.daily.length), 0.35, 2.6) }
 }
-function startDay(sc, rp) {
-  const d = rp.days[rp.i], list = rp.byDay.get(d.day) || [], ev = []
-  for (const t of list) {
-    const k = t.kmin ?? 570, cm = k + Math.max(1, Math.round((t.closed_at - t.opened_at) / 60000))
-    ev.push({ u: uOf(k), type: 'open', t }, { u: Math.max(uOf(k) + 0.04, uOf(cm)), type: 'close', t })
+function buildLive(lv, capital) {
+  return { live: lv, r: null, cap: capital, days: lv.days, i: 0, time: 0, nextStart: 0, cur: null, seen: 0, absSum: 0, pnls: [] }
+}
+// quanti giorni giocare insieme e per quanto tempo
+function pace(rp) {
+  const backlog = rp.days.length - rp.i
+  if (!rp.live) return { k: 1, dur: rp.dayDur }
+  const total = Math.max(rp.live.total || 0, rp.days.length), base = clamp(40 / Math.max(1, total), 0.35, 2.6)
+  if (rp.live.status === 'done') { const blocks = Math.min(backlog, 6); return { k: Math.ceil(backlog / blocks), dur: Math.min(base, 2.5 / blocks) } }
+  if (backlog <= 2) return { k: 1, dur: base }
+  return { k: Math.ceil(backlog / 2), dur: Math.max(0.35, base * 0.7) } // indietro: si accorpa per raggiungere il calcolo
+}
+function startBlock(sc, rp) {
+  const { k, dur } = pace(rp)
+  const ds = rp.days.slice(rp.i, rp.i + k), ev = []
+  const list = ds.flatMap(d => (rp.live ? d.trades : rp.byDay.get(d.day) || []))
+  const shown = list.length > MAX_BUBBLES ? [...list].sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl)).slice(0, MAX_BUBBLES) : list
+  const shownSet = new Set(shown)
+  for (const t of shown) {
+    const km = t.kmin ?? 570, cm = km + Math.max(1, Math.round((t.closed_at - t.opened_at) / 60000))
+    ev.push({ u: uOf(km), type: 'open', t }, { u: Math.max(uOf(km) + 0.04, uOf(cm)), type: 'close', t })
   }
-  for (const [sym, m] of (d.skipped || []).slice(0, 14)) ev.push({ u: uOf(m) + 0.005, type: 'skip', sym })
+  if (ds.length === 1) for (const [sym, m] of (ds[0].skipped || []).slice(0, 14)) ev.push({ u: uOf(m) + 0.005, type: 'skip', sym })
   ev.sort((a, b) => a.u - b.u)
-  rp.cur = { d, ev, k: 0, start: rp.nextStart, live: new Map(), closedPnl: 0, startBal: d.balance - d.pnl, cut: !list.length && d.n > 0 }
+  const rest = list.filter(t => !shownSet.has(t))
+  // giorni senza l'elenco dei trade (elenco tagliato nel risultato completo): conta il risultato del giorno
+  const cut = rp.live ? [] : ds.filter(d => d.n > 0 && !(rp.byDay.get(d.day) || []).length)
+  rp.cur = { ds, k: ds.length, d: ds.at(-1), ev, e: 0, start: rp.nextStart, dur, live: new Map(), closedPnl: 0, startBal: ds[0].balance - ds[0].pnl, rest, cut }
 }
 function finishReplay(sc, rp) {
   // fine: restano solo i due strati, con i valori esatti di tutta la simulazione
   for (const b of sc.bubbles) if (b.sim) b.dead = true
   sc.bubbles = sc.bubbles.filter(b => !b.dead)
-  const f = finalStats(rp.r), g = sc.layers.gain, l = sc.layers.loss
+  const r = rp.r, f = finalStats(r), g = sc.layers.gain, l = sc.layers.loss
   g.v = f.winPnl; g.n = f.win; l.v = -f.lossPnl; l.n = f.loss
+  sc.scale = Math.max(1e-9, r.grossWin + r.grossLoss)
   sc.replay = null; sc.done = true; sc.final = f
-  sc.totalT = rp.r.net; sc.ring.pT = 1; sc.dayIdx = rp.days.length
+  sc.totalT = r.net; sc.ring.indet = false; sc.ring.pT = 1; sc.dayIdx = r.daily.length; sc.dayTotal = r.daily.length
   sc.label = 'Risultato finale'
-  sc.sub = `${fmtSigned(rp.r.pct, 1)}% · ${rp.days.length} giorni`.replace('-', '−')
+  sc.sub = `${fmtSigned(r.pct, 1)}% · ${r.daily.length} giorni`.replace('-', '−')
   const tot = g.v + l.v
   sc.moodT = tot > 0 ? clamp(sc.totalT / tot * 1.4, -1, 1) : 0
   sc.onTick?.(sc)
 }
+// annullata o in errore: niente più eventi; le bolle ancora aperte svaniscono, gli strati restano come sono
+function stopLive(sc, rp) {
+  const st = rp.live.status
+  for (const b of sc.bubbles) if (b.sim && b.state !== 'fall') b.state = 'fade'
+  sc.replay = null; sc.stopped = st; sc.ring.indet = false
+  sc.label = st === 'cancelled' ? 'Simulazione annullata' : 'Simulazione non riuscita'
+  const played = rp.days[rp.i - 1]
+  sc.totalT = played ? played.balance - rp.cap : 0
+  sc.sub = played ? `fino al ${dayShort(played.day)}` : ''
+  sc.moodT = 0
+  sc.onTick?.(sc)
+}
+// dal vivo: scala del deposito e misura delle bolle dai trade arrivati finora (il totale si stima dai giorni mancanti)
+function absorb(sc, rp) {
+  if (rp.seen === rp.days.length) return
+  for (; rp.seen < rp.days.length; rp.seen++) for (const t of rp.days[rp.seen].trades) { rp.absSum += Math.abs(t.pnl); rp.pnls.push(t.pnl) }
+  const total = Math.max(rp.live.total || 0, rp.days.length)
+  sc.scale = Math.max(1e-9, rp.absSum * total / Math.max(1, rp.days.length))
+  sc.refAbs = Math.max(0.01, pct95(rp.pnls))
+}
 function stepReplay(sc, dt) {
-  const rp = sc.replay, { R } = sc.geo, cap = rp.r.capital
-  if (rp.skip) return finishReplay(sc, rp)
+  const rp = sc.replay, { R } = sc.geo, cap = rp.cap, lv = rp.live
+  if (lv) {
+    if (lv.status === 'cancelled' || lv.status === 'error') return stopLive(sc, rp)
+    absorb(sc, rp)
+    sc.dayTotal = Math.max(lv.total || 0, rp.days.length)
+    if (!rp.days.length) { sc.sub = lv.phase || 'carico i dati…'; return } // ancora in preparazione: anello che gira
+    sc.ring.indet = false
+  }
+  if (rp.skip) { // "Salta alla fine" o movimento ridotto: si aspetta solo il risultato
+    if (!lv || lv.status === 'done') { if (lv) rp.r = lv.result; return finishReplay(sc, rp) }
+    for (const b of sc.bubbles) if (b.sim && b.state === 'float') b.state = 'fade'
+    const d = rp.days.at(-1)
+    sc.ring.pT = rp.days.length / sc.dayTotal; sc.dayIdx = rp.days.length; sc.totalT = d.balance - cap
+    sc.sub = `${fmtSigned(cap > 0 ? (d.balance - cap) / cap * 100 : 0, 1)}% · ${dayShort(d.day)}`.replace('-', '−')
+    return
+  }
   rp.time += dt
   for (;;) {
-    if (!rp.cur) { if (rp.i >= rp.days.length) return finishReplay(sc, rp); startDay(sc, rp) }
-    const c = rp.cur, u = (rp.time - c.start) / rp.dayDur
-    while (c.k < c.ev.length && c.ev[c.k].u <= u) {
-      const e = c.ev[c.k++]
-      if (e.type === 'open') c.live.set(e.t, addBubble(sc, { sym: e.t.symbol, pnl: 0, sim: true }))
+    if (!rp.cur) {
+      if (rp.i >= rp.days.length) {
+        if (lv && lv.status !== 'done') { rp.time = rp.nextStart; return } // in attesa dei prossimi giorni dal calcolo
+        if (lv) rp.r = lv.result
+        return finishReplay(sc, rp)
+      }
+      startBlock(sc, rp)
+    }
+    const c = rp.cur, u = (rp.time - c.start) / c.dur
+    while (c.e < c.ev.length && c.ev[c.e].u <= u) {
+      const e = c.ev[c.e++]
+      if (e.type === 'open') c.live.set(e.t, addBubble(sc, { sym: e.t.symbol, side: e.t.side, pnl: 0, sim: true }))
       else if (e.type === 'close') {
         const b = c.live.get(e.t)
         if (b && !b.dead) { b.state = 'fall'; b.value = e.t.pnl; setPnl(b, e.t.pnl); b.vy = -R * 0.2 }
         c.closedPnl += e.t.pnl
-      } else addBubble(sc, { sym: e.sym, pnl: 0, state: 'pop', rT: R * 0.075, life: clamp(rp.dayDur * 0.14, 0.2, 0.45), fast: true, sim: true })
+      } else addBubble(sc, { sym: e.sym, pnl: 0, state: 'pop', rT: R * 0.075, life: clamp(c.dur * 0.14, 0.2, 0.45), fast: true, sim: true })
     }
     // risultato non realizzato delle posizioni aperte al minuto raggiunto
     const m = minAt(Math.min(u, 0.9))
     let openPnl = 0, openAbs = 0
     for (const [t, b] of c.live) if (b.state === 'float' && !b.dead) { const v = pathAt(t, m); setPnl(b, v); openPnl += v; openAbs += Math.abs(v) }
-    sc.totalT = c.startBal - cap + c.closedPnl + openPnl
-    sc.ring.pT = (rp.i + clamp(u, 0, 1)) / rp.days.length
-    sc.dayIdx = rp.i + 1
-    sc.sub = `${fmtSigned(cap > 0 ? (c.startBal + c.closedPnl + openPnl - cap) / cap * 100 : 0, 1)}% · ${dayShort(c.d.day)}`.replace('-', '−')
+    // nei giorni accorpati il resto dei trade conta in proporzione al tempo del blocco
+    const restPnl = c.rest.reduce((a, t) => a + t.pnl, 0) * clamp(u, 0, 1) + c.cut.reduce((a, d) => a + d.pnl, 0) * clamp(u, 0, 1)
+    const now = c.startBal + c.closedPnl + openPnl + restPnl
+    sc.totalT = now - cap
+    sc.ring.pT = (rp.i + c.k * clamp(u, 0, 1)) / Math.max(1, sc.dayTotal || rp.total || rp.days.length)
+    sc.dayIdx = rp.i + c.k
+    const when = c.k > 1 ? `${dayShort(c.ds[0].day)} – ${dayShort(c.d.day)}` : dayShort(c.d.day)
+    sc.sub = `${fmtSigned(cap > 0 ? (now - cap) / cap * 100 : 0, 1)}% · ${when}`.replace('-', '−')
     const tot = sc.layers.gain.v + sc.layers.loss.v + openAbs
     sc.moodT = tot > 0 ? clamp(sc.totalT / tot * 1.4, -1, 1) : 0
     if (u < 1) return
-    // fine del giorno: i trade ancora in caduta si sciolgono negli strati, che così crescono giorno per giorno
+    // fine del blocco: i trade ancora in caduta si sciolgono negli strati, che così crescono giorno per giorno
     for (const b of c.live.values()) {
       if (b.dead) continue
       if (b.x === null) { b.x = sc.geo.cx; b.y = sc.geo.cy }
       if (b.value === undefined) b.value = b.pnl
       land(sc, b)
     }
-    if (c.cut) addToLayer(sc, c.d.pnl, c.d.n) // giorno senza l'elenco dei trade (elenco tagliato): il risultato del giorno
+    for (const t of c.rest) addToLayer(sc, t.pnl)
+    for (const d of c.cut) addToLayer(sc, d.pnl, d.n)
     sc.totalT = c.d.balance - cap
-    rp.nextStart = c.start + rp.dayDur
-    rp.i++; rp.cur = null
+    rp.nextStart = c.start + c.dur
+    rp.i += c.k; rp.cur = null
   }
 }
 
-export function SimSphere({ running, result }) {
+function resetSim(sc) {
+  clearScene(sc); sc.done = false; sc.final = null; sc.stopped = null; sc.dayIdx = 0; sc.dayTotal = 0; sc.refAbs = 0
+  sc.ring.indet = false
+}
+
+// live: oggetto della simulazione in corso (days cresce, total, phase, status 'running' | 'done' | 'cancelled' | 'error',
+// result a calcolo finito), scritto da Simulation.jsx mentre arrivano gli eventi; result: il risultato completo
+export function SimSphere({ live, result, capital }) {
   const { canvasRef, boxRef, sc } = useSphere('sim')
   const [prog, setProg] = useState(null)
-  const [runId, setRunId] = useState(0)
+  const [replayKey, setReplayKey] = useState(0)
   useEffect(() => {
-    sc.onTick = s => setProg(s.final ? { day: s.dayIdx, done: true, ...s.final } : {
-      day: s.dayIdx || 0, done: false,
-      win: s.layers.gain.n, winPnl: s.layers.gain.v, loss: s.layers.loss.n, lossPnl: -s.layers.loss.v,
-    })
+    sc.onTick = s => {
+      const lv = s.replay?.live || null
+      setProg({
+        day: s.dayIdx || 0, total: s.dayTotal || 0, done: !!s.final, stopped: s.stopped,
+        ...(s.final || { win: s.layers.gain.n, winPnl: s.layers.gain.v, loss: s.layers.loss.n, lossPnl: -s.layers.loss.v }),
+        calc: lv ? { computed: lv.days.length, total: lv.total || 0, phase: lv.phase, last: lv.days.at(-1)?.day || null } : null,
+      })
+    }
     return () => { sc.onTick = null }
   }, [sc])
+  // nuova simulazione: la sfera segue il calcolo dal vivo
   useEffect(() => {
-    clearScene(sc); sc.done = false; sc.final = null; sc.dayIdx = 0; sc.refAbs = 0
-    setProg(null)
-    if (running) {
-      sc.ring.indet = true; sc.label = 'Simulazione in corso'; sc.sub = 'carico i dati e calcolo…'
-      return
-    }
-    if (!result) return
-    sc.ring.indet = false
+    if (!live) return
+    resetSim(sc); setProg(null)
+    sc.ring.indet = true; sc.label = 'Simulazione in corso'; sc.sub = 'carico i dati…'
+    sc.replay = buildLive(live, capital)
+    if (reducedMotion()) sc.replay.skip = true
+  }, [sc, live]) // eslint-disable-line react-hooks/exhaustive-deps
+  // "Rivedi l'animazione" (o risultato senza simulazione dal vivo): si rigioca dal risultato completo
+  useEffect(() => {
+    if (!result || (live && !replayKey)) return
+    resetSim(sc); setProg(null)
     sc.label = 'Risultato accumulato'
     sc.scale = Math.max(1e-9, result.grossWin + result.grossLoss)
     sc.refAbs = Math.max(0.01, pct95(result.trades.map(t => t.pnl)))
+    sc.dayTotal = result.daily.length
     sc.replay = buildReplay(result)
     if (reducedMotion()) sc.replay.skip = true
-  }, [sc, running, result, runId])
+  }, [sc, replayKey, live ? null : result]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const replaying = !running && result && !prog?.done
+  const playing = !!sc.replay && !prog?.done && !prog?.stopped
+  const calc = prog?.calc, calcOn = live?.status === 'running'
   return (
     <div className="sphere-card sim">
       <div className="sphere-box" ref={boxRef}>
-        <canvas ref={canvasRef} role="img" aria-label={result && !running ? `Risultato della simulazione ${money(result.net)} USDT` : 'Simulazione in corso'} />
+        <canvas ref={canvasRef} role="img" aria-label={prog?.done && result ? `Risultato della simulazione ${money(result.net)} USDT` : 'Simulazione in corso'} />
       </div>
-      {!running && result && (
-        <div className="sphere-stats">
-          <div><span className="lab">Giorni</span><b className="mono">{prog ? `${prog.day} / ${result.daily.length}` : '—'}</b><span className="note">{prog?.done ? 'simulazione finita' : 'giorno per giorno'}</span></div>
-          <div><span className="lab">Trade vinti</span><b className="mono up">{prog ? money(prog.winPnl) : '—'}</b><span className="note">{prog ? `${fmtUsd(prog.win, 0)} trade` : ''}</span></div>
-          <div><span className="lab">Trade persi</span><b className={`mono ${prog?.lossPnl < 0 ? 'down' : ''}`}>{prog ? money(prog.lossPnl) : '—'}</b><span className="note">{prog ? `${fmtUsd(prog.loss, 0)} trade` : ''}</span></div>
+      {calcOn && (
+        <div className="sim-progress" aria-live="polite">
+          <div className="sim-progress-bar"><span className={calc?.total ? '' : 'indet'} style={calc?.total ? { width: `${Math.min(100, calc.computed / calc.total * 100)}%` } : undefined} /></div>
+          <div className="note mono">
+            {calc?.total
+              ? <>calcolo {calc.last ? <b style={{ color: 'var(--text)' }}>{dayShort(calc.last)}</b> : '…'} · {calc.computed} / {calc.total} giorni</>
+              : <>{calc?.phase || 'avvio'}…</>}
+          </div>
         </div>
       )}
-      {replaying && <button className="btn ghost small sphere-replay" onClick={() => { if (sc.replay) sc.replay.skip = true }}>Salta alla fine</button>}
-      {!running && result && prog?.done && <button className="btn ghost small sphere-replay" onClick={() => setRunId(x => x + 1)}>Rivedi l'animazione</button>}
+      {prog && (prog.day > 0 || prog.done) && (
+        <div className="sphere-stats">
+          <div><span className="lab">Giorni</span><b className="mono">{`${prog.day} / ${prog.total || '—'}`}</b><span className="note">{prog.done ? 'simulazione finita' : prog.stopped === 'cancelled' ? 'annullata' : prog.stopped ? 'interrotta' : 'giorno per giorno'}</span></div>
+          <div><span className="lab">Trade vinti</span><b className="mono up">{money(prog.winPnl)}</b><span className="note">{`${fmtUsd(prog.win, 0)} trade`}</span></div>
+          <div><span className="lab">Trade persi</span><b className={`mono ${prog.lossPnl < 0 ? 'down' : ''}`}>{money(prog.lossPnl)}</b><span className="note">{`${fmtUsd(prog.loss, 0)} trade`}</span></div>
+        </div>
+      )}
+      {playing && prog?.day > 0 && <button className="btn ghost small sphere-replay" onClick={() => { if (sc.replay) sc.replay.skip = true }}>Salta alla fine</button>}
+      {result && prog?.done && <button className="btn ghost small sphere-replay" onClick={() => setReplayKey(x => x + 1)}>Rivedi l'animazione</button>}
     </div>
   )
 }

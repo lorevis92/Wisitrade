@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import { ASSETS, ASSET_MAP, TYPE_LABEL } from '../shared/assets.js'
 import { normalizeSettings, settingsFor, sizing, isTradingDay, STRATEGY_SYMBOLS, STRATEGY_DEFAULTS } from '../shared/opening.js'
 import { getCapital, syncCapitalSetting, restartCapital } from '../server/capital.js'
-import { runSimulation } from '../shared/engine.js'
+import { runSimulation, simulationSteps } from '../shared/engine.js'
 import { addDays, weekdayOf, nyTs } from '../shared/time.js'
 import { archiveStatus, fillArchive, loadDays, dayBars, EXTRA_SYMBOLS } from '../server/archive.js'
 import { db, q, getMeta, setMeta } from '../server/db.js'
@@ -153,6 +153,95 @@ async function strategyView(mode) {
     today: { date: n.date, tradingDay: isTradingDay(n.date, n.isWeekday), minutes: n.minutes, skips: skips?.[mode] || {}, mindex: mindex || null, brake: brake?.[mode] || null, dayStop: !!daystop, prepared: prepRows.filter(r => r.data?.ok).length, prepTotal: prepRows.length },
     status: { liveTrading: process.env.LIVE_TRADING === 'on', keys: hasKeys(), liveAllowed: liveAllowed(), lastTick: last },
   }
+}
+
+// ---------- Simulazione ----------
+// Controlli, dati dell'archivio, limiti di Bitunix e indice di attività: comuni a /sim/run e /sim/stream
+async function prepareSim(body, phase = () => {}) {
+  const isDate = d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
+  if (!isDate(body.from) || !isDate(body.to) || body.from > body.to) throw new HttpError(400, 'Periodo non valido')
+  const capital = Number(body.capital)
+  if (!(capital > 0 && capital < 1e9)) throw new HttpError(400, 'Capitale iniziale non valido')
+  const s0 = normalizeSettings(body.settings || {})
+  if (!s0.symbols.length) throw new HttpError(400, 'Scegli almeno un titolo')
+  // opzione "Solo titoli operabili su Bitunix" (lista di oggi, la stessa di Prova e Reale)
+  let s = s0, apiExcluded = []
+  if (s0.onlyBitunix) {
+    const op = await operable()
+    apiExcluded = s0.symbols.filter(x => op.check(x)).map(x => ({ symbol: x, why: op.check(x).why }))
+    s = { ...s0, symbols: keepOperable(s0.symbols, op) }
+    if (!s.symbols.length) throw new HttpError(400, 'Nessuno dei titoli scelti è operabile via API su Bitunix')
+  }
+  const t0 = Date.now()
+  phase('carico le candele')
+  // 40 giorni prima dell'inizio: preparazione (livelli, volatilità, volume normale) e Analisi (volatilità a 20 giorni).
+  // QQQ, SPY e BTC servono solo per l'Analisi.
+  const days = await loadDays([...s.symbols, ...EXTRA_SYMBOLS], addDays(body.from, -40), body.to)
+  phase("preparo i limiti di Bitunix e l'indice di mercato")
+  const limits = await getLimits().catch(() => ({})) // margine di mantenimento e orari del funding di Bitunix
+  // indice di attività del mercato di ogni giorno (calcola i giorni che mancano)
+  await ensureIndex({ budgetMs: 90000 }).catch(() => null)
+  const raw = await getIndexRaw()
+  const mindex = {}
+  for (const d of Object.keys(days)) { const x = indexOf(raw, d); if (x) mindex[d] = x }
+  // giorni che il motore simulerà: di borsa, nel periodo, con almeno un titolo scelto con dati (come in runSimulation)
+  const inPeriod = Object.keys(days).filter(d => d >= body.from && d <= body.to).sort()
+  const simDays = inPeriod.filter(d => isTradingDay(d, weekdayOf(d)) && s.symbols.some(sym => sym in days[d])).length
+  return { body, s0, s, apiExcluded, days, inPeriod, simDays, t0, loadMs: Date.now() - t0, opts: { from: body.from, to: body.to, capital, limits, mindex, story: true } }
+}
+function simPayload(p, r) {
+  const MAX_TRADES = 4000
+  // titoli scelti che hanno davvero dati nel periodo (senza decomprimere niente)
+  const withData = p.s.symbols.filter(sym => p.inPeriod.some(d => sym in p.days[d]))
+  return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: p.s0, symbolsUsed: p.s.symbols, apiExcluded: p.apiExcluded, symbolsWithData: withData, ms: { load: p.loadMs, run: Date.now() - p.t0 - p.loadMs } }
+}
+
+// Simulazione in streaming (NDJSON, una riga JSON per evento) per la sfera animata, mentre il calcolo gira:
+// { t: 'phase', msg } · { t: 'start', total } · { t: 'days', list: [giorno…] } · { t: 'result', result } · { t: 'error', error }
+// Il calcolo si ferma un attimo solo ogni ~100 ms per spedire i giorni pronti (accorpati); la grafica non lo rallenta mai.
+// Se il browser chiude la richiesta (Annulla), il calcolo si interrompe.
+const r2 = x => Math.round(x * 100) / 100
+const dayEvent = ({ row, trades }) => ({
+  day: row.day, n: row.n, pnl: r2(row.pnl), balance: r2(row.balance),
+  trades: trades.map(t => ({ symbol: t.symbol, side: t.side, kmin: t.kmin, opened_at: t.opened_at, closed_at: t.closed_at, pnl: r2(t.pnl), path: t.path })),
+  skipped: (row.skipped || []).slice(0, 14).map(([sym, min]) => [sym, min]),
+})
+async function streamSim(req, res, url) {
+  res.statusCode = 200
+  res.setHeader('content-type', 'application/x-ndjson; charset=utf-8')
+  res.setHeader('cache-control', 'no-store')
+  res.setHeader('x-accel-buffering', 'no')
+  let closed = false
+  res.on('close', () => { if (!res.writableEnded) closed = true })
+  const send = obj => { if (!closed) res.write(JSON.stringify(obj) + '\n') }
+  const pause = () => new Promise(r => setImmediate(r))
+  try {
+    requireAdmin(req)
+    const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {})
+    send({ t: 'phase', msg: 'controllo le impostazioni' })
+    const p = await prepareSim(body, msg => send({ t: 'phase', msg }))
+    if (closed) return res.end()
+    send({ t: 'start', total: p.simDays })
+    await pause()
+    const g = simulationSteps(p.days, p.s, p.opts)
+    let buf = [], last = Date.now(), x
+    for (;;) {
+      x = g.next()
+      if (x.done) break
+      buf.push(dayEvent(x.value))
+      if (Date.now() - last >= 100) {
+        send({ t: 'days', list: buf }); buf = []
+        await pause() // lascia partire i dati verso il browser e sente un eventuale annullamento
+        last = Date.now()
+        if (closed) { g.return(); return res.end() }
+      }
+    }
+    if (buf.length) send({ t: 'days', list: buf })
+    send({ t: 'result', result: simPayload(p, x.value) })
+  } catch (e) {
+    send({ t: 'error', error: e.message, status: e.status || 500 })
+  }
+  res.end()
 }
 
 // ---------- Router ----------
@@ -357,37 +446,9 @@ async function route(req, url) {
 
   if (path === '/sim/run' && m === 'POST') {
     requireAdmin(req)
-    const isDate = d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
-    if (!isDate(body.from) || !isDate(body.to) || body.from > body.to) throw new HttpError(400, 'Periodo non valido')
-    const capital = Number(body.capital)
-    if (!(capital > 0 && capital < 1e9)) throw new HttpError(400, 'Capitale iniziale non valido')
-    const s0 = normalizeSettings(body.settings || {})
-    if (!s0.symbols.length) throw new HttpError(400, 'Scegli almeno un titolo')
-    // opzione "Solo titoli operabili su Bitunix" (lista di oggi, la stessa di Prova e Reale)
-    let s = s0, apiExcluded = []
-    if (s0.onlyBitunix) {
-      const op = await operable()
-      apiExcluded = s0.symbols.filter(x => op.check(x)).map(x => ({ symbol: x, why: op.check(x).why }))
-      s = { ...s0, symbols: keepOperable(s0.symbols, op) }
-      if (!s.symbols.length) throw new HttpError(400, 'Nessuno dei titoli scelti è operabile via API su Bitunix')
-    }
-    const t0 = Date.now()
-    // 40 giorni prima dell'inizio: preparazione (livelli, volatilità, volume normale) e Analisi (volatilità a 20 giorni).
-    // QQQ, SPY e BTC servono solo per l'Analisi.
-    const days = await loadDays([...s.symbols, ...EXTRA_SYMBOLS], addDays(body.from, -40), body.to)
-    const limits = await getLimits().catch(() => ({})) // margine di mantenimento e orari del funding di Bitunix
-    // indice di attività del mercato di ogni giorno (calcola i giorni che mancano)
-    await ensureIndex({ budgetMs: 90000 }).catch(() => null)
-    const raw = await getIndexRaw()
-    const mindex = {}
-    for (const d of Object.keys(days)) { const x = indexOf(raw, d); if (x) mindex[d] = x }
-    const loadMs = Date.now() - t0
-    const r = runSimulation(days, s, { from: body.from, to: body.to, capital, limits, mindex, story: true })
-    const MAX_TRADES = 4000
-    // titoli scelti che hanno davvero dati nel periodo (senza decomprimere niente)
-    const inPeriod = Object.keys(days).filter(d => d >= body.from && d <= body.to)
-    const withData = s.symbols.filter(sym => inPeriod.some(d => sym in days[d]))
-    return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: s0, symbolsUsed: s.symbols, apiExcluded, symbolsWithData: withData, ms: { load: loadMs, run: Date.now() - t0 - loadMs } }
+    const p = await prepareSim(body)
+    const r = runSimulation(p.days, p.s, p.opts)
+    return simPayload(p, r)
   }
 
   // ---- Valore minimo di un ordine per titolo (quantità minima di Bitunix × prezzo attuale), in cache per un'ora ----
@@ -504,6 +565,8 @@ async function route(req, url) {
 
 export default async function handler(req, res) {
   const url = new URL(req.url, `https://${req.headers.host || 'localhost'}`)
+  const path = '/' + (url.searchParams.get('route') || url.pathname.replace(/^\/api\/?/, '')).replace(/\/+$/, '')
+  if (path === '/sim/stream' && req.method === 'POST') return streamSim(req, res, url)
   res.setHeader('content-type', 'application/json; charset=utf-8')
   try {
     const out = await route(req, url)
