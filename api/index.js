@@ -157,7 +157,7 @@ async function strategyView(mode) {
 
 // ---------- Simulazione ----------
 // Controlli, dati dell'archivio, limiti di Bitunix e indice di attività: comuni a /sim/run e /sim/stream
-async function prepareSim(body, phase = () => {}) {
+async function prepareSim(body, phase = () => {}, onSymbol = null) {
   const isDate = d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
   if (!isDate(body.from) || !isDate(body.to) || body.from > body.to) throw new HttpError(400, 'Periodo non valido')
   const capital = Number(body.capital)
@@ -176,7 +176,7 @@ async function prepareSim(body, phase = () => {}) {
   phase('carico le candele')
   // 40 giorni prima dell'inizio: preparazione (livelli, volatilità, volume normale) e Analisi (volatilità a 20 giorni).
   // QQQ, SPY e BTC servono solo per l'Analisi.
-  const days = await loadDays([...s.symbols, ...EXTRA_SYMBOLS], addDays(body.from, -40), body.to)
+  const days = await loadDays([...s.symbols, ...EXTRA_SYMBOLS], addDays(body.from, -40), body.to, { onSymbol })
   phase("preparo i limiti di Bitunix e l'indice di mercato")
   const limits = await getLimits().catch(() => ({})) // margine di mantenimento e orari del funding di Bitunix
   // indice di attività del mercato di ogni giorno (calcola i giorni che mancano)
@@ -197,7 +197,8 @@ function simPayload(p, r) {
 }
 
 // Simulazione in streaming (NDJSON, una riga JSON per evento) per la sfera animata, mentre il calcolo gira:
-// { t: 'phase', msg } · { t: 'start', total } · { t: 'days', list: [giorno…] } · { t: 'result', result } · { t: 'error', error }
+// { t: 'phase', msg } · { t: 'load', sym, days, done, total } (un titolo caricato) · { t: 'start', total } ·
+// { t: 'prep', p, day } (preparazione delle candele) · { t: 'days', list: [giorno…] } · { t: 'result', result } · { t: 'error', error }
 // Il calcolo si ferma un attimo solo ogni ~100 ms per spedire i giorni pronti (accorpati); la grafica non lo rallenta mai.
 // Se il browser chiude la richiesta (Annulla), il calcolo si interrompe.
 const r2 = x => Math.round(x * 100) / 100
@@ -219,7 +220,7 @@ async function streamSim(req, res, url) {
     requireAdmin(req)
     const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {})
     send({ t: 'phase', msg: 'controllo le impostazioni' })
-    const p = await prepareSim(body, msg => send({ t: 'phase', msg }))
+    const p = await prepareSim(body, msg => send({ t: 'phase', msg }), x => send({ t: 'load', ...x }))
     if (closed) return res.end()
     send({ t: 'start', total: p.simDays })
     await pause()
@@ -228,9 +229,11 @@ async function streamSim(req, res, url) {
     for (;;) {
       x = g.next()
       if (x.done) break
-      buf.push(dayEvent(x.value))
+      const prep = x.value.prep !== undefined
+      if (!prep) buf.push(dayEvent(x.value))
       if (Date.now() - last >= 100) {
-        send({ t: 'days', list: buf }); buf = []
+        if (prep) send({ t: 'prep', p: Math.round(x.value.prep * 1000) / 1000, day: x.value.day })
+        else { send({ t: 'days', list: buf }); buf = [] }
         await pause() // lascia partire i dati verso il browser e sente un eventuale annullamento
         last = Date.now()
         if (closed) { g.return(); return res.end() }

@@ -266,7 +266,8 @@ export function runSimulation(days, s, opts) {
 }
 
 // Stessa simulazione, un giorno alla volta: dopo ogni giorno simulato restituisce (yield) { row, trades }, cioè la riga
-// del giorno e i trade chiusi quel giorno; alla fine restituisce (return) lo stesso risultato di runSimulation.
+// del giorno e i trade chiusi quel giorno; prima, durante la preparazione delle candele, { prep (0–1), day };
+// alla fine restituisce (return) lo stesso risultato di runSimulation.
 // Serve alla Simulazione in streaming (la sfera si muove mentre il calcolo gira): le regole e i risultati non cambiano.
 export function* simulationSteps(days, s, { from, to, capital, limits = {}, mindex = {}, cache = null, analysis = true, slipBy = null, story = false }) {
   const slip0 = (s.slip || 0) / 100
@@ -277,13 +278,18 @@ export function* simulationSteps(days, s, { from, to, capital, limits = {}, mind
   const symOrder = Object.fromEntries(s.symbols.map((x, i) => [x, i]))
   // candele da 15 minuti per simbolo (per la preparazione di ogni giorno)
   const b15 = C.b15 ||= {}
-  if (!C.b15done) for (const d of allDates) for (const [sym, bars] of Object.entries(days[d])) {
-    const arr = (b15[sym] ||= [])
-    let cur = null
-    for (const b of bars) {
-      const t = Math.floor(b.t / 900000) * 900000
-      if (!cur || cur.t !== t) { cur = { t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }; arr.push(cur) } else { cur.h = Math.max(cur.h, b.h); cur.l = Math.min(cur.l, b.l); cur.c = b.c; cur.v += b.v }
+  // (la parte più lunga prima del primo giorno: dopo ogni giorno preparato restituisce { prep, day } per l'avanzamento)
+  if (!C.b15done) for (let di = 0; di < allDates.length; di++) {
+    const d = allDates[di]
+    for (const [sym, bars] of Object.entries(days[d])) {
+      const arr = (b15[sym] ||= [])
+      let cur = null
+      for (const b of bars) {
+        const t = Math.floor(b.t / 900000) * 900000
+        if (!cur || cur.t !== t) { cur = { t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }; arr.push(cur) } else { cur.h = Math.max(cur.h, b.h); cur.l = Math.min(cur.l, b.l); cur.c = b.c; cur.v += b.v }
+      }
     }
+    yield { prep: (di + 1) / allDates.length, day: d }
   }
   C.b15done = true
   const prepC = C.prep ||= {}, ctxC = C.ctx ||= {}

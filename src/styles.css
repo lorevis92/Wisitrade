@@ -190,6 +190,11 @@ details > summary::-webkit-details-marker { display: none; }
 .sim-actions .btn.ghost { width: auto; flex: 0 0 auto; }
 .sim-progress { margin-top: 4px; display: flex; flex-direction: column; gap: 5px; }
 .sim-progress .note { text-align: center; }
+.sim-steps { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; }
+.sim-steps .note { font-size: 11px; color: var(--text-muted); }
+.sim-steps .note.on { color: var(--text-sec); }
+.sim-steps .note.on b { color: var(--text); font-weight: 500; }
+.sim-steps .note.done { color: var(--long); opacity: .8; }
 .sim-progress-bar { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; position: relative; }
 .sim-progress-bar span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--text-sec); border-radius: 2px; transition: width .25s linear; }
 .sim-progress-bar span.indet { width: 30%; animation: simIndet 1.3s ease-in-out infinite; }

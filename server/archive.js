@@ -234,7 +234,8 @@ export async function fillArchive({ budgetMs = 240000, source = 'manual' } = {})
 const store = new Map() // `${sym}|${day}` → { v, t0, z }
 const STORE_MAX = 45000
 
-export async function loadDays(symbols, from, to, { decodeMax = 8000 } = {}) {
+// onSymbol (facoltativo): chiamata dopo ogni titolo caricato, { sym, days, done, total } (per l'avanzamento della Simulazione)
+export async function loadDays(symbols, from, to, { decodeMax = 8000, onSymbol = null } = {}) {
   const days = {}
   const lru = new Map()
   const barsOf = (key, e) => {
@@ -245,7 +246,8 @@ export async function loadDays(symbols, from, to, { decodeMax = 8000 } = {}) {
     if (lru.size > decodeMax) lru.delete(lru.keys().next().value)
     return b
   }
-  const queue = [...new Set(symbols)]
+  const queue = [...new Set(symbols)], total = queue.length
+  let done = 0
   const worker = async () => {
     while (queue.length) {
       const sym = queue.shift()
@@ -267,6 +269,7 @@ export async function loadDays(symbols, from, to, { decodeMax = 8000 } = {}) {
         if (!e) continue
         Object.defineProperty(days[r.day] ||= {}, sym, { get: () => barsOf(key, e), enumerable: true, configurable: true })
       }
+      try { onSymbol?.({ sym, days: list.length, done: ++done, total }) } catch { /* solo avanzamento */ }
     }
   }
   await Promise.all(Array.from({ length: 6 }, worker))

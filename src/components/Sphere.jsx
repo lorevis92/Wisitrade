@@ -193,6 +193,12 @@ function step(sc, dt, realDt = dt) {
   }
   if (sc.bubbles.some(b => b.dead)) sc.bubbles = sc.bubbles.filter(b => !b.dead)
 
+  if (sc.fizz && sc.drops.length < 140) { // preparazione dei dati: bollicine che salgono dal fondo
+    for (let n = Math.floor(sc.fizz * 60 * dt + Math.random()); n > 0; n--) {
+      const ang = Math.random() * TAU, rr = Math.sqrt(Math.random()) * R * 0.7
+      sc.drops.push({ x: cx + Math.cos(ang) * rr, y: cy + R * 0.35 + Math.abs(Math.sin(ang)) * rr * 0.6, vx: (Math.random() - 0.5) * R * 0.08, vy: -R * (0.25 + Math.random() * 0.45), life: 0.6 + Math.random() * 0.4, r: 0.8 + Math.random() * 1.6, col: Math.random() < 0.3 ? COL.long : COL.calm, g: -0.05 })
+    }
+  }
   for (const p of sc.drops) { p.vy += R * (p.g ?? 3) * dt; p.x += p.vx * dt; p.y += p.vy * dt; if (p.g !== undefined) { p.vx *= Math.exp(-2 * dt); p.vy *= Math.exp(-2 * dt) } p.life -= dt * 1.7 }
   sc.drops = sc.drops.filter(p => p.life > 0)
   sc.ripples = sc.ripples.filter(r => sc.t - r.at < 2.5)
@@ -350,9 +356,9 @@ function drawHeader(ctx, sc) {
   ctx.font = `700 ${Math.round(clamp(R * 0.062, 9, 11))}px ${FONT_UI}`; ctx.fillStyle = '#6B7590'
   ctx.fillText(sc.label.toUpperCase(), cx, cy - R * 0.64)
   if ('letterSpacing' in ctx) ctx.letterSpacing = '0px'
-  const col = sc.totalT === 0 ? [232, 236, 245] : light(sgn(sc.totalT) > 0 ? COL.long : COL.short, 0.08)
+  const col = sc.headline || sc.totalT === 0 ? [232, 236, 245] : light(sgn(sc.totalT) > 0 ? COL.long : COL.short, 0.08)
   ctx.font = `500 ${Math.round(R * 0.2)}px ${FONT_NUM}`; ctx.fillStyle = rgba(col, 1)
-  ctx.fillText(money(sc.total), cx, cy - R * 0.46, R * 1.5)
+  ctx.fillText(sc.headline || money(sc.total), cx, cy - R * 0.46, R * 1.5) // headline: conteggio o % mentre si caricano i dati
   if (sc.sub) {
     ctx.font = `400 ${Math.round(clamp(R * 0.07, 10, 12))}px ${FONT_NUM}`; ctx.fillStyle = '#9AA6C2'
     ctx.fillText(sc.sub, cx, cy - R * 0.3, R * 1.4)
@@ -568,14 +574,54 @@ function absorb(sc, rp) {
   sc.scale = Math.max(1e-9, rp.absSum * total / Math.max(1, rp.days.length))
   sc.refAbs = Math.max(0.01, pct95(rp.pnls))
 }
+// Prima del primo giorno: i titoli scaricati entrano come bolle col loro nome ed esplodono (conteggio al centro,
+// anello pieno in proporzione), poi la preparazione delle candele (percentuale, mese preparato, bollicine dal fondo)
+const monthShort = d => new Date(`${d}T12:00:00Z`).toLocaleDateString('it-CH', { month: 'short', year: 'numeric', timeZone: 'UTC' })
+function popIntro(sc) { for (const b of sc.bubbles) if (b.intro && !b.dead && b.state !== 'pop') { b.state = 'pop'; b.life = 0.02; b.rT = b.r } }
+function stepIntro(sc, rp, dt) {
+  const lv = rp.live
+  let floating = 0
+  for (const b of sc.bubbles) {
+    if (!b.intro || b.dead || b.state === 'pop') continue
+    b.ttl -= dt
+    if (b.ttl <= 0) { b.state = 'pop'; b.life = 0.02; b.rT = b.r } else floating++
+  }
+  if (lv.prep) {
+    if (!rp.prepAt) { rp.prepAt = 1; sc.ring.p = 0; popIntro(sc) }
+    sc.fizz = 1; sc.ring.indet = false; sc.ring.pT = lv.prep.p
+    sc.label = 'Preparo i dati'; sc.headline = `${Math.round(lv.prep.p * 100)}%`
+    sc.sub = `candele da 15 minuti · ${monthShort(lv.prep.day)}`
+    return
+  }
+  if (lv.load) {
+    sc.ring.indet = false; sc.ring.pT = lv.load.done / Math.max(1, lv.load.total)
+    sc.label = 'Carico le candele'; sc.headline = `${lv.load.done} / ${lv.load.total}`; sc.sub = "titoli dall'archivio"
+    // se i titoli arrivano a raffica si mostrano solo gli ultimi
+    rp.loadSeen ||= 0
+    if (lv.loaded.length - rp.loadSeen > 10) rp.loadSeen = lv.loaded.length - 10
+    rp.loadWait = (rp.loadWait || 0) - dt
+    if (rp.loadSeen < lv.loaded.length && rp.loadWait <= 0 && floating < 9) {
+      addBubble(sc, { sym: lv.loaded[rp.loadSeen], pnl: 0, sim: true, intro: true, fast: true, rise: true, ttl: 1.1 + Math.random() * 0.6 })
+      rp.loadSeen++; rp.loadWait = 0.09
+    }
+    return
+  }
+  sc.ring.indet = true; sc.headline = null; sc.sub = lv.phase || 'carico i dati…'
+}
+function endIntro(sc, rp) {
+  if (rp.introDone) return
+  rp.introDone = true; sc.fizz = 0; sc.headline = null; sc.label = 'Simulazione in corso'
+  popIntro(sc)
+  sc.ring.indet = false; sc.ring.p = 0
+}
 function stepReplay(sc, dt) {
   const rp = sc.replay, { R } = sc.geo, cap = rp.cap, lv = rp.live
   if (lv) {
-    if (lv.status === 'cancelled' || lv.status === 'error') return stopLive(sc, rp)
+    if (lv.status === 'cancelled' || lv.status === 'error') { sc.fizz = 0; sc.headline = null; popIntro(sc); return stopLive(sc, rp) }
     absorb(sc, rp)
     sc.dayTotal = Math.max(lv.total || 0, rp.days.length)
-    if (!rp.days.length) { sc.sub = lv.phase || 'carico i dati…'; return } // ancora in preparazione: anello che gira
-    sc.ring.indet = false
+    if (!rp.days.length) return stepIntro(sc, rp, dt) // ancora in preparazione
+    endIntro(sc, rp)
   }
   if (rp.skip) { // "Salta alla fine" o movimento ridotto: si aspetta solo il risultato
     if (!lv || lv.status === 'done') { if (lv) rp.r = lv.result; return finishReplay(sc, rp) }
@@ -636,7 +682,7 @@ function stepReplay(sc, dt) {
 }
 
 function resetSim(sc) {
-  clearScene(sc); sc.done = false; sc.final = null; sc.stopped = null; sc.dayIdx = 0; sc.dayTotal = 0; sc.refAbs = 0
+  clearScene(sc); sc.done = false; sc.final = null; sc.stopped = null; sc.dayIdx = 0; sc.dayTotal = 0; sc.refAbs = 0; sc.fizz = 0; sc.headline = null; sc.total = 0
   sc.ring.indet = false
 }
 
@@ -652,7 +698,7 @@ export function SimSphere({ live, result, capital }) {
       setProg({
         day: s.dayIdx || 0, total: s.dayTotal || 0, done: !!s.final, stopped: s.stopped,
         ...(s.final || { win: s.layers.gain.n, winPnl: s.layers.gain.v, loss: s.layers.loss.n, lossPnl: -s.layers.loss.v }),
-        calc: lv ? { computed: lv.days.length, total: lv.total || 0, phase: lv.phase, last: lv.days.at(-1)?.day || null } : null,
+        calc: lv ? { computed: lv.days.length, total: lv.total || 0, phase: lv.phase, last: lv.days.at(-1)?.day || null, load: lv.load, prep: lv.prep } : null,
       })
     }
     return () => { sc.onTick = null }
@@ -679,6 +725,9 @@ export function SimSphere({ live, result, capital }) {
 
   const playing = !!sc.replay && !prog?.done && !prog?.stopped
   const calc = prog?.calc, calcOn = live?.status === 'running'
+  // barra: giorni calcolati, altrimenti preparazione, altrimenti titoli caricati (null = in attesa, barra che scorre)
+  const barW = !calc ? null : calc.computed > 0 && calc.total ? Math.min(100, calc.computed / calc.total * 100)
+    : calc.prep ? calc.prep.p * 100 : calc.load ? calc.load.done / Math.max(1, calc.load.total) * 100 : null
   return (
     <div className="sphere-card sim">
       <div className="sphere-box" ref={boxRef}>
@@ -686,11 +735,14 @@ export function SimSphere({ live, result, capital }) {
       </div>
       {calcOn && (
         <div className="sim-progress" aria-live="polite">
-          <div className="sim-progress-bar"><span className={calc?.total ? '' : 'indet'} style={calc?.total ? { width: `${Math.min(100, calc.computed / calc.total * 100)}%` } : undefined} /></div>
-          <div className="note mono">
-            {calc?.total
-              ? <>calcolo {calc.last ? <b style={{ color: 'var(--text)' }}>{dayShort(calc.last)}</b> : '…'} · {calc.computed} / {calc.total} giorni</>
-              : <>{calc?.phase || 'avvio'}…</>}
+          <div className="sim-progress-bar"><span className={barW === null ? 'indet' : ''} style={barW === null ? undefined : { width: `${barW}%` }} /></div>
+          <div className="sim-steps">
+            {[['carico le candele', calc?.load && !calc.prep && !calc.computed ? `${calc.load.done} / ${calc.load.total} titoli` : null, !!(calc?.prep || calc?.computed)],
+              ['preparo i dati', calc?.prep && !calc.computed ? `${Math.round(calc.prep.p * 100)}%` : null, !!calc?.computed],
+              ['calcolo', calc?.computed ? `${calc.last ? dayShort(calc.last) : ''} · ${calc.computed} / ${calc.total} giorni` : null, false]]
+              .map(([name, val, done], i) => (
+                <span key={i} className={`note mono ${val ? 'on' : done ? 'done' : ''}`}>{done ? '✓ ' : `${i + 1} · `}{name}{val && <b> {val}</b>}</span>
+              ))}
           </div>
         </div>
       )}

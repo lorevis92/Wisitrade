@@ -312,7 +312,7 @@ export default function Simulation({ onAuthError }) {
     abortRef.current?.abort()
     const ctl = new AbortController()
     abortRef.current = ctl
-    const lv = { days: [], total: 0, phase: 'avvio', status: 'running', result: null, error: null }
+    const lv = { days: [], total: 0, phase: 'avvio', status: 'running', result: null, error: null, load: null, loaded: [], prep: null }
     setLive(lv); setBusy(true); setErr(null); setTrade(null)
     let final = null
     try {
@@ -320,7 +320,9 @@ export default function Simulation({ onAuthError }) {
         signal: ctl.signal,
         onEvent: e => {
           if (e.t === 'phase') lv.phase = e.msg
-          else if (e.t === 'start') { lv.total = e.total; lv.phase = 'preparo i titoli' }
+          else if (e.t === 'load') { lv.load = e; lv.loaded.push(e.sym) }
+          else if (e.t === 'start') { lv.total = e.total; lv.phase = 'preparo i dati' }
+          else if (e.t === 'prep') lv.prep = e
           else if (e.t === 'days') { for (const d of e.list) lv.days.push(d) }
           else if (e.t === 'result') final = e.result
           else if (e.t === 'error') throw new Error(e.error)
