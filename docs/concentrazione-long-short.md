@@ -289,7 +289,7 @@ Stessi ordini, slittamento 0,05%. È la differenza dalla strategia attuale, somm
 **Cosa dice:**
 - **Limitare gli short costa più che limitare i long,** perché i giorni short concentrati sono tra i più redditizi. "Al massimo 5 short" con 115 titoli nel 70% risparmia 21 punti nei giorni cattivi e ne toglie 60 in quelli buoni.
 - **I limiti stretti per settore o correlazione sugli short** sono quelli che risparmiano di più nei giorni cattivi. Per esempio "al massimo 1 correlato ≥ 0,6" risparmia 13–19 punti nel 30%, ma in tre casi su quattro toglie di più nei giorni buoni, fino a 57 punti.
-- **L'unico caso dove si risparmia più di quanto si toglie è 115 titoli nel 30%,** come nel documento di prima. Con i 32 operabili, quelli del Reale, nel 30% succede solo con "short: al massimo 2 correlati ≥ 0,5" (+19,0 contro −18,5), che però nel 70% toglieva il doppio di quello che risparmiava.
+- **Si risparmia più di quanto si toglie quasi solo con 115 titoli nel 30%,** come nel documento di prima. Con i 32 operabili, quelli del Reale, nel 30% succede solo con "short: al massimo 2 correlati ≥ 0,5" (+19,0 contro −18,5), che però nel 70% toglieva il doppio di quello che risparmiava.
 
 ## Cosa regge sul 30% e cosa no
 
