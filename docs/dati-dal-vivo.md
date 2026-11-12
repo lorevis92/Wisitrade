@@ -160,5 +160,6 @@ Sono 3 giorni: indicazioni, non misure.
 ## Limiti
 
 - Con una modalità seguita solo dal controllo ogni minuto (filtro volume acceso), finiti i posti del giorno quei titoli non si scaricano più. I loro segnali successivi non si vedono nel vivo; nel confronto restano visibili dalla Simulazione. Il controllo veloce invece guarda tutti i titoli fino alle 10:00.
-- La lettura delle esecuzioni (`get_history_trades` di Bitunix) è provata solo con il Bitunix finto dei test: le chiavi sono solo su Vercel. Se Bitunix risponde in un altro formato, `rec.bx.error` lo dice e il resto del confronto va avanti.
+- La lettura delle esecuzioni (`get_history_trades` di Bitunix) ha funzionato al primo giro su Vercel: 26 trade del Reale su 26 dal 9 all'11 novembre. Se un giorno Bitunix rispondesse in un altro formato, `rec.bx.error` lo dice e il resto del confronto va avanti.
+- Bitunix dà le ore delle esecuzioni al secondo intero (`fillAt`, `bxAt`). Per i ritardi sotto il secondo valgono le ore dell'app (`sigAt`, `orderAt`, `sentAt`), misurate al millisecondo.
 - Il confronto usa le candele dell'archivio. Prova e Reale usano quelle lette durante la giornata, che possono differire di poco.
