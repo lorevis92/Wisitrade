@@ -21,6 +21,9 @@ export const realFastDeps = () => ({
   setLock: v => setMeta('fast:lock', v),
   getOpens: d => getMeta(`fast:opens:${d}`),
   saveOpens: (d, o) => setMeta(`fast:opens:${d}`, o),
+  // primo prezzo letto oltre la soglia, per modalità e titolo (solo registrazione)
+  getFirsts: d => getMeta(`fast:first:${d}`),
+  saveFirsts: (d, f) => setMeta(`fast:first:${d}`, f),
   // apertura delle 9:30 dalla candela da 1 minuto (solo se il controllo parte dopo le 9:30)
   backfillOpens: async (d, syms) => {
     const t = nyTs(d, OPEN_MIN), out = {}

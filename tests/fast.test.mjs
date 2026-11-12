@@ -151,6 +151,19 @@ await test('Reale completo: entrata veloce con margine isolato, stop loss solo s
     assert.ok(D.tables.wt_meta.some(m => m.key === `claim:live:${DAY}:AAPL`))
     const sk = D.tables.wt_meta.find(m => m.key === `orbskip:${DAY}`).value.live
     assert.match(sk.MSFT, /posizione aperta/)
+    // registrazione (docs/dati-dal-vivo.md): dati d'entrata nel trade, segnali con ora e prezzo, primo prezzo oltre la soglia
+    const rec = rows[0].exchange.rec
+    assert.equal(rec.threshold, 202.5); assert.equal(rec.open, 200); assert.equal(rec.entry.sigPx, 203); assert.equal(rec.entry.orderId, rows[0].exchange.orderId)
+    assert.ok(rec.entry.delayMs >= 0); assert.equal(rec.state.takenToday, 0); assert.equal(rec.size.leverage, 5); assert.deepEqual(rec.exits, [])
+    assert.equal(rec.stop0, rows[0].init_stop)
+    const evA = D.tables.wt_meta.find(m => m.key === `sig:${DAY}:live:AAPL`).value
+    assert.equal(evA.at(-1).kind, 'aperto'); assert.equal(evA.at(-1).px, 203)
+    const evM = D.tables.wt_meta.find(m => m.key === `sig:${DAY}:live:MSFT`).value
+    assert.equal(evM[0].kind, 'scartato'); assert.match(evM[0].why, /posizione aperta/); assert.equal(evM[0].px, 406); assert.equal(evM[0].side, 1)
+    const fi = D.tables.wt_meta.find(m => m.key === `fast:first:${DAY}`).value.live
+    assert.equal(fi.AAPL.px, 203); assert.equal(fi.AAPL.before.px, 200); assert.ok(fi.AAPL.at >= T(570, 10) && fi.AAPL.at <= T(570, 12))
+    assert.equal(fi.MSFT.px, 406); assert.ok(fi.MSFT.at < fi.AAPL.at)
+    assert.ok(!ex.calls.some(c => c.method === 'POST' && c.body.symbol === 'MSFTUSDT'), 'scrittura su MSFT (dopo la registrazione)')
     // il controllo ogni minuto non riapre AAPL: anche con l'elenco del giorno vuoto (corsa) la prenotazione lo blocca
     const before = ex.calls.length
     const acc = { ...D.tables.wt_accounts[0], s: (await import('../shared/opening.js')).settingsFor('live', D.tables.wt_accounts[0].settings) }
@@ -164,6 +177,25 @@ await test('Reale completo: entrata veloce con margine isolato, stop loss solo s
     assert.equal(D.tables.wt_positions.filter(p => p.mode === 'live').length, 1)
     // il blocco del controllo veloce è stato rilasciato alla fine
     assert.equal(D.tables.wt_meta.find(m => m.key === 'fast:lock').value.until, 0)
+    // uscita (controllo ogni minuto): un minuto sale a 205, poi scende sotto lo stop → registrati massimo, minimo e uscita
+    const { runStrategy } = await import('../server/strategy.js')
+    const pos0 = D.tables.wt_positions[0]
+    const bar = (min, o, h, l, c) => ({ t: T(min), o, h, l, c, v: 1 })
+    clock = T(572, 5)
+    const s1 = { AAPL: { '1m': [bar(570, 202.6, 203.5, 202.6, 203.2), bar(571, 203.2, 204, 203, 203.8)] } }
+    await runStrategy(s1, { date: DAY, minutes: 572, isWeekday: true }, { only: 'exits' })
+    const mid = D.tables.wt_positions[0]
+    assert.equal(mid.status, 'open'); assert.equal(mid.exchange.rec.mx.hi, 204); assert.equal(mid.exchange.rec.mx.k.h, 203.5)
+    assert.equal(mid.exchange.orderId, pos0.exchange.orderId) // il resto di exchange resta com'era
+    clock = T(574, 5)
+    const s2 = { AAPL: { '1m': [...s1.AAPL['1m'], bar(572, 203.8, 203.9, 196, 196.5), bar(573, 196.5, 197, 195, 196)] } }
+    const lg2 = await runStrategy(s2, { date: DAY, minutes: 574, isWeekday: true }, { only: 'exits' })
+    const done = D.tables.wt_positions[0]
+    assert.equal(done.status, 'closed', JSON.stringify(lg2) + JSON.stringify(done))
+    const x = done.exchange.rec.exits.at(-1)
+    assert.equal(x.kind, 'finale'); assert.ok(x.level > 0); assert.equal(x.bar, T(572)); assert.equal(x.sigAt, T(573))
+    assert.ok(x.sentAt >= x.sigAt); assert.equal(done.exchange.rec.mx.lo, 196)
+    assert.equal(done.exchange.slip.sigIn, 202.5) // dati del Reale già salvati prima: invariati
   } finally {
     globalThis.fetch = realFetch
     Date.now = realNow

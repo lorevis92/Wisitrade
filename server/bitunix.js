@@ -225,6 +225,23 @@ export async function positionHistory(symbol, positionId) {
   return { closePrice: n(p.closePrice), fee: n(p.fee), funding: n(p.funding), realizedPNL: n(p.realizedPNL), liqQty: n(p.liqQty), liqPrice: n(p.liqPrice), raw: p }
 }
 
+// Esecuzioni (fill) di una posizione dallo storico di Bitunix: ordine, lato, quantità, prezzo, commissione, ora.
+// Solo lettura, per la registrazione serale (server/compare.js). Se Bitunix non filtra per positionId si filtra qui.
+export async function historyTrades(symbol, { positionId = null, startTime, endTime } = {}) {
+  const d = await signed('GET', '/api/v1/futures/trade/get_history_trades', { query: { symbol, ...(positionId ? { positionId: String(positionId) } : {}), startTime, endTime, limit: 100 } })
+  const list = Array.isArray(d) ? d : (d?.tradeList || d?.list || [])
+  const n = v => (v === undefined || v === null || v === '' || !Number.isFinite(+v) ? null : +v)
+  return list
+    .filter(t => !positionId || !t.positionId || String(t.positionId) === String(positionId))
+    .map(t => ({
+      tradeId: t.tradeId ? String(t.tradeId) : null, orderId: t.orderId ? String(t.orderId) : null, clientId: t.clientId || null,
+      side: t.side || null, tradeSide: t.tradeSide || t.effect || null, qty: n(t.qty), price: n(t.price), fee: n(t.fee),
+      realizedPNL: n(t.realizedPNL), role: t.roleType || null, orderType: t.orderType || null, reduceOnly: t.reduceOnly ?? null, at: n(t.ctime),
+      positionId: t.positionId ? String(t.positionId) : null,
+    }))
+    .sort((a, b) => (a.at || 0) - (b.at || 0))
+}
+
 // Chiusura a mercato di una parte di UNA posizione precisa (positionId), solo in riduzione (reduceOnly: non può aprire niente).
 // side = valore del campo side dell'ordine (1 BUY, -1 SELL): la documentazione Bitunix in hedge indica il lato della posizione.
 export const closePartial = ({ symbol, positionId, side, qty }) =>

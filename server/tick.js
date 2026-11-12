@@ -14,6 +14,7 @@ import { getLimits } from './limits.js'
 import { presetLive } from './strategy.js'
 import { recordSpreads } from './spreads.js'
 import { isTradingDay } from '../shared/opening.js'
+import { eveningCompare } from './compare.js'
 
 const SCAN_DEADLINE = 40000 // oltre questo tempo dall'inizio lo scanner salta il giro (la strategia ha la precedenza)
 
@@ -96,6 +97,9 @@ export async function tick() {
           // valori dell'indice di attività per i giorni appena archiviati
           const left2 = 50000 - (Date.now() - t0)
           if (!r.busy && left2 > 10000 && (r.saved > 0 || info.minutes % 30 === 0)) out.index = await ensureIndex({ budgetMs: left2 - 8000 }).catch(e => ({ error: e.message }))
+          // confronto serale Reale · Prova · Simulazione (un giorno per giro, quando l'archivio ha le candele del giorno)
+          const left3 = 50000 - (Date.now() - t0)
+          if (!r.busy && left3 > 20000) out.compare = await eveningCompare(info, { budgetMs: left3 - 8000 }).then(x => (x?.modes ? { day: x.day, ms: x.ms } : x), e => ({ error: e.message }))
         }
       } catch (e) { out.archive = { error: e.message } }
     }

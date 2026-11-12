@@ -49,8 +49,13 @@ export async function runFast(deps) {
   let modes = modesOf(state)
   await deps.setLock({ id, day: day.date, until: deadline + 5000, modes })
   // registro della chiamata (salvato in wt_meta fast:runs:<giorno>): inizio, primo e ultimo giro di prezzi, aperture
-  const log = { day: day.date, id, startedAt: t0, firstPollAt: null, lastPollAt: null, endedAt: null, modes, polls: 0, opened: 0, signals: 0, errors: [] }
+  const log = { day: day.date, id, startedAt: t0, firstPollAt: null, lastPollAt: null, endedAt: null, modes, polls: 0, opened: 0, signals: 0, firsts: 0, errors: [] }
   let opens = (await deps.getOpens(day.date)) || {}
+  // registrazione (fast:first:<giorno>): per modalità e titolo, il primo prezzo letto oltre la soglia con l'ora al millisecondo,
+  // l'ultimo prezzo letto prima (ancora sotto) e lo stato del titolo in quel momento. Vale per tutti i titoli scelti, anche
+  // quelli già presi o scartati: serve a confrontare il vivo con la Simulazione. Non cambia nessuna entrata.
+  const firsts = (deps.getFirsts ? await deps.getFirsts(day.date).catch(() => null) : null) || {}
+  const prevPx = {}
   // chiamata partita dopo le 9:30 senza aperture salvate: apertura dalla candela delle 9:30
   if (now() > openTs + 5000 && deps.backfillOpens) {
     const missing = [...new Set(state.active.flatMap(a => a.s.symbols))].filter(x => !opens[x])
@@ -76,6 +81,27 @@ export async function runFast(deps) {
       }
       if (newOpens) await deps.saveOpens(day.date, opens)
       const nowMin = Math.floor((tPx - dayStart) / 60000)
+      // (salvato dopo le entrate di questo giro: la registrazione non ritarda mai un ordine)
+      let newFirst = false
+      if (deps.saveFirsts) {
+        try {
+          for (const a of state.active) {
+            const f = (firsts[a.mode] ||= {})
+            for (const sym of a.s.symbols) {
+              const p = px[sym], open = opens[sym]
+              if (f[sym] || !(p > 0) || !open) continue
+              const { cu, cd } = thresholds(a.s, open)
+              const side = p >= cu ? 1 : p <= cd ? -1 : 0
+              if (!side) continue
+              const taken = state.dayPos.some(x => x.mode === a.mode && x.symbol === sym)
+              f[sym] = { at: tPx, px: p, side, level: side > 0 ? cu : cd, open, before: prevPx[sym] || null, call: id, min: nowMin,
+                taken, skip: state.skips[a.mode]?.[sym] || null, early: nowMin < fromMinOf(a.s), late: nowMin >= entryUntil(a.s), followed: modes.includes(a.mode) }
+              newFirst = true; log.firsts++
+            }
+          }
+        } catch (e) { log.errors.push(`registro soglie: ${e.message}`) }
+      }
+      for (const sym in px) prevPx[sym] = { at: tPx, px: px[sym] }
       const ctx = { today: day.date, nowMin, notes: [], accounts: state.accounts, braked: state.braked, mindex: state.mindex }
       let env = null
       for (const acc of state.active) {
@@ -93,7 +119,7 @@ export async function runFast(deps) {
           env ||= await deps.entryEnv(ctx)
           // spazio dal livello controllato sulla soglia, come nella Simulazione (anche se il prezzo letto è già oltre)
           const rc = roomCheck(s, prep, open, side, side > 0 ? cu : cd)
-          if (rc.skip) { env.skip(acc.mode, sym, rc.skip); state.skips[acc.mode] = { ...(state.skips[acc.mode] || {}), [sym]: rc.skip }; continue }
+          if (rc.skip) { env.skip(acc.mode, sym, rc.skip, { at: tPx, px: p, level: side > 0 ? cu : cd, side, src: 'veloce' }); state.skips[acc.mode] = { ...(state.skips[acc.mode] || {}), [sym]: rc.skip }; continue }
           const k = { t: Math.floor(tPx / 60000) * 60000, min: nowMin, o: p, h: p, l: p, c: p, v: 0 }
           // level = soglia in cui scatta il segnale (prezzo del segnale per lo slittamento); entry = prezzo letto adesso
           const sig = { k, side, entry: p, open, R: rc.R, level: side > 0 ? cu : cd }
@@ -114,6 +140,7 @@ export async function runFast(deps) {
         for (const [m, list] of Object.entries(env.skips || {})) state.skips[m] = { ...(state.skips[m] || {}), ...list }
       }
       if (env) await env.save()
+      if (newFirst) await deps.saveFirsts(day.date, firsts).catch(e => log.errors.push(`registro soglie: ${e.message}`))
       if (ctx.notes.length) await deps.notify(ctx.notes).catch(() => {})
       await sleep(Math.max(0, POLL_MS - (now() - tLoop)))
     }

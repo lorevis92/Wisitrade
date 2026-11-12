@@ -20,6 +20,7 @@ import { spreadSummary } from '../server/spreads.js'
 import { waitUntil } from '@vercel/functions'
 import { fastEntries } from '../server/fast-run.js'
 import { operable, keepOperable, operableView, clearMarks } from '../server/operable.js'
+import { compareDay } from '../server/compare.js'
 
 const TF = {
   '1m': { bx: '1m', n: 400, ttl: 20 },
@@ -478,6 +479,24 @@ async function route(req, url) {
     const dates = []
     for (let d = nyInfo().date; dates.length < n && d > '2026-11-01'; d = addDays(d, -1)) if (isTradingDay(d, weekdayOf(d))) dates.push(d)
     return { days: dates, symbols: await spreadSummary(dates) }
+  }
+
+  // Confronto serale Reale · Prova · Simulazione (server/compare.js, docs/dati-dal-vivo.md). Senza giorno: elenco dei giorni
+  // con il riepilogo; con ?day=YYYY-MM-DD il confronto completo trade per trade. POST /strategy/compare/run { day } lo rifà.
+  if (path === '/strategy/compare' && m === 'GET') {
+    requireAdmin(req)
+    const day = url.searchParams.get('day')
+    if (day) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new HttpError(400, 'Giorno non valido')
+      return (await getMeta(`cmp:${day}`)) || { day, missing: true }
+    }
+    const rows = await q(db().from('wt_meta').select('key, day:value->day, at:value->at, live:value->modes->live->sim, liveReal:value->modes->live->real, paper:value->modes->paper->sim, paperReal:value->modes->paper->real').like('key', 'cmp:%'))
+    return { days: rows.map(r => ({ day: r.day, at: r.at, live: r.live ? { sim: r.live, real: r.liveReal } : null, paper: r.paper ? { sim: r.paper, real: r.paperReal } : null })).sort((a, b) => (a.day < b.day ? 1 : -1)) }
+  }
+  if (path === '/strategy/compare/run' && m === 'POST') {
+    requireAdmin(req)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.day || '')) throw new HttpError(400, 'Giorno non valido')
+    return compareDay(body.day, { budgetMs: 200000, today: nyInfo().date })
   }
 
   // Grafico della giornata di una posizione di Prova o Reale: la posizione, le impostazioni della modalità e le candele da 1 minuto
