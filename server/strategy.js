@@ -18,6 +18,7 @@ import { notifyTrades } from './push.js'
 import { ny, OPEN_MIN } from './session.js'
 import { getPairs } from './scanner.js'
 import { operable, keepOperable, markNotOperable, isApiReject, RECHECK_DAYS } from './operable.js'
+import { provaEntry, provaExit, loadLiveSlip, CANDLE_EXITS } from './pslip.js'
 import { entryRec, exitRec, trackBar, trackPx, saveEvents, sigEv, histSnap, daySnapshot } from './record.js'
 
 export const liveAllowed = () => process.env.LIVE_TRADING === 'on' && hasKeys()
@@ -178,6 +179,10 @@ async function closePos(p, exit, reason, accounts, notes, { liq = false, level =
       sentAt: exchangeClosed ? null : tSent, doneAt: tDone, fillPx: p.mode === 'live' ? (real?.closePrice ?? null) : exit,
       fillAt: p.mode === 'live' ? null : tSent, qty: p.qty - (p.half_done && p.half_qty > 0 ? p.half_qty : 0), byExchange: exchangeClosed,
     }))
+    // prezzo letto nel controllo che ha deciso l'uscita (misura dello slittamento per la Prova) e, in Prova, il modello usato
+    if (sig?.px > 0) rec.exits.at(-1).readPx = sig.px
+    if (sig?.rank !== undefined) rec.exits.at(-1).rank = sig.rank
+    if (sig?.prova) rec.exits.at(-1).prova = sig.prova
     if (reasonIn !== reason) rec.exits.at(-1).asked = reasonIn
     if (p.mode === 'live' && real?.raw) rec.hist = histSnap(real.raw)
     exchange = { ...(exchange || p.exchange), rec }
@@ -237,7 +242,15 @@ async function brakeCheck(ctx, accRows) {
     if (s.capitalMode === 'dedicated') { const st = await getCapital(mode); if (st) dayRef = st.current - dayPnl }
     if (!lossCheck(s, { dayRef, dayPnl, openPnl }).brake) continue
     const loss = dayPnl + openPnl
-    for (const p of open) { const px = pxOf(p); if (px) await closePos(p, px, 'freno di mercato', accounts, notes).catch(() => {}) }
+    let rank = 0
+    for (const p of open) {
+      const px = pxOf(p)
+      if (!px) continue
+      // Prova: prezzo letto meno lo slittamento misurato nel Reale, che cresce con l'ordine di chiusura (il Reale le chiude una dopo l'altra)
+      const pv = mode === 'paper' ? provaExit(ctx.pslip, 'freno', px, p.side, rank) : null
+      await closePos(p, pv ? pv.px : px, 'freno di mercato', accounts, notes, { level: px, sig: { at: Date.now(), px, rank, ...(pv ? { prova: { kind: pv.kind, cost: pv.cost } } : {}) } }).catch(() => {})
+      rank++
+    }
     state[mode] = { at: Date.now(), loss, pct: dayRef ? loss / dayRef * 100 : null }
     out[mode] = true; changed = true
     notes.push({ title: `🛑 Freno di mercato: ${modeName(mode)}`, body: `Perdita del giorno ${loss.toFixed(2)} USDT (${(loss / dayRef * 100).toFixed(1)}%, soglia ${s.brakePct}%): chiuse ${open.length} posizioni, niente nuovi trade fino a domani.`, url: `/strategia?mode=${mode}`, tag: `brake-${mode}-${today}` })
@@ -268,17 +281,17 @@ async function manage(p, ctx) {
     if (b.t <= (p.last_bar ?? 0) || b.t + MIN > now) continue // solo candele chiuse e non ancora controllate
     if (rec) recCh = trackBar(rec, p, b) || recCh
     const r = stepBar(p, s, b, todayBars, preps[p.symbol])
-    if (r) { exit = r.exit; reason = r.reason; liq = !!r.liq; sig = { at: b.t + MIN, bar: b.t }; break }
+    if (r) { exit = r.exit; reason = r.reason; liq = !!r.liq; sig = { at: b.t + MIN, bar: b.t, px, viaBar: true }; break }
   }
   if (rec && exit === null && px) recCh = trackPx(rec, px, now) || recCh
   // controllo in tempo reale sul prezzo attuale (candela ancora in corso)
   if (exit === null && px) {
     const lvl = exitLevel(p, s)
-    if (p.liq_price && (p.side > 0 ? px <= p.liq_price : px >= p.liq_price)) { exit = p.liq_price; reason = 'liquidazione'; liq = true; sig = { at: now } }
-    else if (p.side > 0 ? px <= lvl : px >= lvl) { exit = px; reason = exitReason(p, lvl); level = lvl; sig = { at: now } }
+    if (p.liq_price && (p.side > 0 ? px <= p.liq_price : px >= p.liq_price)) { exit = p.liq_price; reason = 'liquidazione'; liq = true; sig = { at: now, px } }
+    else if (p.side > 0 ? px <= lvl : px >= lvl) { exit = px; reason = exitReason(p, lvl); level = lvl; sig = { at: now, px } }
   }
   // fine giornata: chiudi tutto un minuto prima della chiusura della borsa
-  if (exit === null && nowMin >= closeMin - 1 && px) { exit = px; reason = 'chiusura'; sig = { at: now } }
+  if (exit === null && nowMin >= closeMin - 1 && px) { exit = px; reason = 'chiusura'; sig = { at: now, px } }
 
   // "Metà subito" appena scattata: nel Reale chiude davvero metà posizione su Bitunix
   if (!halfBefore && p.half_done && !(await newColsOk())) {
@@ -310,6 +323,19 @@ async function manage(p, ctx) {
     notes.push({ title: `½ ${p.symbol}: ${msg}`, body: modeName(p.mode), url: `/strategia?mode=${p.mode}`, tag: `pos-${p.id}-half` })
   }
 
+  // Prova più vicina al Reale (docs/be-e-prova-realistica.md): le uscite decise dall'app si registrano al prezzo letto in questo
+  // controllo meno lo slittamento misurato nel Reale per quel tipo; lo stop su Bitunix (livello = stop iniziale) e la
+  // liquidazione restano come sono. Il livello del motore resta in exchange.rec.
+  if (exit !== null && p.mode === 'paper' && !liq && px > 0) {
+    const bitunixStop = !CANDLE_EXITS.has(reason) && reason !== 'chiusura' && Math.abs(exitLevel(p, s) - p.init_stop) <= Math.abs(p.entry) * 1e-9
+    const kind = reason === 'chiusura' ? 'chiusura' : CANDLE_EXITS.has(reason) ? 'candela' : bitunixStop ? null : 'segue'
+    if (kind) {
+      const pv = provaExit(ctx.pslip, kind, px, p.side)
+      level = level ?? exit
+      exit = pv.px
+      sig = { ...(sig || { at: now, px }), prova: { kind, cost: pv.cost } }
+    }
+  }
   if (exit !== null) return closePos(p, exit, reason, accounts, notes, { liq, level, sig })
   await updatePos(p.id, {
     best: p.best, last_bar: p.last_bar, init_stop: p.init_stop, halved: p.halved, stale_done: p.stale_done, confirmed: p.confirmed, volx: p.volx,
@@ -474,7 +500,14 @@ export async function openSignal(env, ctx, gate, dayPos, { sym, sig, prep, price
   } else {
     // Prova: eseguito subito al prezzo del segnale
     tm.orderAt = tm.fillAt = Date.now()
-    pos = { ...pos, exchange: { timing: tm } }
+    // prezzo letto + slittamento d'entrata misurato nel Reale (docs/be-e-prova-realistica.md); stop e liquidazione dal prezzo
+    // così ottenuto, come nel Reale dal prezzo eseguito. Le regole che guardano il prezzo d'entrata decidono su questo prezzo.
+    const pv = tm.sigPx > 0 ? provaEntry(ctx.pslip, tm.src, tm.sigPx, side) : null
+    if (pv) {
+      pos = { ...pos, entry: pv.px, qty: notional / pv.px, best: pv.px, init_stop: pv.px - side * s.sl * unit }
+      pos.liq_price = liqPriceOf(pos, risk.mmr, s.liqFee)
+    }
+    pos = { ...pos, exchange: { timing: tm, ...(pv ? { prova: { read: tm.sigPx, kind: pv.kind, cost: pv.cost } } : {}) } }
   }
   // registrazione dei dati d'entrata (mai bloccante: l'ordine nel Reale è già eseguito)
   try { pos.exchange = { ...(pos.exchange || {}), rec: entryRec({ pos, sig, prep, tm, gate, dayPos, ctx }) } } catch { /* senza registrazione */ }
@@ -652,7 +685,9 @@ export async function runStrategy(series, info, { only = null, skipManage = fals
   const lastPrice = {}
   const needTk = openPos.filter(p => !series[p.symbol]?.['1m']?.length).map(p => ASSET_MAP[p.symbol].perp)
   if (needTk.length) { const t = await tickers(needTk); for (const p of openPos) { const x = t[ASSET_MAP[p.symbol].perp]; if (x?.last) lastPrice[p.symbol] = x.last } }
-  const ctx = { series, today, nowMin: info.minutes, closeMin, accounts, preps, notes, lastPrice }
+  // slittamento misurato nel Reale per i prezzi della Prova (server/pslip.js); senza, 0,05% per ogni tipo
+  const pslip = accounts.paper && (accounts.paper.enabled || openPos.some(p => p.mode === 'paper')) ? await loadLiveSlip() : null
+  const ctx = { series, today, nowMin: info.minutes, closeMin, accounts, preps, notes, lastPrice, pslip }
 
   if (!skipManage) for (const p of openPos) {
     try { await manage(p, ctx) } catch (e) { (log.errors ||= []).push(`${p.symbol}: ${e.message}`) }

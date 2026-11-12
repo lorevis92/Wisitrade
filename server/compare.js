@@ -16,6 +16,7 @@ import { operable, keepOperable } from './operable.js'
 import { ASSET_MAP } from '../shared/assets.js'
 import { hasKeys, positionHistory, historyTrades } from './bitunix.js'
 import { REC_V, prepSnap, exitRec, histSnap, dayEvents } from './record.js'
+import { updateLiveSlip } from './pslip.js'
 
 export const CMP_V = 1
 export const FIRST_DAY = '2026-11-09' // primo giorno del Reale
@@ -36,8 +37,15 @@ export async function eveningCompare(info, { budgetMs = 30000, day: forced = nul
     const done = new Set(have.filter(r => r.v === CMP_V).map(r => r.key.slice(4)))
     todo = cand.filter(d => !done.has(d))
   }
-  if (!todo.length) return { done: true }
-  return compareDay(todo[0], { t0, budgetMs, write, today: info.date })
+  // slittamento misurato nel Reale per la Prova (wt_meta liveslip): dopo ogni giorno confrontato, e almeno una volta al giorno
+  if (!todo.length) {
+    const ls = await getMeta('liveslip')
+    if (write && (!ls?.at || Date.now() - ls.at > 20 * 3600000)) return { done: true, liveslip: (await updateLiveSlip()).values }
+    return { done: true }
+  }
+  const r = await compareDay(todo[0], { t0, budgetMs, write, today: info.date })
+  if (write && r?.modes) await updateLiveSlip().catch(() => null)
+  return r
 }
 
 export async function compareDay(day, { t0 = Date.now(), budgetMs = 30000, write = true, today = day } = {}) {

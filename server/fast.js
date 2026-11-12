@@ -102,7 +102,7 @@ export async function runFast(deps) {
         } catch (e) { log.errors.push(`registro soglie: ${e.message}`) }
       }
       for (const sym in px) prevPx[sym] = { at: tPx, px: px[sym] }
-      const ctx = { today: day.date, nowMin, notes: [], accounts: state.accounts, braked: state.braked, mindex: state.mindex }
+      const ctx = { today: day.date, nowMin, notes: [], accounts: state.accounts, braked: state.braked, mindex: state.mindex, pslip: state.pslip }
       let env = null
       for (const acc of state.active) {
         if (!modes.includes(acc.mode)) continue

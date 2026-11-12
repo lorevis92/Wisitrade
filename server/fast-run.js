@@ -5,6 +5,7 @@ import { operable } from './operable.js'
 import { allTickers, klines } from './bitunix.js'
 import { db, q, getMeta, setMeta } from './db.js'
 import { notifyTrades } from './push.js'
+import { loadLiveSlip } from './pslip.js'
 import { nyInfo } from './session.js'
 import { ASSET_MAP } from '../shared/assets.js'
 import { settingsFor, isTradingDay } from '../shared/opening.js'
@@ -42,11 +43,12 @@ export const realFastDeps = () => ({
     return out
   },
   loadState: async day => {
-    const [accRows, prepRows, dayPos, brake, mindex, skips] = await Promise.all([
+    const [accRows, prepRows, dayPos, brake, mindex, skips, pslip] = await Promise.all([
       q(db().from('wt_accounts').select('*')),
       q(db().from('wt_prep').select('symbol, data').eq('day', day)),
       q(db().from('wt_positions').select('*').eq('day', day)),
       getMeta(`brake:${day}`), getMeta(`mindex:${day}`), getMeta(`orbskip:${day}`),
+      loadLiveSlip(), // slittamento misurato nel Reale, per i prezzi della Prova
     ])
     const accounts = Object.fromEntries(accRows.map(a => [a.mode, a]))
     // solo i titoli operabili via API (stessa lista per Prova e Reale)
@@ -54,7 +56,7 @@ export const realFastDeps = () => ({
     return {
       accounts, active, dayPos, skips: skips || { paper: {}, live: {} },
       preps: Object.fromEntries(prepRows.map(r => [r.symbol, r.data])),
-      braked: { paper: !!brake?.paper, live: !!brake?.live }, mindex: mindex || null,
+      braked: { paper: !!brake?.paper, live: !!brake?.live }, mindex: mindex || null, pslip: pslip || null,
     }
   },
   entryEnv, accountGate, openSignal,

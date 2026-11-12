@@ -242,6 +242,31 @@ export default function Strategy() {
         </div>
       )}
 
+      {/* Prova: prezzi con lo slittamento misurato nel Reale (docs/be-e-prova-realistica.md) */}
+      {mode === 'paper' && view.pslip && (
+        <div className="card" style={{ padding: '10px 14px' }}>
+          <div className="row">
+            <span className="lab">Prezzi della Prova come nel Reale</span>
+            <span className="mono sec">{view.pslip.at ? `aggiornati il ${new Date(view.pslip.at).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : 'non ancora misurati'}</span>
+          </div>
+          <div className="note" style={{ marginTop: 4 }}>
+            Entrata: prezzo letto + slittamento. Uscite decise dall'app: prezzo letto in quel controllo − slittamento. Stop su Bitunix: al livello, come prima.
+            Valori dagli ultimi {view.pslip.last} trade del Reale di ogni tipo; con meno di {view.pslip.minN} trade {String(view.pslip.dflt).replace('.', ',')}%.
+          </div>
+          <div style={{ marginTop: 6 }}>
+            {view.pslip.list.map(x => (
+              <div key={x.key} className="row" style={{ padding: '3px 0', borderTop: '1px solid var(--border-soft)', flexWrap: 'wrap', gap: 6 }}>
+                <span style={{ fontSize: 13 }}>{x.label}</span>
+                <span className="mono" style={{ fontSize: 13, textAlign: 'right' }}>
+                  {x.pct.toFixed(3).replace('.', ',')}%{x.key === 'freno' && x.step > 0 ? ` + ${x.step.toFixed(3).replace('.', ',')}% per posizione` : ''}
+                  <span className="sec"> · {x.src === 'vivo' ? `misurato su ${x.n}` : `predefinito (${x.n} misurati)`}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Configurazione attiva in questa scheda */}
       <div className="card" style={{ padding: '10px 14px' }}>
         <div className="row">
@@ -263,7 +288,7 @@ export default function Strategy() {
         </div>
         <p className="body">
           {mode === 'paper'
-            ? `Tutto uguale al Reale, ma con capitale fittizio: le entrate e le uscite sono simulate al prezzo del segnale, con commissione ${num(s.fee)}% per lato.`
+            ? `Tutto uguale al Reale, ma con capitale fittizio: entrate e uscite decise dall'app al prezzo letto con lo slittamento misurato nel Reale (valori qui sopra), stop su Bitunix al livello, commissione ${num(s.fee)}% per lato.`
             : 'Apre e chiude ordini veri sul tuo conto futures Bitunix, a mercato, con margine isolato e uno stop loss di sicurezza già impostato su Bitunix.'}
           {' '}Entrate nei primi 30 minuti dopo l'apertura USA ({t.tradingDay ? `oggi alle ${openLocal}` : 'oggi la borsa è chiusa'}), chiusura di tutto prima della fine della seduta.
         </p>

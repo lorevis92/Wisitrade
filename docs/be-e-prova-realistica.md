@@ -1,6 +1,6 @@
 # BE dell'11 novembre e una Prova più vicina al Reale
 
-Referto e proposta. Non è cambiato niente nell'app.
+Referto e proposta. **La proposta del punto 3 è applicata dal 12 novembre: vedi «Applicato» in fondo.**
 
 Dati usati:
 - trade di Prova e Reale dal 9 all'11 novembre (`wt_positions`, con `exchange.rec` e le esecuzioni vere di Bitunix);
@@ -92,3 +92,40 @@ Prezzi d'apertura, soglie, livelli e motivi d'uscita non cambiano. Il confronto 
 - Il controllo ogni minuto parte 17 s dopo l'inizio del minuto.
 
 Accorciare questi due tempi ridurrebbe lo slittamento vero del Reale.
+
+## Applicato (12 novembre)
+
+Codice: `server/pslip.js` (misura e prezzi), chiamate in `server/strategy.js` (solo per la Prova), calcolo serale in `server/compare.js`. Prove: `node tests/prova.test.mjs`.
+
+**Come la Prova calcola i prezzi adesso:**
+
+| Cosa | Prima | Adesso |
+|---|---|---|
+| Entrata (veloce o al minuto) | prezzo letto (o la soglia, al minuto) | prezzo letto + slittamento d'entrata misurato. Stop iniziale, quantità e liquidazione partono da questo prezzo, come nel Reale dal prezzo eseguito |
+| Uscite a candela chiusa (nessuna conferma, resistenza, nessun progresso, volume in calo, fermo dopo 60 min) | chiusura della candela | prezzo letto nel controllo che decide l'uscita − slittamento «candela» |
+| Stop che segue e protezione del guadagno | al livello | prezzo letto nel controllo − slittamento «segue» |
+| Chiusura delle 15:59 | prezzo letto | prezzo letto − slittamento «chiusura» |
+| Freno di mercato | prezzo letto, tutte uguali | prezzo letto − (base + passo × posizione), nell'ordine in cui si chiudono |
+| Stop su Bitunix (livello d'uscita = stop iniziale, anche dopo «Metà subito») e liquidazione | al livello | invariato |
+| Chiusura a mano | prezzo letto | invariato |
+
+Slittamento sempre contro di te. Le regole sono quelle di sempre: con un'entrata più realistica decidono su un prezzo più vicino a quello del Reale, come sarebbe servito per BE.
+
+**I valori:**
+- Ogni sera, dopo il confronto serale, si ricalcolano sugli ultimi 30 trade del Reale di ogni tipo e si salvano in wt_meta `liveslip`.
+- Con meno di 5 trade di un tipo vale lo 0,05%.
+- Un valore medio a favore conta 0: la Prova non diventa mai più ottimista del prezzo letto.
+- Il freno usa una retta: costo = base + passo × posizione, dove 0 è la prima posizione chiusa.
+- La pagina della Prova mostra in una scheda i valori in uso, quanti trade li hanno misurati e se sono predefiniti.
+
+**Cosa si misura:**
+- Entrata: prezzo letto al segnale → prezzo eseguito su Bitunix.
+- Uscite: prezzo letto nel controllo che ha deciso l'uscita → prezzo eseguito. Il prezzo letto si registra ora anche nel Reale (`exchange.rec.exits[].readPx`, e `rank` nel freno). Per freno e chiusura delle 15:59 c'era già, perché era il livello salvato.
+- Stop su Bitunix, liquidazioni e chiusure a mano non contano.
+
+**Valori di partenza** (26 trade del Reale, 9–11 novembre):
+- entrata veloce 0,013% (24 trade);
+- freno 0,22% + 0,037% per ogni posizione chiusa dopo la prima (7 trade);
+- tutti gli altri tipi 0,05% (predefinito). Per le uscite decise dall'app il prezzo letto non era registrato prima, quindi servono 5 trade nuovi per tipo.
+
+Il Reale non cambia: registra in più il prezzo letto nelle uscite, solo come dato.

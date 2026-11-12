@@ -21,6 +21,7 @@ import { waitUntil } from '@vercel/functions'
 import { fastEntries } from '../server/fast-run.js'
 import { operable, keepOperable, operableView, clearMarks } from '../server/operable.js'
 import { compareDay } from '../server/compare.js'
+import { loadLiveSlip, slipValues, PSLIP_KINDS, PSLIP_DEFAULT, PSLIP_LAST, PSLIP_MIN_N } from '../server/pslip.js'
 
 const TF = {
   '1m': { bx: '1m', n: 400, ttl: 20 },
@@ -95,6 +96,13 @@ async function strategyView(mode) {
       vsLive = { diff, liveSettings: ls }
     }
   }
+  // Prova: slittamento misurato nel Reale usato per i suoi prezzi (server/pslip.js)
+  let pslip = null
+  if (mode === 'paper') {
+    const saved = await loadLiveSlip()
+    const v = slipValues(saved)
+    pslip = { at: saved?.at ?? null, last: PSLIP_LAST, minN: PSLIP_MIN_N, dflt: PSLIP_DEFAULT, list: Object.entries(PSLIP_KINDS).map(([k, label]) => ({ key: k, label, ...v[k] })) }
+  }
   let gp = 0, gl = 0, wins = 0
   for (const p of closed) { if (p.pnl > 0) { gp += p.pnl; wins++ } else gl -= p.pnl || 0 }
   // capitale dedicato: attuale, partenza, risultato dalla partenza e storico delle modifiche
@@ -139,7 +147,7 @@ async function strategyView(mode) {
   return {
     mode, enabled: acc.enabled, settings: s, platform, capital, slippage,
     // titoli scelti non operabili via API su Bitunix (non si tentano: stessa lista per Prova e Reale)
-    operable: apiList, vsLive,
+    operable: apiList, vsLive, pslip,
     // configurazione attiva: nome (impostazione salvata da cui viene, o "personalizzata") e data dell'ultima modifica
     active: { name: active?.name || (Object.keys(acc.settings || {}).length ? 'personalizzata' : 'default dell\'app'), presetId: active?.presetId ?? null, edited: !!active?.edited, at: active?.at || acc.updated_at || null },
     sizing: sizing(s, sizeBase, s.capitalMode === 'dedicated' ? (cap?.current ?? 0) : undefined),
