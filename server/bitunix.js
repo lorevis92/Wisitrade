@@ -215,6 +215,14 @@ export const modifyStopLoss = ({ orderId, slPrice, qty }) =>
 export const cancelStopLoss = ({ symbol, orderId }) =>
   signed('POST', '/api/v1/futures/tpsl/cancel_order', { body: { symbol, orderId: String(orderId) } })
 
+// Storico degli ordini TP/SL di un titolo (tpsl/get_history_orders), solo lettura: serve a verificare dopo se lo stop di una
+// posizione c'era davvero su Bitunix e come è finito (eseguito, annullato). Se Bitunix non filtra per positionId si filtra qui.
+export async function tpslHistory(symbol, { positionId = null, startTime, endTime } = {}) {
+  const d = await signed('GET', '/api/v1/futures/tpsl/get_history_orders', { query: { symbol, startTime, endTime, limit: 100 } })
+  const list = Array.isArray(d) ? d : (d?.orderList || d?.list || [])
+  return list.filter(o => !positionId || !o.positionId || String(o.positionId) === String(positionId))
+}
+
 // Posizione chiusa dallo storico di Bitunix: prezzo d'uscita, commissioni, funding e liquidazione veri (se forniti)
 export async function positionHistory(symbol, positionId) {
   const d = await signed('GET', '/api/v1/futures/position/get_history_positions', { query: { symbol, ...(positionId ? { positionId } : {}), limit: 20 } })

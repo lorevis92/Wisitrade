@@ -135,6 +135,89 @@ try {
     assert.equal(D.tables.wt_positions[0].exchange.slVia, 'tpsl')
   })
 
+  // stop su Bitunix verificato ogni minuto (server/strategy.js stopWatch, server/live.js checkStop)
+  const flat = (px, n = 2) => Array.from({ length: n }, (_, i) => ({ t: T(570 + i), o: px, h: px, l: px, c: px, v: 1 }))
+  const exitsAt = async (min, sec = 5) => { Date.now = () => T(min, sec); const { runStrategy } = await import('../server/strategy.js'); return runStrategy({ AAPL: { '1m': flat(200, min - 570) } }, { date: DAY, minutes: min, isWeekday: true }, { only: 'exits' }) }
+  const tpslWrites = ex => ex.writes().filter(w => w.startsWith('tpsl/'))
+
+  await test('stop ogni minuto: c\'è → nessuna chiamata che scrive, controllo registrato', async () => {
+    const { ex, D } = setup()
+    const { r } = await openLiveSignal(D, 'AAPL', 200)
+    assert.ok(r)
+    const before = ex.writes().length
+    await exitsAt(572)
+    const row = D.tables.wt_positions[0]
+    assert.equal(row.status, 'open')
+    assert.equal(row.exchange.slCheck.state, 'ok'); assert.equal(row.exchange.slCheck.n, 1)
+    assert.equal(ex.writes().length, before)
+  })
+
+  await test('stop sparito: rimesso su Bitunix (stesso prezzo e quantità, solo quel positionId); sparito di nuovo → chiusura, titolo escluso', async () => {
+    const { ex, D } = setup()
+    const { r } = await openLiveSignal(D, 'AAPL', 200)
+    const pid = D.tables.wt_positions[0].exchange.positionId, sl0 = ex.tpsl[0].slPrice, q0 = ex.tpsl[0].qty
+    ex.positions.push({ positionId: '77', symbol: 'AAPLUSDT', side: -1, qty: 4, entry: 210, marginMode: 'CROSS', leverage: 10, ctime: 1 }) // manuale
+    ex.tpsl = []
+    const lg = await exitsAt(572)
+    assert.ok(r)
+    assert.deepEqual(tpslWrites(ex).filter(w => w.startsWith('tpsl/place_order')).length, 1)
+    assert.equal(ex.tpsl.length, 1); assert.equal(ex.tpsl[0].positionId, pid); assert.equal(ex.tpsl[0].slPrice, sl0); assert.equal(ex.tpsl[0].qty, q0)
+    let row = D.tables.wt_positions[0]
+    assert.equal(row.status, 'open'); assert.equal(row.exchange.slCheck.state, 'replaced'); assert.match(lg.stopWatch.join(' '), /replaced/)
+    // il minuto dopo c'è: tutto a posto
+    await exitsAt(573)
+    assert.equal(D.tables.wt_positions[0].exchange.slCheck.state, 'ok')
+    // sparisce, si rimette, sparisce di nuovo subito → chiusura come all'apertura
+    ex.tpsl = []; await exitsAt(574)
+    assert.equal(D.tables.wt_positions[0].exchange.slCheck.state, 'replaced')
+    ex.tpsl = []; await exitsAt(575)
+    row = D.tables.wt_positions[0]
+    assert.equal(row.status, 'closed'); assert.equal(row.reason, 'stop mancante su Bitunix')
+    assert.equal(row.exchange.slCheck.state, 'failed')
+    assert.equal(ex.positions.filter(p => p.positionId === pid).length, 0)
+    assert.equal(ex.positions.find(p => p.positionId === '77').qty, 4) // la posizione manuale non si tocca
+    assert.equal(marksOf(D).AAPL.kind, 'stop')
+  })
+
+  await test('stop sparito e Bitunix non lo accetta più: posizione chiusa subito, titolo escluso', async () => {
+    const noTpsl = []
+    const { ex, D } = setup({ bx: { noTpsl } })
+    const { r } = await openLiveSignal(D, 'AAPL', 200)
+    assert.ok(r)
+    ex.tpsl = []; noTpsl.push('AAPLUSDT')
+    const lg = await exitsAt(572)
+    const row = D.tables.wt_positions[0]
+    assert.equal(row.status, 'closed'); assert.equal(row.reason, 'stop mancante su Bitunix')
+    assert.match(row.exchange.slCheck.why, /stop non rimesso/)
+    assert.equal(ex.positions.filter(p => p.symbol === 'AAPLUSDT').length, 0)
+    assert.equal(marksOf(D).AAPL.kind, 'stop')
+    assert.match(lg.stopWatch.join(' '), /failed/)
+  })
+
+  await test('stop non leggibile: nessuna azione (né stop nuovo né chiusura), si riprova al minuto dopo', async () => {
+    const reads = []
+    const { ex, D } = setup({ bx: { tpslReadFails: reads } })
+    const { r } = await openLiveSignal(D, 'AAPL', 200)
+    assert.ok(r)
+    reads.push('AAPLUSDT')
+    const before = ex.writes().length
+    await exitsAt(572); await exitsAt(573)
+    const row = D.tables.wt_positions[0]
+    assert.equal(row.status, 'open'); assert.equal(row.exchange.slCheck.state, 'unknown'); assert.equal(row.exchange.slCheck.unknownRun, 2)
+    assert.equal(ex.writes().length, before)
+  })
+
+  await test('posizione già chiusa da Bitunix (stop eseguito): il controllo dello stop non fa niente', async () => {
+    const { ex, D } = setup()
+    const { r } = await openLiveSignal(D, 'AAPL', 200)
+    assert.ok(r)
+    ex.positions = []; ex.tpsl = []
+    const before = tpslWrites(ex).length
+    await exitsAt(572)
+    assert.equal(tpslWrites(ex).length, before)
+    assert.ok(!(D.tables.wt_positions[0].exchange.slCheck?.state === 'failed'))
+  })
+
   await test('Simulazione: opzione "Solo titoli operabili su Bitunix" spenta di default', async () => {
     assert.equal(normalizeSettings({}).onlyBitunix, false)
     assert.equal(normalizeSettings({ onlyBitunix: true }).onlyBitunix, true)

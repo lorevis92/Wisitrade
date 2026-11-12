@@ -7,7 +7,7 @@ import { many } from './bitunix.js'
 import { getMeta, setMeta } from './db.js'
 import { nyInfo } from './session.js'
 import { scan, getPairs } from './scanner.js'
-import { runStrategy, strategyNeeds, strategyOpenSymbols, repairLiveClosed } from './strategy.js'
+import { runStrategy, strategyNeeds, strategyOpenSymbols, repairLiveClosed, auditStops } from './strategy.js'
 import { fillArchive } from './archive.js'
 import { ensureIndex } from './mindex.js'
 import { getLimits } from './limits.js'
@@ -68,6 +68,8 @@ export async function tick() {
     }
     // Reale: trade chiusi senza i dati veri di Bitunix → si riprovano (fuori dall'apertura)
     if (info.minutes > 610 && info.minutes % 5 === 0) await repairLiveClosed().catch(e => errors.push(`dati Bitunix: ${e.message}`))
+    // Reale: storico degli stop di Bitunix dei trade chiusi (solo lettura, docs/stop-bitunix.md), senza posizioni aperte
+    if (info.minutes > 615 && info.minutes % 5 === 2 && !openSyms.length) out.stopAudit = await auditStops({ max: 8 }).catch(e => ({ error: e.message }))
 
     // 2. scanner: titoli dalle 9:25 alla chiusura (New York), crypto sempre; le candele da 1 minuto già scaricate si riusano
     const stocksOn = info.isWeekday && info.minutes >= 565 && info.minutes < 965

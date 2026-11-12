@@ -10,6 +10,8 @@
 //     si verifica che ci sia davvero (tpsl/get_pending_orders di quel positionId). Se non c'è si prova con la chiamata tpsl
 //     separata; se non si riesce la posizione della strategia si chiude subito (mai posizioni senza stop su Bitunix) e il
 //     titolo viene segnato come "stop non accettato via API" (LiveSkip con noSl).
+//     Finché la posizione è aperta lo stop si ricontrolla ogni minuto (checkStop, da server/strategy.js): se manca si rimette,
+//     se non si riesce si applica la stessa regola (chiusura, titolo escluso, notifica).
 // Le funzioni di Bitunix arrivano da fuori (api), così questo modulo si può provare con un Bitunix finto (scratchpad).
 import { roundQty } from './bitunix.js'
 
@@ -139,6 +141,34 @@ export async function secureStop(api, { perp, positionId, slPrice, qty, tick }) 
     return { ok: true, id: r?.orderId ? String(r.orderId) : null, price: slPrice, via: 'tpsl' }
   } catch (e) {
     return { ok: false, why: readErr ? `stop non verificabile: ${readErr.message}; chiamata separata: ${e.message}` : e.message }
+  }
+}
+
+// Controllo ogni minuto dello stop di una posizione aperta del Reale (Bitunix può togliere TP/SL sui titoli TradFi).
+// Solo per quel positionId. Risultato { state, ... }:
+//  'ok'       lo stop c'è;
+//  'gone'     la posizione non c'è più su Bitunix (chiusa dallo stop o liquidata: la gestisce il controllo delle uscite);
+//  'unknown'  Bitunix non si è potuto leggere: non si fa niente, si riprova al minuto dopo;
+//  'replaced' lo stop mancava ed è stato rimesso (chiamata tpsl separata, stesso prezzo e quantità);
+//  'failed'   lo stop manca e non si riesce a rimetterlo, oppure manca di nuovo subito dopo averlo rimesso (replacedBefore):
+//             la posizione va chiusa come all'apertura.
+export async function checkStop(api, { perp, positionId, slPrice, qty, replacedBefore = false }) {
+  let found = null, readErr = null
+  for (let i = 0; i < 2; i++) {
+    if (i) await wait(300)
+    try { found = (await api.pendingStopLoss(perp, positionId))[0] || null; readErr = null } catch (e) { readErr = e }
+    if (found) return { state: 'ok', id: found.id, price: found.slPrice }
+  }
+  if (readErr) return { state: 'unknown', why: `stop non leggibile: ${readErr.message}` }
+  let pos
+  try { pos = (await api.openPositions(perp)).find(x => String(x.positionId) === String(positionId)) } catch (e) { return { state: 'unknown', why: `posizione non leggibile: ${e.message}` } }
+  if (!pos) return { state: 'gone' }
+  if (replacedBefore) return { state: 'failed', why: 'stop sparito di nuovo dopo averlo rimesso' }
+  try {
+    const r = await api.placeStopLoss({ symbol: perp, positionId, slPrice, qty })
+    return { state: 'replaced', id: r?.orderId ? String(r.orderId) : null, price: slPrice }
+  } catch (e) {
+    return { state: 'failed', why: `stop non rimesso: ${e.message}` }
   }
 }
 

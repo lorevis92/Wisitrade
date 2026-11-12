@@ -9,7 +9,7 @@ import { loadDays } from './archive.js'
 import { addDays } from '../shared/time.js'
 import * as bx from './bitunix.js'
 import { klinesBack, account, openPositions, positionHistory, hasKeys, tickers } from './bitunix.js'
-import { openLive as openLiveSafe, closeOurs, closePart, ensureIsolated, LiveSkip, CLIENT_PREFIX } from './live.js'
+import { openLive as openLiveSafe, closeOurs, closePart, ensureIsolated, checkStop, LiveSkip, CLIENT_PREFIX } from './live.js'
 import { getCapital, applyTrade, checkLimits, markHalted, markDayStop } from './capital.js'
 import { getLimits } from './limits.js'
 import { todayIndex, INDEX_READY_MIN } from './mindex.js'
@@ -342,6 +342,76 @@ async function manage(p, ctx) {
     half_done: !!p.half_done, half_px: p.half_px ?? null, half_qty: p.half_qty ?? null, np_done: !!p.np_done,
     ...(rec && recCh ? { exchange: p.exchange } : {}),
   })
+}
+
+// ---------- Reale: stop su Bitunix verificato ogni minuto ----------
+// Bitunix dice che TP/SL sui titoli TradFi possono non esserci o cambiare senza preavviso. Finché una posizione del Reale è
+// aperta, ogni minuto si controlla che il suo stop sia ancora su Bitunix (solo quel positionId). Se manca si rimette (stesso
+// prezzo: lo stop iniziale, oppure il prezzo d'entrata dopo «Metà subito»; quantità della strategia). Se non si riesce, o se
+// manca di nuovo subito dopo averlo rimesso, si applica la regola dell'apertura: posizione chiusa, titolo non operabile per
+// RECHECK_DAYS giorni, notifica. Ogni controllo resta in exchange.slCheck. Non cambia stop, uscite o regole della strategia.
+const UNKNOWN_ALERT = 3 // minuti di fila senza poter leggere Bitunix → notifica (nessuna azione)
+async function stopWatch(ctx, log) {
+  if (!liveAllowed()) return
+  const rows = await q(db().from('wt_positions').select('*').eq('mode', 'live').eq('status', 'open'))
+  const list = rows.filter(p => p.exchange?.positionId && p.day === ctx.today)
+  if (!list.length) return
+  const res = await Promise.all(list.map(async p => {
+    const perp = ASSET_MAP[p.symbol].perp
+    const pair = await pairOf(p.symbol)
+    const qp = pair?.quotePrecision
+    const rnd = x => (qp !== null && qp !== undefined ? Number(x.toFixed(qp)) : Number(x.toPrecision(6)))
+    const half = p.half_done && p.half_qty > 0
+    const slPrice = rnd(half ? p.entry : (p.exchange.sl ?? p.init_stop))
+    const qty = p.qty - (half ? p.half_qty : 0)
+    const prev = p.exchange.slCheck || {}
+    let r
+    try { r = await checkStop(API, { perp, positionId: p.exchange.positionId, slPrice, qty, replacedBefore: prev.state === 'replaced' }) } catch (e) { r = { state: 'unknown', why: e.message } }
+    return { p, r, prev, slPrice, qty }
+  }))
+  for (const { p, r, prev, slPrice, qty } of res) {
+    const now = Date.now()
+    const c = {
+      first: prev.first ?? now, at: now, n: (prev.n || 0) + 1, state: r.state, ok: (prev.ok || 0) + (r.state === 'ok' ? 1 : 0),
+      unknown: (prev.unknown || 0) + (r.state === 'unknown' ? 1 : 0), unknownRun: r.state === 'unknown' ? (prev.unknownRun || 0) + 1 : 0,
+      ...(r.price ? { price: r.price } : {}), ...(r.why ? { why: r.why } : {}),
+      missing: [...(prev.missing || []), ...(r.state === 'replaced' || r.state === 'failed' ? [{ at: now, state: r.state, id: r.id ?? null, price: slPrice, qty, why: r.why ?? null }] : [])].slice(-10),
+    }
+    if (r.state === 'replaced' || r.state === 'failed') (log.stopWatch ||= []).push(`${p.symbol}: ${r.state}${r.why ? ` (${r.why})` : ''}`)
+    if (r.state === 'gone') continue // la posizione è già chiusa su Bitunix: la registra il controllo delle uscite
+    p.exchange = { ...p.exchange, slCheck: c, ...(r.state === 'replaced' && r.id ? { slOrderId: r.id } : {}) }
+    if (r.state === 'failed') {
+      // regola dell'apertura: mai posizioni senza stop su Bitunix → chiusura della sola posizione della strategia
+      const px = ctx.series[p.symbol]?.['1m']?.at(-1)?.c ?? ctx.lastPrice[p.symbol] ?? p.entry
+      try { await closePos(p, px, 'stop mancante su Bitunix', ctx.accounts, ctx.notes) } catch (e) { (log.errors ||= []).push(`${p.symbol} stop: ${e.message}`) }
+      await markNotOperable(p.symbol, 'stop', r.why).catch(() => false)
+      ctx.notes.push({ title: `⚠ ${p.symbol}: stop sparito su Bitunix`, body: `Lo stop della posizione non c'era più e non sono riuscito a rimetterlo (${r.why}). Posizione chiusa; titolo escluso per ${RECHECK_DAYS} giorni (Prova e Reale). Reale`, url: '/strategia?mode=live', tag: `sl-${p.id}` })
+      continue
+    }
+    if (c.unknownRun === UNKNOWN_ALERT) ctx.notes.push({ title: `⚠ ${p.symbol}: stop non verificabile`, body: `Da ${UNKNOWN_ALERT} minuti non riesco a leggere da Bitunix lo stop della posizione (${r.why}). Controlla su Bitunix. Reale`, url: '/strategia?mode=live', tag: `slr-${p.id}` })
+    await updatePos(p.id, { exchange: p.exchange })
+  }
+}
+
+// Verifica a posteriori (referto docs/stop-bitunix.md): storico TP/SL di Bitunix dei trade chiusi del Reale, salvato una volta
+// in exchange.slAudit. Solo lettura su Bitunix; lontano dalle entrate.
+export async function auditStops({ from = '2026-11-09', max = 12 } = {}) {
+  if (!hasKeys()) return { skipped: 'chiavi' }
+  const rows = await q(db().from('wt_positions').select('id, symbol, day, opened_at, closed_at, exchange').eq('mode', 'live').eq('status', 'closed').gte('day', from).order('opened_at'))
+  const todo = rows.filter(p => p.exchange?.positionId && !p.exchange.slAudit).slice(0, max)
+  let done = 0
+  for (const p of todo) {
+    const fresh = (await q(db().from('wt_positions').select('exchange').eq('id', p.id)))[0]?.exchange
+    if (!fresh || fresh.slAudit) continue
+    let audit
+    try {
+      const list = await bx.tpslHistory(ASSET_MAP[p.symbol].perp, { positionId: fresh.positionId, startTime: (p.opened_at || 0) - 120000, endTime: (p.closed_at || Date.now()) + 600000 })
+      audit = { at: Date.now(), orders: list.slice(0, 20) }
+    } catch (e) { audit = { at: Date.now(), error: e.message.slice(0, 200) } }
+    await updatePos(p.id, { exchange: { ...fresh, slAudit: audit } })
+    done++
+  }
+  return { done, left: rows.filter(p => p.exchange?.positionId && !p.exchange.slAudit).length - done }
 }
 
 // ---------- Entrate ----------
@@ -694,6 +764,8 @@ export async function runStrategy(series, info, { only = null, skipManage = fals
   }
   // freno di mercato "chiudi tutto": perdita del giorno (chiusi + aperti) oltre la soglia → chiude tutte le posizioni della strategia
   try { ctx.braked = await brakeCheck(ctx, accRows) ; if (Object.values(ctx.braked).some(Boolean)) log.brake = ctx.braked } catch (e) { (log.errors ||= []).push(`freno: ${e.message}`) }
+  // Reale: stop di ogni posizione aperta verificato su Bitunix (rimesso se manca; altrimenti chiusura e titolo escluso)
+  if (!skipManage) try { await stopWatch(ctx, log) } catch (e) { (log.errors ||= []).push(`stop: ${e.message}`) }
   // indice di attività del mercato di oggi (dalle 9:35 di New York, una volta al giorno)
   if (info.minutes >= INDEX_READY_MIN && info.minutes <= ENTRY_UNTIL) {
     try { ctx.mindex = await todayIndex(today); log.mindex = ctx.mindex.idx === null ? null : Math.round(ctx.mindex.idx) } catch (e) { (log.errors ||= []).push(`indice: ${e.message}`) }
