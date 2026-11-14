@@ -162,3 +162,34 @@ alter table wt_positions add column if not exists half_done boolean;           -
 alter table wt_positions add column if not exists half_px double precision;    -- prezzo della metà chiusa
 alter table wt_positions add column if not exists half_qty double precision;   -- quantità chiusa (0 = non riuscita su Bitunix)
 alter table wt_positions add column if not exists np_done boolean;             -- controllo "nessun progresso" già fatto
+
+-- ---------- Registro dei setup della pagina Range (server/range-alerts.js; non distruttivo) ----------
+create table if not exists wt_range_trades (
+  id text primary key,               -- titolo:id del setup
+  symbol text not null,
+  kind text not null,                -- falso | range | breakout
+  variant text,                      -- limite | mercato (solo falso breakout)
+  range_type text not null,          -- P | B
+  side int not null,                 -- 1 long, -1 short
+  with_impulse boolean not null,     -- nella direzione dell'impulso (true) o contro (false)
+  fit text,                          -- contesto a 4 ore: a favore | contro | neutro
+  grade text,                        -- voto di qualità A | B | C
+  score int,
+  valid boolean not null,            -- rischio/rendimento fino all'ultimo target almeno quello minimo
+  created_at bigint not null,        -- chiusura della candela che ha fatto scattare il setup
+  entry double precision not null,
+  stop double precision not null,
+  targets jsonb not null,            -- [{ p, frac, why }]
+  rr double precision,
+  status text not null,              -- pronto | in corso | target | stop | pareggio dopo Tn | scaduto | dati finiti
+  fill_at bigint,
+  exit_at bigint,
+  r_gross double precision,          -- risultato in multipli del rischio, senza commissioni
+  r_net double precision,            -- con le commissioni di Bitunix
+  fees_r double precision,
+  final boolean not null default false,
+  data jsonb,                        -- motivi del voto, livelli settimanali
+  updated_at bigint not null
+);
+create index if not exists wt_range_trades_created on wt_range_trades (created_at);
+alter table wt_range_trades enable row level security;

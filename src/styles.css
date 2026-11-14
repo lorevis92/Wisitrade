@@ -283,3 +283,14 @@ details > summary::-webkit-details-marker { display: none; }
 
 .rg-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .pill.rg-strong { color: var(--warn); background: rgba(245, 184, 61, .08); border: 1px solid rgba(245, 184, 61, .4); }
+
+.rg-grade { display: inline-block; min-width: 20px; text-align: center; font-family: var(--font-num); font-weight: 600; font-size: 11px; padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border); }
+.rg-grade.gA { color: #04110F; background: var(--long); border-color: var(--long); }
+.rg-grade.gB { color: var(--warn); border-color: rgba(245, 184, 61, .5); }
+.rg-grade.gC { color: var(--text-muted); }
+.rg-why summary { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.rg-why[open] { flex-basis: 100%; }
+.rg-reasons { margin: 6px 0 4px; padding-left: 16px; font-size: 12px; line-height: 1.55; color: var(--text-sec); }
+.rg-reasons b { font-family: var(--font-num); font-weight: 600; display: inline-block; min-width: 20px; }
+.rg-calc { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-soft); }
+.rg-alt-row { margin-top: 6px; line-height: 1.5; }

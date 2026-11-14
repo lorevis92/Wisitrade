@@ -89,11 +89,11 @@ export async function tick() {
       if (left > 2000) try { const r = await recordSpreads(info, perps, { maxMs: Math.min(9000, left) }); if (r) out.spreads = r } catch (e) { errors.push(`spread: ${e.message}`) }
     }
     if (errors.length) out.dataErrors = errors.slice(0, 5)
-    // avvisi della pagina Range: una volta ogni 15 minuti (subito dopo la chiusura della candela), mai durante l'apertura USA
+    // pagina Range (registro dei setup e avvisi): una volta ogni 15 minuti (subito dopo la chiusura della candela), mai durante l'apertura USA
     // (9:25–10:40 New York nei giorni feriali: la strategia ha la precedenza) e solo se resta tempo
     const busyOpen = info.isWeekday && info.minutes >= 565 && info.minutes <= 640
     if (new Date().getUTCMinutes() % 15 === 1 && !busyOpen && Date.now() - t0 < 30000) {
-      try { const r = await runRangeAlerts({ budgetMs: Math.min(12000, 42000 - (Date.now() - t0)) }); if (r.subs) out.range = r } catch (e) { out.range = { error: e.message } }
+      try { out.range = await runRangeAlerts({ budgetMs: Math.min(15000, 42000 - (Date.now() - t0)) }) } catch (e) { out.range = { error: e.message } }
     }
     // archivio per la Simulazione: solo lontano dall'orario della strategia (dopo le 16:35 o prima delle 7:50 di New York, e nel fine settimana)
     const quiet = !info.isWeekday || info.minutes >= 995 || info.minutes < 470

@@ -21,7 +21,7 @@ import { waitUntil } from '@vercel/functions'
 import { fastEntries } from '../server/fast-run.js'
 import { operable, keepOperable, operableView, clearMarks } from '../server/operable.js'
 import { compareDay } from '../server/compare.js'
-import { getRangeAlerts, setRangeAlerts } from '../server/range-alerts.js'
+import { getRangeAlerts, setRangeAlerts, getRegistry, getFollow, setFollow } from '../server/range-alerts.js'
 import { manualInfo, manualOpen, manualClose, manualPositions, ManualError } from '../server/manual.js'
 import { loadLiveSlip, slipValues, PSLIP_KINDS, PSLIP_DEFAULT, PSLIP_LAST, PSLIP_MIN_N } from '../server/pslip.js'
 
@@ -41,7 +41,7 @@ const RSI_TF = {
   '1h': { n: 300, ttl: 120 }, '4h': { n: 300, ttl: 300 }, '1d': { n: 300, ttl: 600 },
 }
 // Pagina Range: candele a 15 minuti (8 giorni), 1 ora (volume profile settimanale) e 4 ore (trend)
-const RANGE_TF = { '15m': { n: 768, ttl: 60 }, '1h': { n: 400, ttl: 300 }, '4h': { n: 260, ttl: 600 } }
+const RANGE_TF = { '15m': { n: 768, ttl: 60 }, '1h': { n: 450, ttl: 300 }, '4h': { n: 260, ttl: 600 } }
 let rsiPairs = null // { at, list } coppie aperte di Bitunix, rilette ogni ora
 
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status } }
@@ -379,6 +379,9 @@ async function route(req, url) {
     return { __cache: tf.ttl, symbol: sym, tf: tfKey, bars }
   }
   if (path === '/range/alerts' && m === 'GET') return getRangeAlerts(url.searchParams.get('endpoint'))
+  if (path === '/range/registry' && m === 'GET') return getRegistry()
+  if (path === '/range/follow' && m === 'GET') return getFollow()
+  if (path === '/range/follow' && m === 'POST') { requireAdmin(req); return setFollow(body.symbols) }
   if (path === '/range/alerts' && m === 'POST') {
     try { return await setRangeAlerts(body) } catch (e) { throw new HttpError(e.status || 500, e.message) }
   }

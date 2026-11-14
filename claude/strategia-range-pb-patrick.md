@@ -61,90 +61,182 @@ Fonte: video "Everyone Laughed at His Strategy (Until He Dominated the World Cup
   Non è quindi esclusa dai nostri test.
 - Mercati più adatti su Bitunix: BTC, ETH, oro, che scambiano quasi 24 ore su 24 con molta liquidità e hanno anni di storico.
 
+
+## Approfondimento del metodo (novembre 2026)
+- **Direzione:** falso breakout verso il basso con rientro = long; verso l'alto con rientro = short.
+  - Vale sia nelle P sia nelle B, con qualunque trend a 4 ore.
+  - Il trend a 4 ore è solo contesto (a favore, contro, neutro) e conta nella qualità del setup.
+- **Patrick non opera mai l'impulso**, solo il range che lo segue.
+- **Target:**
+  - **Contro l'impulso** (short in una P, long in una B): prima il bordo opposto del range, poi l'origine dell'impulso.
+  - **Nella direzione dell'impulso** (long in una P, short in una B): prima il bordo opposto, poi la prossima area di valore o la proiezione 1:1 dell'impulso.
+  - Senza nessun riferimento: 2 volte il rischio.
+- **Profilo settimanale al centro.** I livelli chiave sono la parte alta (VAH) e bassa (VAL) dell'area di valore settimanale e il prezzo con più scambi (POC).
+  - Le zone con poco volume il prezzo le attraversa in fretta; quelle con molto volume lo frenano.
+  - Un range o un falso breakout su uno di questi livelli vale molto di più.
+- **Qualità del setup:**
+  - allineamento ai livelli settimanali;
+  - numero di tocchi e durata del range;
+  - rischio/rendimento;
+  - contesto a 4 ore;
+  - volume debole sulla candela del falso breakout;
+  - strada libera verso il target (poco volume) oppure ostacoli.
+- **Uscite secondo il tipo di trade:**
+  - range trade: tutto fuori sul bordo opposto, senza parziali;
+  - breakout con conferma: circa il 30% al primo target, il resto corre;
+  - falso breakout: tre terzi.
+- **Entrata del falso breakout:** ordine limite sul bordo, oppure a mercato alla chiusura della candela di rientro.
+- **Rischio:**
+  - al massimo l'1% del capitale per trade;
+  - prima lo stop, poi la dimensione;
+  - un trade dura di solito da 4 ore a 3 giorni.
+- **Notizie:** Patrick non tiene posizioni durante le notizie forti.
+
+## Nota: la nostra è un'approssimazione
+Il metodo di Patrick è in parte discrezionale. Lui legge anche il footprint e il flusso degli ordini (chi compra e chi vende a ogni prezzo, in tempo reale). Noi questi dati non li abbiamo: su Bitunix abbiamo solo le candele con il loro volume.
+
+Le regole dell'app qui sotto sono quindi una nostra traduzione in regole fisse, da verificare in due passi:
+1. **Con il registro automatico:** setup proposti dal vivo e il loro esito vero.
+2. **Con un test sullo storico:** lo stesso riconoscimento su anni di candele, con il primo 70% per scegliere le impostazioni e l'ultimo 30% per verificarle.
+
+Finché i casi sono pochi, i numeri non dicono ancora se il metodo funziona.
+
 ## Regole dell'app
 
-Come la pagina Range di Wisi Trade (`/range`) traduce gli appunti in regole precise. Il codice è in `shared/range.js`, lo stesso per la pagina e per gli avvisi push; le prove sono in `tests/range.test.mjs`. La pagina fa solo analisi: nessun ordine.
+Come la pagina Range di Wisi Trade (`/range`) traduce gli appunti in regole precise.
+- Il codice è in `shared/range.js`, lo stesso per la pagina e per il server (avvisi push e registro, `server/range-alerts.js`).
+- Le prove sono in `tests/range.test.mjs`.
+- La pagina fa solo analisi: nessun ordine.
 
 ### Dati
 - Candele di Bitunix:
   - 15 minuti degli ultimi 8 giorni, per decidere;
-  - 1 ora, per il volume profile;
+  - 1 ora, per il profilo settimanale;
   - 4 ore, per il contesto.
 - Si usano solo candele chiuse.
 - Niente dati futuri: ogni decisione usa solo le candele fino a quella che la fa scattare.
-  - Il volume profile è quello della settimana completa prima del momento considerato.
+  - Il profilo della settimana in corso è quello fino a quel momento.
   - I range precedenti sono quelli già finiti.
-  - Il trend a 4 ore usa le candele a 4 ore già chiuse.
+  - Il trend a 4 ore usa le candele già chiuse.
 
-### Trend a 4 ore
+### Trend a 4 ore (solo contesto)
 Media esponenziale a 50 candele da 4 ore, circa 8 giorni.
 - **Rialzista:** prezzo sopra la media e media in salita rispetto a 40 ore prima.
 - **Ribassista:** prezzo sotto la media e media in discesa.
-- **Laterale (non chiaro):** tutti gli altri casi.
+- **Laterale:** tutti gli altri casi.
+
+Non decide la direzione dei setup: entra solo nel voto.
+
+### Profilo settimanale
+Il volume di ogni candela da 1 ora è distribuito sulle fasce di prezzo che tocca (60 fasce). Si calcola per la settimana precedente (completa, da lunedì 00:00 UTC) e per quella in corso (fino al momento considerato, con almeno 12 ore di dati).
+- **POC:** la fascia con più volume.
+- **VAL e VAH:** gli estremi della zona con il 70% del volume attorno al POC.
+- **Zone con molto volume:** fasce con almeno 1,5 volte il volume medio; si tengono le 4 più grandi.
+- **Zone con poco volume:** fasce con al massimo 0,35 volte il volume medio, larghe almeno 3 fasce e non agli estremi della settimana.
+- Sul grafico:
+  - POC, VAH e VAL a linee gialle, piene per la settimana in corso e tratteggiate per la precedente;
+  - zone con molto volume in giallo chiaro, con poco volume in viola chiaro.
+- Il market profile non è calcolato.
 
 ### Impulso
-Un movimento di almeno 3 volte l'ATR a 15 minuti, la volatilità normale misurata prima dell'impulso. Deve avvenire in al massimo 16 candele (4 ore) e finire su un nuovo massimo (P) o un nuovo minimo (B). L'impulso continua finché le candele successive fanno nuovi estremi.
+Un movimento di almeno 3 volte l'ATR a 15 minuti, la volatilità normale misurata prima dell'impulso.
+- Deve avvenire in al massimo 16 candele (4 ore).
+- Deve finire su un nuovo massimo (P) o un nuovo minimo (B).
+- Continua finché le candele successive fanno nuovi estremi.
+- L'impulso non si opera mai.
 
 ### Range
 - **Bordo dal lato dell'impulso:** è l'estremo dell'impulso. L'altro bordo si allarga finché il range si forma.
 - **Tocco:** il prezzo arriva al bordo entro 0,25 ATR. Un tocco nuovo conta solo dopo essersi allontanati dal bordo.
-- **Valido:** almeno 3 tocchi in tutto, almeno uno per lato, e almeno 12 ore (mezza giornata) dalla fine dell'impulso. Da quel momento i bordi restano fermi.
+- **Valido:** almeno 3 tocchi in tutto, almeno uno per lato, e almeno 12 ore dalla fine dell'impulso. Da quel momento i bordi restano fermi.
 - **Non è una P o una B** se ritraccia oltre il 60% dell'impulso, o se l'impulso riparte prima che il range sia valido. Se è durato almeno 2 ore resta sul grafico, chiaro, con la scritta "non valido".
-- **Rafforzato:** quando diventa valido c'è dentro un livello del volume profile della settimana prima (POC, VAH o VAL).
-  - Il volume di ogni candela da 1 ora è distribuito sulle fasce di prezzo che tocca.
-  - POC è la fascia con più volume.
-  - VAH e VAL sono gli estremi della zona con il 70% del volume.
-  - Il market profile non è calcolato.
+- **Su livello settimanale:** dentro il range, entro mezzo ATR dai bordi, c'è un POC, VAH o VAL della settimana precedente o in corso.
 - **Finito:**
   - dopo due chiusure di fila fuori dal range (breakout confermato);
-  - oppure dopo 5 giorni da quando è valido;
+  - oppure 5 giorni dopo essere diventato valido;
   - oppure se non diventa valido entro 5 giorni.
 
-### Falso breakout e setup
+### Falso breakout (il modo principale)
 - **Falso breakout:** una candela chiude fuori dal range e la successiva chiude di nuovo dentro.
-- **Direzione:** long dopo un falso breakout verso il basso, short dopo uno verso l'alto.
-- **Entrata:** ordine limite sul bordo del range dal lato della rottura fallita. Vale 4 ore (16 candele): se non viene eseguito, o se il prezzo arriva prima al bordo opposto, il setup è scaduto.
+- **Direzione:** long dopo un falso breakout verso il basso, short dopo uno verso l'alto. Vale nelle P e nelle B, con qualunque trend a 4 ore.
+- **Entrata, due varianti** mostrate insieme, ognuna con il suo rapporto rischio/rendimento:
+  - **ordine limite sul bordo** dal lato della rottura fallita: vale 4 ore (16 candele); se non viene eseguito, o se il prezzo arriva prima al primo target, il setup è scaduto;
+  - **a mercato alla chiusura della candela di rientro**.
 - **Stop:** appena oltre l'estremo del falso breakout, più 0,1 ATR, ma almeno mezzo ATR dall'entrata. Uno stop più stretto lo prende il rumore e gonfia il rapporto rischio/rendimento.
-- **Target in tre parti**, un terzo ciascuno:
+- **Target, un terzo ciascuno:**
   - **T1:** il bordo opposto del range. Dopo T1 lo stop va a pareggio.
-  - **Inversione** (contro l'impulso del range: short in una P, long in una B):
+  - **Contro l'impulso** (short in una P, long in una B):
     - T3 è l'origine dell'impulso;
-    - T2 è la prima area di valore tra T1 e l'origine: range precedente o POC, VAH o VAL della settimana prima;
+    - T2 è la prima area di valore tra T1 e l'origine (range precedente, POC, VAH o VAL settimanali);
     - se non ce n'è, anche T2 è all'origine.
-  - **A favore dell'impulso** (long in una P, short in una B): l'origine è dall'altra parte.
-    - T2 e T3 sono le due aree di valore successive.
-    - Senza aree oltre, come ai massimi storici, si proietta l'impulso 1:1 dal bordo.
-- **Rapporto rischio/rendimento:** si calcola fino all'ultimo target (T3). Si mostra anche quello di ogni terzo e la media dei tre, cioè il risultato se arrivano tutti e tre.
-- **Setup valido:**
-  - rapporto fino a T3 di almeno 3;
-  - trend a 4 ore a favore;
-  - con il trend non chiaro, solo l'inversione dopo un impulso forte che si è fermato (lo short in una P, il long in una B);
-  - mai contro il trend a 4 ore.
-- **Il secondo terzo** che Patrick gestisce guardando il prezzo qui va a una regola fissa: la prossima area di valore.
+  - **Nella direzione dell'impulso** (long in una P, short in una B): T2 e T3 sono le due aree di valore successive; senza aree oltre, la proiezione 1:1 dell'impulso dal bordo.
+  - **Senza nessun riferimento** oltre T1: 2 volte il rischio.
+- **Valido:** rapporto rischio/rendimento fino all'ultimo target di almeno 3. Il trend a 4 ore non lo rende mai non valido.
+- **Il secondo terzo**, che Patrick gestisce guardando il prezzo, qui va a una regola fissa: la prossima area di valore.
 
 ### Gli altri due modi (mostrati in modo meno evidente)
-- **Range trade:** ordine limite sul bordo, obiettivo il bordo opposto, senza parziali. Stop mezzo ATR oltre il bordo.
+- **Range trade:**
+  - appena il range è valido, ordine limite su tutti e due i bordi;
+  - vale il primo eseguito;
+  - tutto fuori sul bordo opposto, senza parziali;
+  - stop mezzo ATR oltre il bordo;
+  - se il range finisce prima, non eseguito.
 - **Breakout con conferma:**
   1. Una candela chiude fuori dal range: è la candela di breakout.
   2. Il prezzo ritorna sul bordo, entro la tolleranza del tocco.
-  3. Una candela rompe il massimo (o il minimo) della candela di breakout: lì è l'entrata.
+  3. Una candela rompe il massimo (o il minimo) della candela di breakout: lì è l'entrata, a mercato.
   - Stop oltre il minimo (o massimo) del ritorno, più 0,1 ATR, almeno mezzo ATR.
-  - Obiettivo: l'ampiezza del range proiettata dal bordo.
+  - **Uscite:** il 30% al primo target (la prossima area di valore, o l'ampiezza del range proiettata dal bordo), poi stop a pareggio e il 70% corre fino alla successiva area di valore. Senza aree: la proiezione 1:1 dell'impulso se il breakout va nella sua direzione, altrimenti due volte l'ampiezza del range.
   - Annullato se una candela richiude dentro il range (è un falso breakout) o dopo 16 candele.
 
-### Storico dei setup
-Per i setup passati degli ultimi 8 giorni l'app ricostruisce com'è andata:
-- entrata limite eseguita o no;
-- poi stop (−1 volta il rischio) oppure un terzo a ogni target, con lo stop a pareggio dopo T1.
+### Voto di qualità (A, B, C)
+Punti sommati, ognuno spiegato nella card ("perché?"):
+- **Livello settimanale:** il range o l'estremo del falso breakout è su un POC, VAH o VAL settimanale (entro mezzo ATR): **+2**.
+- **Tocchi:** 5 o più: **+1**.
+- **Durata:** range di 24 ore o più: **+1**.
+- **Rischio/rendimento** fino all'ultimo target: 5 o più **+1**; sotto il minimo **−1**.
+- **Trend a 4 ore:** a favore **+1**, contro **−1**, neutro 0.
+- **Volume della candela di rottura,** rispetto alla media delle 20 candele prima:
+  - falso breakout: 0,8 volte o meno (rottura poco convinta) **+1**; 1,5 volte o più (la rottura potrebbe essere vera) **−1**;
+  - breakout con conferma: al contrario.
+- **Strada verso il target,** dal primo all'ultimo target:
+  - zona con molto volume o POC settimanale in mezzo (ostacolo): **−1**;
+  - solo zone con poco volume (strada libera): **+1**.
 
-Il risultato è in multipli del rischio, senza commissioni. Sono pochi casi: servono a capire, non come statistica.
+Voto: **A** con 4 punti o più, **B** con 2–3, **C** con meno.
+
+### Rischio
+Nella card del setup c'è un calcolatore. Si inseriscono capitale e percentuale di rischio (di partenza 1%, il massimo di Patrick) e si vedono:
+- la dimensione della posizione;
+- la leva necessaria (con tutto il capitale come margine);
+- la perdita in USDT se scatta lo stop, commissioni comprese.
+
+Durata attesa di un trade: da 4 ore a 3 giorni.
+
+### Notizie
+Se nel Calendario c'è una trimestrale del titolo tra il giorno del setup e i 2 giorni dopo, il setup lo segnala.
+
+Il Calendario ha solo le trimestrali delle azioni, senza ora. Le notizie macro (Fed, inflazione) e quelle delle crypto non ci sono.
+
+### Commissioni (Bitunix, livello base)
+- Ordine limite (maker): 0,02%.
+- A mercato e stop (taker): 0,06%.
+- Entrata limite sul bordo e target come ordini limite; entrata a mercato, breakout e stop a mercato.
+
+I risultati sono in multipli del rischio: lordi, e netti con le commissioni.
+
+### Registro automatico
+- **Titoli seguiti:** di partenza BTC, ETH e oro, al massimo 8. Si cambiano dalla pagina con il codice di controllo.
+- **Quando:** il server gira ogni 15 minuti, anche a pagina chiusa, nel controllo ogni minuto dopo la chiusura della candela. Si salta dalle 9:25 alle 10:40 di New York nei giorni feriali.
+- **Cosa salva:** in `wt_range_trades`, ogni setup proposto da quando il titolo è seguito: falso breakout con entrata limite e a mercato, range trade, breakout con conferma. Usa sempre le impostazioni di partenza, così i numeri sono confrontabili.
+- **Esito:** lo segue fino alla fine (entrata eseguita o no, target, stop, risultato lordo e netto). Un trade ancora aperto dopo 6 giorni si chiude come "dati finiti".
+- **Statistiche nella pagina,** sui setup validi: per tipo di trade, P o B, a favore o contro l'impulso, contesto a 4 ore, voto e titolo, con la serie di perdite più lunga. Con pochi casi i numeri non valgono ancora: servono almeno 30–50 trade conclusi per gruppo.
 
 ### Avvisi push
-Facoltativi, per titolo (al massimo 8):
-- range diventato valido;
-- setup valido pronto.
-
-Si controllano una volta ogni 15 minuti, dopo la chiusura della candela, con le impostazioni del browser al momento dell'attivazione. Non si controllano dalle 9:25 alle 10:40 di New York nei giorni feriali, per lasciare la precedenza alla strategia Apertura USA.
+- **Facoltativi,** per titolo (al massimo 8): range diventato valido e setup di falso breakout valido pronto.
+- **Voto minimo:** si possono limitare ai setup con un voto da A, da B o da C in su.
+- **Impostazioni:** quelle del browser al momento dell'attivazione.
+- **Orari:** stessi giri del registro.
 
 ### Impostazioni modificabili (valori di partenza)
 - Forza minima dell'impulso: 3 volte l'ATR.
@@ -154,4 +246,4 @@ Si controllano una volta ogni 15 minuti, dopo la chiusura della candela, con le 
 - Tolleranza del tocco: 0,25 ATR.
 - Rischio/rendimento minimo: 3.
 
-Le regole fisse sono il ritracciamento massimo del 60%, lo stop (0,1 ATR, almeno mezzo ATR), l'ordine limite di 4 ore e la fine del range dopo due chiusure fuori o 5 giorni.
+Le regole fisse sono il ritracciamento massimo del 60%, lo stop (0,1 ATR, almeno mezzo ATR), l'entrata in attesa di 4 ore, la fine del range dopo due chiusure fuori o 5 giorni, e i punti del voto.

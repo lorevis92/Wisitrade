@@ -34,7 +34,7 @@ export function TrendChart({ bars, ema50, height = 200 }) {
 }
 
 // Grafico a 15 minuti con impulsi, range (rettangoli), tocchi, falsi breakout, livelli e setup
-export default function RangeChart({ bars, res, vp, focus, height = 440, visible = 220 }) {
+export default function RangeChart({ bars, res, wp, focus, height = 440, visible = 220 }) {
   const box = useRef(null)
   const rangeRef = useRef(null)
   useEffect(() => {
@@ -66,7 +66,17 @@ export default function RangeChart({ bars, res, vp, focus, height = 440, visible
       for (const fb of rg.fakeouts) markers.push({ time: t[fb.idx], position: fb.dir > 0 ? 'aboveBar' : 'belowBar', color: fb.dir > 0 ? C.down : C.up, shape: fb.dir > 0 ? 'arrowDown' : 'arrowUp', text: 'falso' })
       if (rg.breakout) markers.push({ time: t[rg.breakout.idx], position: rg.breakout.dir > 0 ? 'aboveBar' : 'belowBar', color: C.warn, shape: 'circle', size: 0.6, text: 'breakout' })
     }
-    // setup passati: cosa è successo
+    // profilo settimanale: zone con molto volume (gialle, il prezzo frena) e con poco volume (viola, le attraversa in fretta)
+    // della settimana precedente e di quella in corso, sotto a tutto il resto
+    const band = (lo, hi, color) => {
+      const b = chart.addSeries(BaselineSeries, { ...flat, baseValue: { type: 'price', price: lo }, topLineColor: 'transparent', bottomLineColor: 'transparent', topFillColor1: color, topFillColor2: color, bottomFillColor1: 'transparent', bottomFillColor2: 'transparent' })
+      b.setData(t.map(x => ({ time: x, value: hi })))
+    }
+    for (const p of [wp?.prev, wp?.cur].filter(Boolean)) {
+      for (const z of p.hvn || []) band(z.lo, z.hi, rgba(C.warn, 0.07))
+      for (const z of p.lvn || []) band(z.lo, z.hi, rgba(C.ema, 0.08))
+    }
+    // setup passati (falso breakout, entrata limite): cosa è successo
     for (const st of res.setups.filter(x => x.valid)) {
       const i = st.exitIdx ?? st.fillIdx
       if (i === null || i === undefined || i > last) continue
@@ -75,24 +85,29 @@ export default function RangeChart({ bars, res, vp, focus, height = 440, visible
     }
     markers.sort((a, b) => a.time - b.time)
     createSeriesMarkers(cs, markers)
-    // volume profile della settimana prima
-    if (vp) {
-      cs.createPriceLine({ price: vp.poc, color: rgba(C.warn, 0.8), lineWidth: 1, lineStyle: LineStyle.Solid, title: 'POC sett.', axisLabelVisible: false })
-      cs.createPriceLine({ price: vp.vah, color: rgba(C.warn, 0.5), lineWidth: 1, lineStyle: LineStyle.Dashed, title: 'VAH', axisLabelVisible: false })
-      cs.createPriceLine({ price: vp.val, color: rgba(C.warn, 0.5), lineWidth: 1, lineStyle: LineStyle.Dashed, title: 'VAL', axisLabelVisible: false })
+    // livelli chiave del profilo settimanale: POC, VAH e VAL (settimana in corso piena, precedente tratteggiata)
+    for (const [p, cur] of [[wp?.cur, true], [wp?.prev, false]]) {
+      if (!p) continue
+      const st = cur ? LineStyle.Solid : LineStyle.Dashed, sfx = cur ? ' sett.' : ' sett. prec.'
+      cs.createPriceLine({ price: p.poc, color: rgba(C.warn, cur ? 0.95 : 0.7), lineWidth: 2, lineStyle: st, title: `POC${sfx}`, axisLabelVisible: true })
+      cs.createPriceLine({ price: p.vah, color: rgba(C.warn, cur ? 0.75 : 0.5), lineWidth: 1, lineStyle: st, title: `VAH${sfx}`, axisLabelVisible: false })
+      cs.createPriceLine({ price: p.val, color: rgba(C.warn, cur ? 0.75 : 0.5), lineWidth: 1, lineStyle: st, title: `VAL${sfx}`, axisLabelVisible: false })
     }
     // setup in evidenza: entrata, stop, target
     if (focus) {
       const line = (price, color, title, style = LineStyle.Solid) => cs.createPriceLine({ price, color, lineWidth: 2, lineStyle: style, title, axisLabelVisible: true })
       line(focus.entry, '#E8ECF5', `entrata ${focus.side > 0 ? 'long' : 'short'}`)
       line(focus.stop, C.down, 'stop')
-      line(focus.t1, rgba(C.up, 0.8), 'T1', LineStyle.Dashed)
-      line(focus.t2, C.up, 'T2')
-      if (Math.abs(focus.t3 - focus.t2) > 1e-9) line(focus.t3, C.up, 'T3', LineStyle.Dotted)
+      let prev = null
+      focus.targets.forEach((x, i) => {
+        if (prev !== null && Math.abs(x.p - prev) < 1e-9) return
+        prev = x.p
+        line(x.p, rgba(C.up, i === 0 ? 0.8 : 1), focus.targets.length > 1 ? `T${i + 1}` : 'target', i === 0 ? LineStyle.Dashed : i === 1 ? LineStyle.Solid : LineStyle.Dotted)
+      })
     }
     const saved = rangeRef.current
     chart.timeScale().setVisibleLogicalRange(saved || { from: Math.max(0, bars.length - visible), to: bars.length + 4 })
     return () => { rangeRef.current = chart.timeScale().getVisibleLogicalRange(); chart.remove() }
-  }, [bars, res, vp, focus, visible])
+  }, [bars, res, wp, focus, visible])
   return <div ref={box} style={{ height, position: 'relative' }} />
 }
