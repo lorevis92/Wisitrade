@@ -21,7 +21,7 @@ const SETTINGS_INFO = [
   ['minTouches', 'Tocchi minimi', 'tocchi', 'Tocchi dei bordi (alto + basso, almeno uno per lato) perché il range sia valido. Più alto: range più "provati", ma meno numerosi e più tardi.'],
   ['minHours', 'Durata minima del range', 'ore', 'Da quanto tempo il prezzo deve stare nel range perché sia valido (12 = mezza giornata). Più basso: range più frequenti ma meno solidi.'],
   ['touchTol', 'Tolleranza del tocco', '× ATR', 'Quanto vicino al bordo deve arrivare il prezzo per contare un tocco. Più alta: più tocchi contati, range validi prima.'],
-  ['minRR', 'Rischio/rendimento minimo', ': 1', 'Un setup è valido solo se il rendimento fino all'ultimo target (T3) è almeno questo multiplo del rischio. Più alto: meno setup, più selettivi.'],
+  ['minRR', 'Rischio/rendimento minimo', ': 1', 'Un setup è valido solo se il rendimento fino all\'ultimo target (T3) è almeno questo multiplo del rischio. Più alto: meno setup, più selettivi.'],
 ]
 // stato → alone (come nella pagina RSI)
 function glowFor(rg) {
