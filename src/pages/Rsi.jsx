@@ -5,8 +5,8 @@ import { load, save } from '../lib/store.js'
 import { readStoch, suggest, RSI_DEFAULTS } from '../lib/stochrsi.js'
 import { ManualPanel, ManualPositions, ManualHistory, useManual, snapshotOf } from '../components/ManualTrade.jsx'
 
-const BASE = ['BTCUSDT', 'ETHUSDT', 'XAUUSDT', 'GOOGLUSDT', 'NVDAUSDT', 'TSLAUSDT', 'MSTRUSDT', 'COINUSDT', 'QQQUSDT']
-const NAMES = { XAUUSDT: 'oro' }
+export const BASE = ['BTCUSDT', 'ETHUSDT', 'XAUUSDT', 'GOOGLUSDT', 'NVDAUSDT', 'TSLAUSDT', 'MSTRUSDT', 'COINUSDT', 'QQQUSDT']
+export const NAMES = { XAUUSDT: 'oro' }
 const TFS = ['1m', '3m', '5m', '15m', '1h', '4h', '1d']
 // ogni quanto si rileggono le candele (la CDN tiene la risposta per un po', vedi RSI_TF in api/index.js)
 const REFRESH = { '1m': 15000, '3m': 30000, '5m': 30000, '15m': 60000, '1h': 120000, '4h': 300000, '1d': 600000 }
@@ -153,7 +153,8 @@ function BigView({ symbol, tf, entry, read, params, onClose }) {
   )
 }
 
-function SymbolPicker({ symbol, setSymbol, custom, setCustom }) {
+// usato anche dalla pagina Range (featured = titoli in evidenza)
+export function SymbolPicker({ symbol, setSymbol, custom, setCustom, featured = [] }) {
   const [qText, setQ] = useState('')
   const [pairs, setPairs] = useState(null)
   const [err, setErr] = useState(null)
@@ -168,7 +169,7 @@ function SymbolPicker({ symbol, setSymbol, custom, setCustom }) {
   return (
     <div className="card" style={{ padding: 12 }}>
       <div className="chips">
-        {BASE.map(s => <button key={s} className={`chip ${symbol === s ? 'active' : ''}`} onClick={() => setSymbol(s)}>{short(s)}{NAMES[s] ? ` · ${NAMES[s]}` : ''}</button>)}
+        {BASE.map(s => <button key={s} className={`chip ${symbol === s ? 'active' : ''} ${featured.includes(s) ? 'featured' : ''}`} onClick={() => setSymbol(s)}>{short(s)}{NAMES[s] ? ` · ${NAMES[s]}` : ''}</button>)}
         {custom.map(s => (
           <span key={s} className={`chip rsi-custom ${symbol === s ? 'active' : ''}`}>
             <button onClick={() => setSymbol(s)}>{short(s)}</button>

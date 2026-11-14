@@ -257,3 +257,26 @@ details > summary::-webkit-details-marker { display: none; }
 .msnap { padding: 4px 0; }
 .msnap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; font-size: 11px; }
 .msnap-grid b { color: var(--text); font-weight: 500; }
+
+/* Pagina Range (P e B) */
+.chip.featured { border-color: var(--border-hi); color: var(--text-sec); font-weight: 600; }
+.chip.featured.active { color: #fff; }
+.rg-card { cursor: default; }
+.rg-setup { margin-top: 8px; padding: 9px 10px; border-radius: 4px; background: var(--surface-deep); border: 1px solid var(--border); }
+.rg-setup.long { border-color: var(--long-border); }
+.rg-setup.short { border-color: var(--short-border); }
+.rg-setup.big { margin-top: 10px; }
+.rg-setup b { font-weight: 600; }
+.rg-levels { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; margin: 7px 0 5px; font-size: 11px; color: var(--text-muted); }
+.rg-levels b { color: var(--text); font-weight: 500; }
+.rg-levels b.up { color: var(--long); }
+.rg-levels b.down { color: var(--short); }
+.rg-levels i { display: block; font-style: normal; font-size: 10px; color: var(--text-muted); }
+.rg-alt { margin-top: 8px; opacity: .75; }
+.rg-alt summary { cursor: pointer; }
+.rg-alt .note { font-size: 11px; margin-top: 4px; }
+.rg-set { border-top: 1px solid var(--border-soft); padding: 8px 0; display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px; align-items: start; }
+.rg-set .note { margin: 0; font-size: 11px; }
+@media (max-width: 520px) { .rg-set { grid-template-columns: 1fr; gap: 4px; } .rg-levels { grid-template-columns: 1fr; } }
+.tabs .tab { min-width: 0; }
+@media (max-width: 420px) { .tab { font-size: 10px; letter-spacing: .02em; } }

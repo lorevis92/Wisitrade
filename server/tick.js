@@ -3,6 +3,7 @@
 // molti titoli nella strategia si scaricano prima solo le candele da 1 minuto che servono alla strategia
 // (posizioni aperte e titoli ancora in gioco nella finestra d'entrata), poi quelle dello scanner.
 import { ASSETS, ASSET_MAP } from '../shared/assets.js'
+import { runRangeAlerts } from './range-alerts.js'
 import { many } from './bitunix.js'
 import { getMeta, setMeta } from './db.js'
 import { nyInfo } from './session.js'
@@ -88,6 +89,12 @@ export async function tick() {
       if (left > 2000) try { const r = await recordSpreads(info, perps, { maxMs: Math.min(9000, left) }); if (r) out.spreads = r } catch (e) { errors.push(`spread: ${e.message}`) }
     }
     if (errors.length) out.dataErrors = errors.slice(0, 5)
+    // avvisi della pagina Range: una volta ogni 15 minuti (subito dopo la chiusura della candela), mai durante l'apertura USA
+    // (9:25–10:40 New York nei giorni feriali: la strategia ha la precedenza) e solo se resta tempo
+    const busyOpen = info.isWeekday && info.minutes >= 565 && info.minutes <= 640
+    if (new Date().getUTCMinutes() % 15 === 1 && !busyOpen && Date.now() - t0 < 30000) {
+      try { const r = await runRangeAlerts({ budgetMs: Math.min(12000, 42000 - (Date.now() - t0)) }); if (r.subs) out.range = r } catch (e) { out.range = { error: e.message } }
+    }
     // archivio per la Simulazione: solo lontano dall'orario della strategia (dopo le 16:35 o prima delle 7:50 di New York, e nel fine settimana)
     const quiet = !info.isWeekday || info.minutes >= 995 || info.minutes < 470
     if (quiet) {
