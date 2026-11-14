@@ -59,3 +59,24 @@ export function readStoch(bars, p = RSI_DEFAULTS) {
   }
   return { k, d, K, D, state, intensity: Math.max(0, Math.min(1, intensity)), cross, exits }
 }
+
+// Suggerimento per gli ordini manuali (solo un'indicazione): ogni timeframe in ipervenduto vale +1, in ipercomprato −1;
+// un incrocio K/D recente (ultime 3 candele) vale ±0,5, ±1 se è dentro una zona estrema. Long da +2 in su, short da −2 in giù.
+export function suggest(reads, tfs) {
+  const ready = tfs.filter(tf => reads[tf]?.state)
+  if (!ready.length) return { side: null, score: 0, reason: 'Timeframe non ancora caricati' }
+  const os = ready.filter(tf => reads[tf].state === 'oversold'), ob = ready.filter(tf => reads[tf].state === 'overbought')
+  const up = ready.filter(tf => reads[tf].cross?.dir === 'up'), dn = ready.filter(tf => reads[tf].cross?.dir === 'down')
+  let score = os.length - ob.length
+  for (const tf of up) score += reads[tf].cross.inZone ? 1 : 0.5
+  for (const tf of dn) score -= reads[tf].cross.inZone ? 1 : 0.5
+  const side = score >= 2 ? 1 : score <= -2 ? -1 : null
+  const parts = []
+  const list = a => a.join(', ')
+  if (os.length) parts.push(`${os.length} su ${ready.length} in ipervenduto (${list(os)})`)
+  if (ob.length) parts.push(`${ob.length} su ${ready.length} in ipercomprato (${list(ob)})`)
+  if (up.length) parts.push(`K incrocia D verso l'alto su ${list(up.map(tf => tf + (reads[tf].cross.inZone ? ' in zona' : '')))}`)
+  if (dn.length) parts.push(`K incrocia D verso il basso su ${list(dn.map(tf => tf + (reads[tf].cross.inZone ? ' in zona' : '')))}`)
+  const head = side === 1 ? 'Long' : side === -1 ? 'Short' : 'Nessun suggerimento, segnali misti o deboli'
+  return { side, score: Math.round(score * 10) / 10, reason: `${head}: ${parts.length ? parts.join(' · ') : 'tutti i timeframe in zona neutra, nessun incrocio recente'}` }
+}

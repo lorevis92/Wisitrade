@@ -21,6 +21,7 @@ import { waitUntil } from '@vercel/functions'
 import { fastEntries } from '../server/fast-run.js'
 import { operable, keepOperable, operableView, clearMarks } from '../server/operable.js'
 import { compareDay } from '../server/compare.js'
+import { manualInfo, manualOpen, manualClose, manualPositions, ManualError } from '../server/manual.js'
 import { loadLiveSlip, slipValues, PSLIP_KINDS, PSLIP_DEFAULT, PSLIP_LAST, PSLIP_MIN_N } from '../server/pslip.js'
 
 const TF = {
@@ -409,6 +410,24 @@ async function route(req, url) {
 
   // ---- Strategia (solo con il codice di controllo) ----
   if (path === '/admin/check') { requireAdmin(req); return { ok: true } }
+
+  // ---- Ordini manuali dalla pagina RSI (server/manual.js): sempre con il codice di controllo ----
+  if (path.startsWith('/manual/')) {
+    requireAdmin(req)
+    const sym = (url.searchParams.get('symbol') || '').toUpperCase()
+    try {
+      if (path === '/manual/info' && m === 'GET') {
+        if (!/^[A-Z0-9]{2,24}$/.test(sym)) throw new HttpError(400, 'Coppia non valida')
+        return await manualInfo(sym)
+      }
+      if (path === '/manual/positions' && m === 'GET') return await manualPositions()
+      if (path === '/manual/open' && m === 'POST') return { trade: await manualOpen(body) }
+      if (path === '/manual/close' && m === 'POST') return { trade: await manualClose(body.id) }
+    } catch (e) {
+      if (e instanceof ManualError) throw new HttpError(e.status, e.message)
+      throw e
+    }
+  }
 
   if (path === '/strategy' && m === 'GET') {
     requireAdmin(req)

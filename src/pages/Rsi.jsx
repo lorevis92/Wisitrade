@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import RsiChart from '../components/RsiChart.jsx'
 import { get, fmtPrice } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
-import { readStoch, RSI_DEFAULTS } from '../lib/stochrsi.js'
+import { readStoch, suggest, RSI_DEFAULTS } from '../lib/stochrsi.js'
+import { ManualPanel, ManualPositions, ManualHistory, useManual, snapshotOf } from '../components/ManualTrade.jsx'
 
 const BASE = ['BTCUSDT', 'ETHUSDT', 'XAUUSDT', 'GOOGLUSDT', 'NVDAUSDT', 'TSLAUSDT', 'MSTRUSDT', 'COINUSDT', 'QQQUSDT']
 const NAMES = { XAUUSDT: 'oro' }
@@ -280,6 +281,9 @@ export default function Rsi() {
   }, [symbol])
 
   const reads = useMemo(() => Object.fromEntries(TFS.map(tf => [tf, data[tf]?.bars?.length ? readStoch(data[tf].bars, params) : null])), [data, params])
+  const suggestion = useMemo(() => suggest(reads, TFS), [reads])
+  const price = data['1m']?.bars?.at(-1)?.c ?? null
+  const manual = useManual()
 
   return (
     <div>
@@ -292,10 +296,18 @@ export default function Rsi() {
       </div>
       <SymbolPicker symbol={symbol} setSymbol={setSymbol} custom={custom} setCustom={setCustom} />
       <Summary reads={reads} />
+      {manual.authed
+        ? <>
+            <ManualPanel symbol={symbol} price={price} suggestion={suggestion} makeSnapshot={() => snapshotOf(reads, TFS, suggestion, params)}
+              positions={manual.positions} reloadPositions={manual.reloadPositions} onAuthError={manual.onAuthError} />
+            <ManualPositions positions={manual.positions} reloadPositions={manual.reloadPositions} onAuthError={manual.onAuthError} />
+          </>
+        : <manual.Gate onOk={() => manual.setAuthed(true)} />}
       <div className="rsi-grid">
         {TFS.map(tf => <TfCard key={symbol + tf} tf={tf} entry={data[tf]} read={reads[tf]} params={params} onOpen={() => setOpen(tf)} />)}
       </div>
       <Settings params={params} setParams={setParams} />
+      {manual.authed && <ManualHistory positions={manual.positions} />}
       <p className="note">Candele del perpetual su Bitunix, aggiornate da sole: ogni 15 secondi l'1m, ogni 30 il 3m e il 5m, ogni minuto il 15m, più di rado gli altri. Alone verde = ipervenduto (K sotto {params.low}), rosso = ipercomprato (K sopra {params.high}), più acceso quanto più K è estremo; l'impulso segnala un incrocio K/D dentro una zona estrema. Tocca una card per aprirla in grande.</p>
       {open && <BigView symbol={symbol} tf={open} entry={data[open]} read={reads[open]} params={params} onClose={() => setOpen(null)} />}
     </div>
