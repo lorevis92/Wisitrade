@@ -88,6 +88,7 @@ export default function RangeChart({ bars, res, vp, focus, height = 440, visible
       line(focus.stop, C.down, 'stop')
       line(focus.t1, rgba(C.up, 0.8), 'T1', LineStyle.Dashed)
       line(focus.t2, C.up, 'T2')
+      if (Math.abs(focus.t3 - focus.t2) > 1e-9) line(focus.t3, C.up, 'T3', LineStyle.Dotted)
     }
     const saved = rangeRef.current
     chart.timeScale().setVisibleLogicalRange(saved || { from: Math.max(0, bars.length - visible), to: bars.length + 4 })

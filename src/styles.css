@@ -280,3 +280,6 @@ details > summary::-webkit-details-marker { display: none; }
 @media (max-width: 520px) { .rg-set { grid-template-columns: 1fr; gap: 4px; } .rg-levels { grid-template-columns: 1fr; } }
 .tabs .tab { min-width: 0; }
 @media (max-width: 420px) { .tab { font-size: 10px; letter-spacing: .02em; } }
+
+.rg-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.pill.rg-strong { color: var(--warn); background: rgba(245, 184, 61, .08); border: 1px solid rgba(245, 184, 61, .4); }

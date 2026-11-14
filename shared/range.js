@@ -118,39 +118,64 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
     return { up, dn }
   }
 
-  // livelli oltre T1 nella direzione del trade: range precedenti già finiti, volume profile della settimana prima, origine dell'impulso
-  const nextLevel = (side, t1, k, rg) => {
+  // aree di valore conosciute al momento k: range precedenti già finiti e volume profile della settimana prima
+  const valueLevels = (k, rg) => {
     const cands = []
-    for (const r of ranges) if (r !== rg && r.endIdx !== null && r.endIdx < k) { cands.push({ p: r.top, why: 'area di valore precedente (bordo alto)' }); cands.push({ p: r.bottom, why: 'area di valore precedente (bordo basso)' }) }
+    for (const r of ranges) if (r !== rg && r.endIdx !== null && r.endIdx < k) { cands.push({ p: r.top, why: 'range precedente (bordo alto)' }); cands.push({ p: r.bottom, why: 'range precedente (bordo basso)' }) }
     const vp = prevWeekProfile(bars1h, bars[k].t)
     if (vp) { cands.push({ p: vp.poc, why: 'POC del volume settimanale' }); cands.push({ p: vp.vah, why: 'alto dell\'area di valore settimanale' }); cands.push({ p: vp.val, why: 'basso dell\'area di valore settimanale' }) }
-    cands.push({ p: rg.imp.from, why: 'origine dell\'impulso' })
-    const min = 0.25 * rg.atr
-    const ok = cands.filter(c => side * (c.p - t1) > min).sort((a, b) => side * (a.p - b.p))
-    if (ok.length) return ok[0]
-    // niente sopra (o sotto) nei dati: come ai massimi storici, proiezione 1:1 dell'impulso dal bordo
-    return { p: side > 0 ? rg.top + rg.imp.size : rg.bottom - rg.imp.size, why: 'proiezione 1:1 dell\'impulso (nessun livello oltre)', proj: true }
+    return cands
   }
 
-  // setup dal falso breakout: limite sul bordo, stop oltre l'estremo, T1 bordo opposto, T2 livello successivo; poi cosa è successo
+  // Target in tre parti come Patrick: T1 bordo opposto del range; T2 prossima area di valore; T3 origine dell'impulso.
+  // Inversione (contro l'impulso del range: short in una P, long in una B): T3 = origine dell'impulso, T2 = prima area di valore
+  // tra T1 e l'origine (se non c'è, anche T2 all'origine). A favore dell'impulso l'origine è dall'altra parte: T2 e T3 sono le due
+  // aree di valore successive; senza aree oltre (come ai massimi storici) si proietta l'impulso 1:1 dal bordo.
+  const targets = (side, t1, k, rg) => {
+    const min = 0.25 * rg.atr
+    const beyond = (from, list) => list.filter(c => side * (c.p - from) > min).sort((x, y) => side * (x.p - y.p))
+    const lv = valueLevels(k, rg)
+    const reversal = (rg.type === 'P') === (side < 0)
+    if (reversal) {
+      const t3 = { p: rg.imp.from, why: 'origine dell\'impulso' }
+      const mid = beyond(t1, lv).filter(c => side * (t3.p - c.p) > min)
+      const t2 = mid[0] || { ...t3, why: 'origine dell\'impulso (nessuna area di valore prima)' }
+      return { reversal, t2, t3 }
+    }
+    const proj = { p: side > 0 ? rg.top + rg.imp.size : rg.bottom - rg.imp.size, why: 'proiezione 1:1 dell\'impulso (nessuna area oltre)', proj: true }
+    const t2 = beyond(t1, lv)[0] || proj
+    const t3 = beyond(t2.p, lv)[0] || (side * (proj.p - t2.p) > min ? proj : { ...t2 })
+    return { reversal, t2, t3 }
+  }
+
+  // setup dal falso breakout: limite sul bordo, stop oltre l'estremo, tre target; poi cosa è successo
   const makeSetup = (rg, fb) => {
     const side = -fb.dir, k = fb.idx
     const entry = fb.dir > 0 ? rg.top : rg.bottom
     let stop = fb.ext + fb.dir * STOP_BUF * rg.atr
     if (fb.dir * (stop - entry) < MIN_RISK * rg.atr) stop = entry + fb.dir * MIN_RISK * rg.atr
     const t1 = fb.dir > 0 ? rg.bottom : rg.top
-    const nx = nextLevel(side, t1, k, rg)
+    const tg = targets(side, t1, k, rg)
     const risk = side * (entry - stop)
     if (!(risk > 0)) return null
-    const rr = side * (nx.p - entry) / risk, rr1 = side * (t1 - entry) / risk
+    const rr1 = side * (t1 - entry) / risk, rr2 = side * (tg.t2.p - entry) / risk, rr = side * (tg.t3.p - entry) / risk
     const tr = trendOf(bars[k].t + Q)
+    const fit = !tr || tr === 'side' ? 'neutro' : (tr === 'up') === (side > 0) ? 'a favore' : 'contro'
+    // validità: rapporto fino all'ultimo target almeno minRR e trend a 4 ore a favore; con il trend non chiaro vale solo
+    // l'inversione dopo un impulso forte che si è fermato (il range stesso); contro il trend non si entra
+    let invalid = null
+    if (rr < s.minRR) invalid = `rischio/rendimento ${rr.toFixed(1)} sotto ${s.minRR}`
+    else if (fit === 'contro') invalid = 'contro il trend a 4 ore'
+    else if (fit === 'neutro' && !tg.reversal) invalid = 'trend a 4 ore non chiaro e non è un\'inversione'
     const st = {
-      id: `${rg.id}:${bars[k].t}`, range: rg.id, type: rg.type, side, at: bars[k].t + Q, idx: k, entry, stop, t1, t2: nx.p, t2why: nx.why, proj: !!nx.proj,
-      rr, rr1, valid: rr >= s.minRR, trend: tr, fit: !tr || tr === 'side' ? 'neutro' : (tr === 'up') === (side > 0) ? 'a favore' : 'contro',
-      status: 'pronto', fillIdx: null, exitIdx: null, R: null, half: false,
+      id: `${rg.id}:${bars[k].t}`, range: rg.id, type: rg.type, side, at: bars[k].t + Q, idx: k, entry, stop, t1,
+      t2: tg.t2.p, t2why: tg.t2.why, t3: tg.t3.p, t3why: tg.t3.why, proj: !!(tg.t2.proj || tg.t3.proj), reversal: tg.reversal,
+      rr, rr1, rr2, rrAll: (rr1 + rr2 + rr) / 3, valid: !invalid, invalid, trend: tr, fit, strong: rg.strong || null,
+      status: 'pronto', fillIdx: null, exitIdx: null, R: null, parts: 0,
     }
-    // simulazione dopo il setup: entrata limite (4 ore), poi stop / metà a T1 con stop in pareggio / resto a T2
-    let stopNow = stop
+    // dopo il setup: entrata limite (4 ore), poi un terzo a T1 con lo stop a pareggio, un terzo a T2, un terzo a T3
+    const lv = [t1, tg.t2.p, tg.t3.p], rrs = [rr1, rr2, rr]
+    let stopNow = stop, got = 0
     for (let m = k + 1; m < n; m++) {
       const pts = pathOf(bars[m])
       for (const p of pts) {
@@ -159,20 +184,49 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
           if (side * (p - entry) <= 0) { st.fillIdx = m; st.status = 'in corso' }
           continue
         }
-        if (side * (p - stopNow) <= 0) {
-          st.R = st.half ? 0.5 * rr1 : -1; st.status = st.half ? 'pareggio dopo T1' : 'stop'; st.exitIdx = m; break
-        }
-        if (!st.half && side * (p - t1) >= 0) { st.half = true; stopNow = entry }
-        if (side * (p - nx.p) >= 0) { st.R = 0.5 * rr1 + 0.5 * rr; st.status = 'target'; st.exitIdx = m; break }
+        if (side * (p - stopNow) <= 0) { st.R = st.parts ? got : -1; st.status = st.parts ? `pareggio dopo T${st.parts}` : 'stop'; st.exitIdx = m; break }
+        while (st.parts < 3 && side * (p - lv[st.parts]) >= 0) { got += rrs[st.parts] / 3; st.parts++; stopNow = entry }
+        if (st.parts === 3) { st.R = got; st.status = 'target'; st.exitIdx = m; break }
       }
       if (st.exitIdx !== null) break
       if (st.fillIdx === null && m - k >= EXPIRY_BARS) { st.status = 'scaduto'; st.why = 'entrata limite mai eseguita'; st.exitIdx = m; break }
     }
-    if (st.status === 'in corso') {
-      const last = bars[n - 1].c
-      st.openR = (st.half ? 0.5 * rr1 + 0.5 * side * (last - entry) / risk : side * (last - entry) / risk)
-    }
+    if (st.status === 'in corso') st.openR = got + (3 - st.parts) / 3 * side * (bars[n - 1].c - entry) / risk
     return st
+  }
+
+  // Breakout con conferma (secondo modo, meno importante): chiusura fuori dal range (candela di breakout), ritorno sul bordo,
+  // poi una candela che rompe l'estremo della candela di breakout → entrata lì, stop oltre il minimo (o massimo) del ritorno,
+  // obiettivo l'ampiezza del range proiettata dal bordo. Se una candela richiude dentro il range è un falso breakout: annullato.
+  const breakoutConfirm = rg => {
+    if (rg.validIdx === null) return null
+    const tol = s.touchTol * rg.atr, h = rg.top - rg.bottom
+    const until = Math.min(n - 1, (rg.endIdx ?? n - 1) + EXPIRY_BARS)
+    let w = null, last = null
+    for (let k = rg.validIdx + 1; k <= until; k++) {
+      const b = bars[k]
+      if (!w) { if (b.c > rg.top) w = { dir: 1, B: k }; else if (b.c < rg.bottom) w = { dir: -1, B: k }; continue }
+      const d = w.dir, B = bars[w.B]
+      if (k - w.B > EXPIRY_BARS) { last = { ...w, status: 'scaduto' }; w = null; continue }
+      if (d > 0 ? b.c <= rg.top : b.c >= rg.bottom) { last = { ...w, status: 'richiuso dentro il range (falso breakout)' }; w = null; continue }
+      if (!w.retest && (d > 0 ? b.l <= rg.top + tol : b.h >= rg.bottom - tol)) w.retest = k
+      if (w.retest && (d > 0 ? b.h > B.h : b.l < B.l)) {
+        const entry = d > 0 ? B.h : B.l
+        const seg = bars.slice(w.B + 1, k + 1)
+        let stop = d > 0 ? Math.min(...seg.map(x => x.l)) - STOP_BUF * rg.atr : Math.max(...seg.map(x => x.h)) + STOP_BUF * rg.atr
+        if (d * (entry - stop) < MIN_RISK * rg.atr) stop = entry - d * MIN_RISK * rg.atr
+        const target = d > 0 ? rg.top + h : rg.bottom - h
+        const risk = d * (entry - stop), rr = d * (target - entry) / risk
+        const bo = { ...w, status: 'entrata', idx: k, entry, stop, target, rr, R: null }
+        for (let m = k + 1; m < n && bo.R === null; m++) for (const p of pathOf(bars[m])) {
+          if (d * (p - stop) <= 0) { bo.R = -1; bo.status = 'stop'; break }
+          if (d * (p - target) >= 0) { bo.R = rr; bo.status = 'target'; break }
+        }
+        return bo
+      }
+    }
+    if (w) return { ...w, status: w.retest ? 'ritorno sul bordo fatto: si aspetta la rottura dell\'estremo della candela di breakout' : 'chiusura fuori: si aspetta il ritorno sul bordo', trigger: w.dir > 0 ? bars[w.B].h : bars[w.B].l }
+    return last
   }
 
   let j = 15
@@ -199,7 +253,15 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
         if (rg.top - rg.bottom > MAX_RETRACE * imp.size) { rg.status = 'annullato'; rg.why = 'ritracciamento oltre il 60% dell\'impulso'; rg.endIdx = k; next = k; break }
         const tc = touches(e, k, rg.top, rg.bottom, tol)
         rg.touchUp = tc.up; rg.touchDn = tc.dn
-        if (k - e >= minBars && tc.up + tc.dn >= s.minTouches && tc.up >= 1 && tc.dn >= 1) { rg.validIdx = k; rg.status = 'valido'; rg.validAt = b.t + Q; rg.validTrend = trendOf(b.t + Q) }
+        if (k - e >= minBars && tc.up + tc.dn >= s.minTouches && tc.up >= 1 && tc.dn >= 1) {
+          rg.validIdx = k; rg.status = 'valido'; rg.validAt = b.t + Q; rg.validTrend = trendOf(b.t + Q)
+          // rafforzato: il range si è formato su un livello del volume profile della settimana prima (POC, VAH o VAL)
+          const vp = prevWeekProfile(bars1h, b.t)
+          if (vp) {
+            const on = [['POC', vp.poc], ['VAH', vp.vah], ['VAL', vp.val]].filter(([, p]) => p >= rg.bottom - tol && p <= rg.top + tol)
+            if (on.length) rg.strong = on.map(([name, p]) => ({ name, p }))
+          }
+        }
         else if (k - e > MAX_DAYS * 96) { rg.status = 'annullato'; rg.why = 'nessun range valido in 5 giorni'; rg.endIdx = k; next = k; break }
         continue
       }
@@ -248,10 +310,11 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
     } else rg.state = rg.dropped ? `non valido: ${rg.why}` : rg.status
     // gli altri due modi di operare il range (meno importanti): dentro il range e breakout con conferma
     if (rg.validIdx !== null) {
-      const h = rg.top - rg.bottom
+      // range trade: limite sul bordo, obiettivo il bordo opposto, senza parziali; stop oltre il bordo (mezzo ATR)
+      const sb = MIN_RISK * rg.atr
       rg.alt = {
-        inside: { long: { entry: rg.bottom + 0.1 * h, stop: rg.bottom - 0.5 * rg.atr, target: rg.top - 0.1 * h }, short: { entry: rg.top - 0.1 * h, stop: rg.top + 0.5 * rg.atr, target: rg.bottom + 0.1 * h } },
-        breakout: { up: { trigger: rg.top, stop: rg.top - 0.5 * h, target: rg.top + h }, down: { trigger: rg.bottom, stop: rg.bottom + 0.5 * h, target: rg.bottom - h } },
+        inside: { long: { entry: rg.bottom, stop: rg.bottom - sb, target: rg.top }, short: { entry: rg.top, stop: rg.top + sb, target: rg.bottom } },
+        breakout: breakoutConfirm(rg),
       }
     }
   }

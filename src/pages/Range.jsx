@@ -21,7 +21,7 @@ const SETTINGS_INFO = [
   ['minTouches', 'Tocchi minimi', 'tocchi', 'Tocchi dei bordi (alto + basso, almeno uno per lato) perché il range sia valido. Più alto: range più "provati", ma meno numerosi e più tardi.'],
   ['minHours', 'Durata minima del range', 'ore', 'Da quanto tempo il prezzo deve stare nel range perché sia valido (12 = mezza giornata). Più basso: range più frequenti ma meno solidi.'],
   ['touchTol', 'Tolleranza del tocco', '× ATR', 'Quanto vicino al bordo deve arrivare il prezzo per contare un tocco. Più alta: più tocchi contati, range validi prima.'],
-  ['minRR', 'Rischio/rendimento minimo', ': 1', 'Un setup è valido solo se il rendimento fino al secondo target è almeno questo multiplo del rischio. Più alto: meno setup, più selettivi.'],
+  ['minRR', 'Rischio/rendimento minimo', ': 1', 'Un setup è valido solo se il rendimento fino all'ultimo target (T3) è almeno questo multiplo del rischio. Più alto: meno setup, più selettivi.'],
 ]
 // stato → alone (come nella pagina RSI)
 function glowFor(rg) {
@@ -74,17 +74,33 @@ function SetupBox({ st, big }) {
     <div className={`rg-setup ${st.side > 0 ? 'long' : 'short'} ${big ? 'big' : ''}`}>
       <div className="row">
         <b className={st.side > 0 ? 'up' : 'down'}>{dir} · falso breakout verso {st.side > 0 ? 'il basso' : 'l\'alto'}</b>
-        <span className={`pill ${st.valid ? (st.side > 0 ? 'long' : 'short') : 'closed'}`}>{st.valid ? 'valido' : `R:R sotto il minimo`}</span>
+        <span className={`pill ${st.valid ? (st.side > 0 ? 'long' : 'short') : 'closed'}`}>{st.valid ? 'valido' : 'non valido'}</span>
       </div>
+      {(st.strong || st.reversal || st.invalid) && (
+        <div className="rg-tags">
+          {st.strong && <span className="pill rg-strong">rafforzato · range su {st.strong.map(x => x.name).join(', ')} settimanale</span>}
+          {st.reversal && <span className="pill neutral">inversione dopo l'impulso</span>}
+          {st.invalid && <span className="note down">{st.invalid}</span>}
+        </div>
+      )}
       <div className="rg-levels mono">
         <span>entrata limite <b>{fmtPrice(st.entry)}</b></span>
         <span>stop <b className="down">{fmtPrice(st.stop)}</b></span>
-        <span>T1 <b className="up">{fmtPrice(st.t1)}</b> <i>bordo opposto · R:R {st.rr1.toFixed(1)}</i></span>
-        <span>T2 <b className="up">{fmtPrice(st.t2)}</b> <i>{st.t2why} · R:R {st.rr.toFixed(1)}</i></span>
+        <span>T1 · 1/3 <b className="up">{fmtPrice(st.t1)}</b> <i>bordo opposto, poi stop a pareggio · R:R {st.rr1.toFixed(1)}</i></span>
+        <span>T2 · 1/3 <b className="up">{fmtPrice(st.t2)}</b> <i>{st.t2why} · R:R {st.rr2.toFixed(1)}</i></span>
+        <span>T3 · 1/3 <b className="up">{fmtPrice(st.t3)}</b> <i>{st.t3why} · R:R {st.rr.toFixed(1)}</i></span>
+        <span>se arrivano tutti e tre <b className="up">{fmtR(st.rrAll)}</b> <i>media dei tre terzi</i></span>
       </div>
       <div className="note">Trend a 4 ore: <b className={st.fit === 'a favore' ? 'up' : st.fit === 'contro' ? 'down' : 'sec'}>{st.fit}</b>{st.trend ? ` (${TREND[st.trend]})` : ''} · dalle {when(st.at)} · {st.status}{st.why ? ` (${st.why})` : ''}{st.openR !== undefined ? ` · ora ${fmtR(st.openR)}` : ''}</div>
     </div>
   )
+}
+
+function BoText({ bo }) {
+  if (!bo) return <>nessuna chiusura fuori dal range finora.</>
+  const dir = bo.dir > 0 ? 'sopra' : 'sotto'
+  if (bo.entry !== undefined) return <>{dir}: entrata {fmtPrice(bo.entry)} · stop {fmtPrice(bo.stop)} · target {fmtPrice(bo.target)} (ampiezza del range) · R:R {bo.rr.toFixed(1)} · {bo.status}{bo.R !== null ? ` ${fmtR(bo.R)}` : ''}</>
+  return <>{dir}: {bo.status}{bo.trigger ? ` (entrata oltre ${fmtPrice(bo.trigger)})` : ''}.</>
 }
 
 function RangeCard({ rg }) {
@@ -103,12 +119,13 @@ function RangeCard({ rg }) {
         impulso {fmtPrice(rg.imp.from)} → {fmtPrice(rg.imp.to)} ({rg.imp.strength.toFixed(1)}× ATR) · {rg.validAt ? `valido dalle ${when(rg.validAt)}` : 'non ancora valido'}{rg.fakeouts.length ? ` · falsi breakout ${rg.fakeouts.length}` : ''}
       </div>
       {rg.lastSetup && ['setup pronto', 'setup in corso', 'falso breakout in corso', 'setup scaduto'].includes(rg.state) && <SetupBox st={rg.lastSetup} />}
-      {rg.alt && rg.endIdx === null && (
+      {rg.strong && <div className="rg-tags"><span className="pill rg-strong">rafforzato · range su {rg.strong.map(x => `${x.name} ${fmtPrice(x.p)}`).join(', ')} della settimana prima</span></div>}
+      {rg.alt && (rg.endIdx === null || rg.alt.breakout?.idx !== undefined) && (
         <details className="rg-alt">
           <summary className="note">Altri modi di operare questo range (meno importanti)</summary>
           <div className="note mono">
-            Dentro il range: long {fmtPrice(rg.alt.inside.long.entry)} stop {fmtPrice(rg.alt.inside.long.stop)} target {fmtPrice(rg.alt.inside.long.target)} · short {fmtPrice(rg.alt.inside.short.entry)} stop {fmtPrice(rg.alt.inside.short.stop)} target {fmtPrice(rg.alt.inside.short.target)}<br />
-            Breakout con conferma (due chiusure fuori, entrata sul ritorno al bordo): sopra {fmtPrice(rg.alt.breakout.up.trigger)} stop {fmtPrice(rg.alt.breakout.up.stop)} target {fmtPrice(rg.alt.breakout.up.target)} · sotto {fmtPrice(rg.alt.breakout.down.trigger)} stop {fmtPrice(rg.alt.breakout.down.stop)} target {fmtPrice(rg.alt.breakout.down.target)}
+            Range trade (limite sul bordo, obiettivo il bordo opposto, senza parziali): long {fmtPrice(rg.alt.inside.long.entry)} stop {fmtPrice(rg.alt.inside.long.stop)} target {fmtPrice(rg.alt.inside.long.target)} · short {fmtPrice(rg.alt.inside.short.entry)} stop {fmtPrice(rg.alt.inside.short.stop)} target {fmtPrice(rg.alt.inside.short.target)}<br />
+            Breakout con conferma (chiusura fuori, ritorno sul bordo, poi una candela che rompe l'estremo della candela di breakout): <BoText bo={rg.alt.breakout} />
           </div>
         </details>
       )}
@@ -228,7 +245,7 @@ export default function Range() {
         <p className="note" style={{ marginTop: 6 }}>
           Linea spessa = impulso. Rettangolo verde = range P (dopo un impulso al rialzo), rosso = range B (al ribasso); tratteggiato finché non è valido, con i tocchi ↑ in alto e ↓ in basso; molto chiaro con la scritta "non valido" = consolidamento di almeno 2 ore che si è rotto prima di diventare valido o ha ritracciato troppo.
           Freccia "falso" = una candela ha chiuso fuori dal range e la successiva di nuovo dentro. Linee gialle = volume profile della settimana prima (POC, VAH, VAL); range passati più chiari = aree di valore.
-          {focus ? ' Linee spesse a destra: entrata, stop, T1 e T2 del setup in evidenza.' : ''} Pallini: com'è finito ogni setup passato. Trascina per scorrere, pizzica per ingrandire.
+          {focus ? ' Linee spesse: entrata, stop, T1, T2 e T3 del setup in evidenza.' : ''} Pallini: com'è finito ogni setup passato. Trascina per scorrere, pizzica per ingrandire.
         </p>
         {focus && <SetupBox st={focus} big />}
       </div>
@@ -238,16 +255,17 @@ export default function Range() {
         {past.length ? (
           <div className="table-wrap" style={{ marginTop: 8 }}>
             <table className="tbl clickable">
-              <thead><tr><th>Quando</th><th>Range</th><th>Lato</th><th>Entrata</th><th>Stop</th><th>T1 / T2</th><th>R:R</th><th>Trend 4h</th><th>Com'è finito</th><th>Risultato</th></tr></thead>
+              <thead><tr><th>Quando</th><th>Range</th><th>Lato</th><th>Entrata</th><th>Stop</th><th>T1 / T2 / T3</th><th>R:R</th><th>Trend 4h</th><th>Note</th><th>Com'è finito</th><th>Risultato</th></tr></thead>
               <tbody>
                 {past.map(s => (
                   <tr key={s.id} onClick={() => setFocusId(s.id === focusId ? null : s.id)} style={s.id === focus?.id ? { background: 'var(--surface-alt)' } : undefined}>
                     <td>{when(s.at)}</td><td>{s.type}</td>
                     <td className={s.side > 0 ? 'up' : 'down'}>{s.side > 0 ? 'long' : 'short'}</td>
-                    <td>{fmtPrice(s.entry)}</td><td>{fmtPrice(s.stop)}</td><td>{fmtPrice(s.t1)} / {fmtPrice(s.t2)}</td>
+                    <td>{fmtPrice(s.entry)}</td><td>{fmtPrice(s.stop)}</td><td>{fmtPrice(s.t1)} / {fmtPrice(s.t2)} / {fmtPrice(s.t3)}</td>
                     <td>{s.rr.toFixed(1)}</td>
                     <td className={s.fit === 'a favore' ? 'up' : s.fit === 'contro' ? 'down' : 'sec'}>{s.fit}</td>
-                    <td>{s.status === 'target' ? 'target raggiunto' : s.status === 'stop' ? 'stop toccato' : s.status === 'pareggio dopo T1' ? 'T1, poi pareggio' : s.status === 'scaduto' ? (s.why || 'scaduto') : s.status}</td>
+                    <td>{[s.reversal ? 'inversione' : null, s.strong ? 'rafforzato' : null].filter(Boolean).join(' · ') || '—'}</td>
+                    <td>{s.status === 'target' ? 'target raggiunto' : s.status === 'stop' ? 'stop toccato' : s.status.startsWith('pareggio dopo') ? `${s.status.slice(-2)}, poi pareggio` : s.status === 'scaduto' ? (s.why || 'scaduto') : s.status}</td>
                     <td className={s.R > 0 ? 'up' : s.R < 0 ? 'down' : 'sec'}>{s.R !== null ? fmtR(s.R) : s.openR !== undefined ? `${fmtR(s.openR)} aperto` : '—'}</td>
                   </tr>
                 ))}
@@ -256,8 +274,8 @@ export default function Range() {
           </div>
         ) : <p className="note">{res ? 'Nessun setup valido negli ultimi 8 giorni con queste impostazioni.' : '…'}</p>}
         <p className="note" style={{ marginTop: 6 }}>
-          Tocca un setup per disegnarlo sul grafico. Risultato in multipli del rischio: metà chiusa a T1 con lo stop spostato in pareggio, il resto a T2; entrata limite valida 4 ore.
-          {invalidN ? ` Altri ${invalidN} falsi breakout non sono diventati setup (rischio/rendimento sotto ${params.minRR}).` : ''} Sono pochi casi: servono per capire, non come statistica.
+          Tocca un setup per disegnarlo sul grafico. Risultato in multipli del rischio, con le uscite di Patrick: un terzo a T1 con lo stop spostato a pareggio, un terzo a T2, un terzo a T3; entrata limite valida 4 ore.
+          {invalidN ? ` Altri ${invalidN} falsi breakout non sono diventati setup validi (rischio/rendimento sotto ${params.minRR}, contro il trend a 4 ore, o trend non chiaro senza inversione).` : ''} Sono pochi casi: servono per capire, non come statistica.
         </p>
       </div>
 
@@ -266,8 +284,11 @@ export default function Range() {
       <p className="note">
         Candele di Bitunix: 15 minuti degli ultimi 8 giorni (aggiornate ogni minuto), 1 ora per il volume profile, 4 ore per il trend. Si usano solo candele chiuse.
         Setup come li farebbe Patrick: dopo un falso breakout, entrata limite sul bordo dal lato della rottura fallita, stop appena oltre l'estremo del falso breakout
-        (+0,1 ATR, almeno mezzo ATR dall'entrata), primo parziale sul bordo opposto, poi la prossima area di valore o l'origine dell'impulso (senza livelli oltre, come ai massimi storici: proiezione 1:1 dell'impulso).
-        Un range smette di valere se ritraccia oltre il 60% dell'impulso, dopo un breakout confermato (due chiusure fuori) o dopo 5 giorni. Solo analisi: nessun ordine.
+        (+0,1 ATR, almeno mezzo ATR dall'entrata); un terzo sul bordo opposto (poi stop a pareggio), un terzo alla prossima area di valore, un terzo all'origine dell'impulso
+        (a favore dell'impulso: le due aree di valore successive; senza aree oltre, come ai massimi storici, proiezione 1:1 dell'impulso).
+        Valido con rischio/rendimento fino all'ultimo target almeno {params.minRR} e trend a 4 ore a favore; con il trend non chiaro solo l'inversione dopo un impulso forte che si è fermato; mai contro il trend.
+        Rafforzato se il range si è formato su un livello del volume profile della settimana prima. Un range smette di valere se ritraccia oltre il 60% dell'impulso, dopo due chiusure di fila fuori o dopo 5 giorni.
+        Regole complete in claude/strategia-range-pb-patrick.md. Solo analisi: nessun ordine.
       </p>
     </div>
   )

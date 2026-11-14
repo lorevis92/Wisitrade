@@ -67,10 +67,10 @@ export async function runRangeAlerts({ budgetMs = 12000, now = Date.now() } = {}
         let payload
         if (ev.kind === 'valid') {
           const r = ev.range
-          payload = { title: `${short(sym)}: range ${r.type} valido`, body: `${fmt(r.bottom)} – ${fmt(r.top)} · tocchi ${r.touchUp} in alto, ${r.touchDn} in basso`, url: '/range', tag: `range-${sym}` }
+          payload = { title: `${short(sym)}: range ${r.type} valido${r.strong ? ' (rafforzato)' : ''}`, body: `${fmt(r.bottom)} – ${fmt(r.top)} · tocchi ${r.touchUp} in alto, ${r.touchDn} in basso${r.strong ? ` · su ${r.strong.map(x => x.name).join(', ')} settimanale` : ''}`, url: '/range', tag: `range-${sym}` }
         } else {
           const s = ev.setup
-          payload = { title: `${short(sym)}: setup ${s.side > 0 ? 'LONG' : 'SHORT'} pronto (${s.type})`, body: `limite ${fmt(s.entry)} · stop ${fmt(s.stop)} · T1 ${fmt(s.t1)} · T2 ${fmt(s.t2)} · R:R ${s.rr.toFixed(1)} · trend 4h ${s.fit}`, url: '/range', tag: `range-${sym}` }
+          payload = { title: `${short(sym)}: setup ${s.side > 0 ? 'LONG' : 'SHORT'} pronto (${s.type}${s.reversal ? ', inversione' : ''}${s.strong ? ', rafforzato' : ''})`, body: `limite ${fmt(s.entry)} · stop ${fmt(s.stop)} · T1 ${fmt(s.t1)} · T2 ${fmt(s.t2)} · T3 ${fmt(s.t3)} · R:R ${s.rr.toFixed(1)} · trend 4h ${s.fit}`, url: '/range', tag: `range-${sym}` }
         }
         items.push({ sub, payload, topic: payload.tag })
         done.push(`${sym} ${ev.key}`)

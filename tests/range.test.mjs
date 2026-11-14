@@ -9,20 +9,23 @@ const bar = (o, h, l, c) => bars.push({ t: T0 + bars.length * Q, o, h, l, c, v: 
 const reset = () => { bars = [] }
 
 // base piatta (ATR ~1), impulso al rialzo 100 → 110,5, range 107–110 per 15 ore con tocchi, poi uno scenario finale
-function pRange(final) {
+// candele a 4 ore prima del range: in salita (trend rialzista), in discesa, o nessuna (trend non chiaro)
+const H4 = 4 * 3600000
+const trendBars = dir => (dir ? Array.from({ length: 120 }, (_, i) => { const c = 200 + dir * i; return { t: T0 - (120 - i) * H4, o: c - dir * 0.5, h: c + 1, l: c - 1, c, v: 1 } }) : [])
+function pRange(final, trend = 1) {
   reset()
   for (let i = 0; i < 60; i++) { const c = 100 + (i % 2 ? 0.2 : -0.2); bar(c, c + 0.5, c - 0.5, c) }
   for (let i = 0; i < 8; i++) { const o = 100 + i * 1.3; bar(o, o + 1.4, o - 0.1, o + 1.3) }
   const swing = [109.5, 108.5, 107.5, 108.5, 109.5]
   for (let i = 0; i < 60; i++) { const c = swing[i % 5]; bar(c, Math.min(c + 0.5, 110.0), Math.max(c - 0.5, 107.0), c) }
   final()
-  return analyze(bars, {}, {})
+  return analyze(bars, {}, { bars4h: trendBars(trend) })
 }
 
 let n = 0
 const test = (name, fn) => { fn(); n++; console.log('ok', name) }
 
-test('P valida, falso breakout verso il basso → setup long con entrata, stop, T1, T2 e target raggiunto', () => {
+test(`P valida, falso breakout verso il basso → setup long con entrata, stop, T1, T2 e target raggiunto`, () => {
   const r = pRange(() => {
     bar(107.4, 107.5, 106.2, 106.6)          // chiude sotto il range
     bar(106.6, 107.6, 106.5, 107.5)          // e la successiva chiude di nuovo dentro: falso breakout
@@ -37,11 +40,58 @@ test('P valida, falso breakout verso il basso → setup long con entrata, stop, 
   const st = r.setups[0]
   assert.equal(st.side, 1); assert.equal(st.entry, rg.bottom); assert.ok(st.stop < 106.2); assert.equal(st.t1, rg.top)
   assert.ok(st.t2 > st.t1 && st.proj, 'nessun livello sopra: proiezione 1:1')
-  assert.ok(st.rr >= 3 && st.valid); assert.equal(st.status, 'target'); assert.ok(st.R > 3)
+  assert.equal(st.fit, 'a favore'); assert.equal(st.reversal, false)
+  assert.ok(st.rr >= 3 && st.valid); assert.equal(st.status, 'target')
+  assert.ok(Math.abs(st.R - (st.rr1 + st.rr2 + st.rr) / 3) < 1e-9, 'tre terzi: T1, T2, T3')
   assert.ok(events(r).some(e => e.kind === 'setup') && events(r).some(e => e.kind === 'valid'))
 })
 
-test('falso breakout ma poi stop: −1R', () => {
+test(`long nella P con trend a 4 ore non chiaro: non valido (non è un'inversione); contro il trend: non valido`, () => {
+  const fin = () => { bar(107.4, 107.5, 106.2, 106.6); bar(106.6, 107.6, 106.5, 107.5) }
+  assert.match(pRange(fin, 0).setups[0].invalid, /non chiaro/)
+  assert.match(pRange(fin, -1).setups[0].invalid, /contro il trend/)
+})
+
+test(`short d'inversione nella P (falso breakout verso l'alto) con trend non chiaro: valido, T3 all'origine dell'impulso, un terzo a T1 poi pareggio`, () => {
+  const r = pRange(() => {
+    bar(109.6, 110.9, 109.5, 110.6)         // chiude sopra il range
+    bar(110.6, 110.7, 109.4, 109.6)         // e rientra: falso breakout verso l'alto
+    bar(109.6, 110.6, 109.5, 109.9)         // ritorno sul bordo alto (110,5): entrata limite eseguita
+    for (let i = 0; i < 6; i++) { const o = 109.9 - i * 0.6; bar(o, o + 0.1, o - 0.7, o - 0.6) } // scende sotto T1 (107)
+    for (let i = 0; i < 8; i++) { const o = 106.3 + i * 0.6; bar(o, o + 0.7, o - 0.1, o + 0.6) } // risale fino all'entrata: pareggio
+  }, 0)
+  const st = r.setups[0]
+  assert.equal(st.side, -1); assert.equal(st.reversal, true); assert.equal(st.fit, 'neutro'); assert.ok(st.valid, st.invalid)
+  assert.ok(st.t3 < 100 && st.t3 > 99,  "T3 = origine dell'impulso")
+  assert.equal(st.status, 'pareggio dopo T1'); assert.ok(Math.abs(st.R - st.rr1 / 3) < 1e-9)
+})
+
+test(`rafforzato: il range si forma sul POC della settimana prima`, () => {
+  const vpBars = Array.from({ length: 100 }, (_, i) => ({ t: T0 - 6 * 864e5 + i * 3600000, o: 108.5, h: 108.8, l: 108.2, c: 108.5, v: 50 }))
+  const r = (() => { pRange(() => {}); return analyze(bars, {}, { bars1h: vpBars }) })()
+  const rg = r.ranges.find(x => x.type === 'P' && x.validIdx !== null)
+  assert.ok(rg.strong?.some(x => x.name === 'POC'))
+})
+
+test(`breakout con conferma: chiusura fuori, ritorno sul bordo, rottura del massimo della candela di breakout`, () => {
+  const r = pRange(() => {
+    bar(109.8, 111.0, 109.7, 110.8)         // candela di breakout (massimo 111,0)
+    bar(110.8, 111.0, 110.4, 110.6)         // resta fuori (chiude sopra il bordo)
+    bar(110.6, 110.8, 110.1, 110.6)         // ritorno sul bordo (minimo sotto 110,5, chiusura sopra)
+    bar(110.5, 111.6, 110.4, 111.4)         // rompe il massimo della candela di breakout → entrata a 111,0
+    for (let i = 0; i < 10; i++) { const o = 111.4 + i * 0.4; bar(o, o + 0.5, o - 0.1, o + 0.4) }
+  })
+  const bo = r.ranges.find(x => x.type === 'P').alt.breakout
+  assert.equal(bo.dir, 1); assert.equal(bo.entry, 111.0); assert.ok(bo.stop < 110.4 && bo.stop <= 111.0 - 0.5 * 0.9)
+  assert.equal(bo.status, 'target'); assert.ok(bo.R > 0)
+})
+
+test(`breakout con conferma annullato se una candela richiude dentro`, () => {
+  const r = pRange(() => { bar(109.8, 111.0, 109.7, 110.8); bar(110.8, 110.9, 109.0, 109.5) })
+  assert.match(r.ranges.find(x => x.type === 'P').alt.breakout.status, /richiuso dentro/)
+})
+
+test(`falso breakout ma poi stop: −1R`, () => {
   const r = pRange(() => {
     bar(107.4, 107.5, 106.2, 106.6); bar(106.6, 107.6, 106.5, 107.5)
     bar(107.5, 107.5, 104.0, 104.5)
@@ -50,7 +100,7 @@ test('falso breakout ma poi stop: −1R', () => {
   assert.equal(st.status, 'stop'); assert.equal(st.R, -1)
 })
 
-test('entrata limite mai eseguita: scaduto', () => {
+test(`entrata limite mai eseguita: scaduto`, () => {
   const r = pRange(() => {
     bar(107.4, 107.5, 106.2, 106.6); bar(106.6, 107.9, 106.5, 107.8)
     for (let i = 0; i < 20; i++) bar(108.2, 108.6, 108.0, 108.3)
@@ -58,13 +108,13 @@ test('entrata limite mai eseguita: scaduto', () => {
   assert.equal(r.setups[0].status, 'scaduto')
 })
 
-test('breakout confermato (due chiusure fuori): range finito, nessun setup', () => {
+test(`breakout confermato (due chiusure fuori): range finito, nessun setup`, () => {
   const r = pRange(() => { bar(110, 111.5, 109.9, 111.2); bar(111.2, 112.5, 111, 112.3) })
   const rg = r.ranges.find(x => x.type === 'P')
   assert.equal(rg.state, 'breakout'); assert.equal(r.setups.length, 0)
 })
 
-test('range troppo corto (meno di 12 ore): in formazione, nessun setup', () => {
+test(`range troppo corto (meno di 12 ore): in formazione, nessun setup`, () => {
   reset()
   for (let i = 0; i < 60; i++) { const c = 100 + (i % 2 ? 0.2 : -0.2); bar(c, c + 0.5, c - 0.5, c) }
   for (let i = 0; i < 8; i++) { const o = 100 + i * 1.3; bar(o, o + 1.4, o - 0.1, o + 1.3) }
@@ -75,7 +125,7 @@ test('range troppo corto (meno di 12 ore): in formazione, nessun setup', () => {
   assert.equal(rg.state, 'in formazione'); assert.equal(r.setups.length, 0)
 })
 
-test('ritracciamento oltre il 60%: non è una P', () => {
+test(`ritracciamento oltre il 60%: non è una P`, () => {
   const r = pRange(() => {})
   reset()
   for (let i = 0; i < 60; i++) { const c = 100 + (i % 2 ? 0.2 : -0.2); bar(c, c + 0.5, c - 0.5, c) }
@@ -85,7 +135,7 @@ test('ritracciamento oltre il 60%: non è una P', () => {
   assert.ok(!r2.ranges.some(x => x.type === 'P' && !x.dropped)); assert.ok(r.ranges.length > 0)
 })
 
-test('volume profile e trend a 4 ore', () => {
+test(`volume profile e trend a 4 ore`, () => {
   const vb = [{ t: 0, o: 1, h: 2, l: 1, c: 2, v: 10 }, ...Array.from({ length: 20 }, (_, i) => ({ t: i, o: 5, h: 5.2, l: 4.8, c: 5, v: 100 }))]
   const vp = volumeProfile(vb)
   assert.ok(Math.abs(vp.poc - 5) < 0.2 && vp.val <= 5 && vp.vah >= 5)
