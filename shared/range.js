@@ -14,6 +14,7 @@ export const RANGE_DEFAULTS = {
   touchTol: 0.25,    // tolleranza per contare un tocco, in multipli dell'ATR
   minRR: 3,          // rapporto rischio/rendimento minimo (fino all'ultimo target) per un setup valido
   maxCost: 20,       // commissioni di andata e ritorno al massimo questa percentuale del rischio, altrimenti il setup non è valido
+  futFee: 0.005,     // scenario "future (tipo IBKR)": commissione per lato in %, uguale per ordini limite, a mercato e stop
 }
 const MAX_RETRACE = 0.6   // il range non deve ritracciare più del 60% dell'impulso (altrimenti non è una P o una B)
 const STOP_BUF = 0.1      // stop oltre l'estremo: + 0,1 ATR
@@ -25,7 +26,7 @@ const LEVEL_TOL = 0.5     // un livello settimanale "tocca" il range o il falso 
 export const FEES = { maker: 0.02, taker: 0.06 }
 const Q = 15 * 60000, H1 = 3600000
 
-export const LIMITS = { impulseAtr: [1.5, 8], impulseBars: [4, 48], minTouches: [2, 8], minHours: [2, 48], touchTol: [0.05, 1], minRR: [1, 6], maxCost: [5, 100] }
+export const LIMITS = { impulseAtr: [1.5, 8], impulseBars: [4, 48], minTouches: [2, 8], minHours: [2, 48], touchTol: [0.05, 1], minRR: [1, 6], maxCost: [5, 100], futFee: [0.001, 0.05] }
 export function cleanRangeSettings(p) {
   const out = { ...RANGE_DEFAULTS }
   for (const [k, [lo, hi]] of Object.entries(LIMITS)) { const v = +p?.[k]; if (Number.isFinite(v) && v >= lo && v <= hi) out[k] = v }
@@ -202,7 +203,7 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
   const runTrade = (tr, k, { limit, cancelAt = null, until = n - 1, expiry = EXPIRY_BARS }) => {
     const side = tr.side, entry = tr.entry, risk = side * (entry - tr.stop)
     tr.status = limit ? 'pronto' : 'in corso'; tr.fillIdx = limit ? null : k; tr.exitIdx = null; tr.R = null; tr.parts = 0
-    let stopNow = tr.stop, got = 0, left = 1, fees = (limit ? FEES.maker : FEES.taker) * entry
+    let stopNow = tr.stop, got = 0, left = 1, fees = (limit ? FEES.maker : FEES.taker) * entry, turn = entry
     for (let m = k + 1; m < n; m++) {
       for (const p of pathOf(bars[m])) {
         if (tr.fillIdx === null) {
@@ -211,12 +212,12 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
           continue
         }
         if (side * (p - stopNow) <= 0) {
-          got += left * side * (stopNow - entry) / risk; fees += left * FEES.taker * stopNow; left = 0
+          got += left * side * (stopNow - entry) / risk; fees += left * FEES.taker * stopNow; turn += left * stopNow; left = 0
           tr.status = tr.parts ? `pareggio dopo T${tr.parts}` : 'stop'; tr.exitIdx = m; break
         }
         while (tr.parts < tr.targets.length && side * (p - tr.targets[tr.parts].p) >= 0) {
           const t = tr.targets[tr.parts]
-          got += t.frac * side * (t.p - entry) / risk; fees += t.frac * FEES.maker * t.p; left -= t.frac; tr.parts++; stopNow = entry
+          got += t.frac * side * (t.p - entry) / risk; fees += t.frac * FEES.maker * t.p; turn += t.frac * t.p; left -= t.frac; tr.parts++; stopNow = entry
         }
         if (left <= 1e-9) { tr.status = 'target'; tr.exitIdx = m; break }
       }
@@ -224,7 +225,8 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
       if (tr.fillIdx === null && (m - k >= expiry || m >= until)) { tr.status = 'scaduto'; tr.why = m >= until && m - k < expiry ? 'range finito senza entrare' : 'entrata mai eseguita'; tr.exitIdx = m; break }
     }
     tr.feesR = fees / 100 / risk
-    if (tr.fillIdx !== null && tr.exitIdx !== null) { tr.R = got; tr.Rnet = got - tr.feesR }
+    tr.feesRFut = s.futFee * turn / 100 / risk
+    if (tr.fillIdx !== null && tr.exitIdx !== null) { tr.R = got; tr.Rnet = got - tr.feesR; tr.RnetFut = got - tr.feesRFut }
     if (tr.status === 'in corso') tr.openR = got + left * side * (bars[n - 1].c - entry) / risk
     tr.fillAt = tr.fillIdx !== null ? bars[tr.fillIdx].t + Q : null
     tr.exitAt = tr.exitIdx !== null ? bars[tr.exitIdx].t + Q : null
@@ -247,8 +249,11 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
     // il caso in cui pesano di più. Sopra la soglia il setup non è valido: lo stop è troppo stretto per i costi di Bitunix.
     const feeIn = tr.kind === 'range' || tr.variant === 'limite' ? FEES.maker : FEES.taker
     tr.costPct = (feeIn * tr.entry + FEES.taker * tr.stop) / 100 / risk * 100
+    tr.costPctFut = s.futFee * (tr.entry + tr.stop) / 100 / risk * 100
     const rrOk = tr.rr >= s.minRR, costOk = tr.costPct <= s.maxCost
+    tr.rrOk = rrOk
     tr.valid = rrOk && costOk
+    tr.validFut = rrOk && tr.costPctFut <= s.maxCost
     tr.costReject = rrOk && !costOk
     tr.invalid = !rrOk ? `rischio/rendimento ${tr.rr.toFixed(1)} sotto ${s.minRR}` : !costOk ? `commissioni ${tr.costPct.toFixed(0)}% del rischio, oltre il ${s.maxCost}%` : null
     Object.assign(tr, gradeOf({ rg, k, side: tr.side, entry: tr.entry, rr: tr.rr, fit: tr.fit, costPct: tr.costPct, kind: tr.kind, path: [tr.targets[0].p, tr.targets.at(-1).p], ...gradeArgs }))
@@ -309,12 +314,14 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
     finish(tr, rg, k, {})
     if (!fill) {
       tr.status = until < n - 1 ? 'scaduto' : 'pronto'; tr.why = until < n - 1 ? 'range finito senza entrare' : null
-      tr.fillIdx = null; tr.exitIdx = until < n - 1 ? until : null; tr.R = null; tr.feesR = 0; tr.alsoShort = { entry: rg.top, stop: rg.top + sb, target: rg.bottom }
+      tr.fillIdx = null; tr.exitIdx = until < n - 1 ? until : null; tr.R = null; tr.feesR = 0; tr.feesRFut = 0; tr.alsoShort = { entry: rg.top, stop: rg.top + sb, target: rg.bottom }
     } else {
       runTrade(tr, fill.m, { limit: false })
       tr.fillIdx = fill.m; tr.fillAt = bars[fill.m].t + Q
-      tr.feesR = (FEES.maker * entry + (tr.status === 'stop' ? FEES.taker * tr.stop : FEES.maker * tr.targets[0].p)) / 100 / (side * (entry - tr.stop))
-      if (tr.R !== null) tr.Rnet = tr.R - tr.feesR
+      const exitPx = tr.status === 'stop' ? tr.stop : tr.targets[0].p, rk = side * (entry - tr.stop)
+      tr.feesR = (FEES.maker * entry + (tr.status === 'stop' ? FEES.taker : FEES.maker) * exitPx) / 100 / rk
+      tr.feesRFut = s.futFee * (entry + exitPx) / 100 / rk
+      if (tr.R !== null) { tr.Rnet = tr.R - tr.feesR; tr.RnetFut = tr.R - tr.feesRFut }
     }
     trades.push(tr)
     return tr

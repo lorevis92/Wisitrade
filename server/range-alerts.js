@@ -73,9 +73,9 @@ const fmt = p => (p >= 1000 ? p.toFixed(1) : p >= 10 ? p.toFixed(2) : p.toPrecis
 const short = s => s.replace(/USDT$/, '')
 const rowOf = (sym, t, now) => ({
   id: `${sym}:${t.id}`, symbol: sym, kind: t.kind, variant: t.variant || null, range_type: t.type, side: t.side, with_impulse: t.withImpulse,
-  fit: t.fit, grade: t.grade, score: t.score, valid: !!t.valid, cost_pct: t.costPct ?? null, cost_reject: !!t.costReject, created_at: t.at, entry: t.entry, stop: t.stop,
+  fit: t.fit, grade: t.grade, score: t.score, valid: !!t.valid, cost_pct: t.costPct ?? null, cost_reject: !!t.costReject, valid_fut: !!t.validFut, cost_pct_fut: t.costPctFut ?? null, created_at: t.at, entry: t.entry, stop: t.stop,
   targets: t.targets.map(x => ({ p: x.p, frac: x.frac, why: x.why })), rr: t.rr, status: t.status,
-  fill_at: t.fillAt ?? null, exit_at: t.exitAt ?? null, r_gross: t.R ?? null, r_net: t.Rnet ?? null, fees_r: t.feesR ?? null,
+  fill_at: t.fillAt ?? null, exit_at: t.exitAt ?? null, r_gross: t.R ?? null, r_net: t.Rnet ?? null, fees_r: t.feesR ?? null, r_net_fut: t.RnetFut ?? null, fees_r_fut: t.feesRFut ?? null,
   final: isFinal(t), data: { reasons: t.reasons, weekLevels: t.weekLevels, why: t.why || null, invalid: t.invalid || null, openR: t.openR ?? null }, updated_at: now,
 })
 

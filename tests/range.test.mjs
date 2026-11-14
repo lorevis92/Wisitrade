@@ -180,6 +180,15 @@ test('commissioni rispetto al rischio: sempre calcolate; oltre la soglia il setu
   assert.ok(!events(tight).some(e => e.kind === 'setup'), 'niente avvisi per i setup scartati')
 })
 
+test('scenario future (tipo IBKR): costi sul rischio, validità e netto con 0,005% per lato', () => {
+  const r = pRange(() => { fakeDown(); for (let i = 0; i < 6; i++) bar(107.5, 107.6, 106.9, 107.2); for (let i = 0; i < 30; i++) { const o = 107.2 + i * 0.5; bar(o, o + 0.6, o - 0.1, o + 0.5) } }, 1, {}, { maxCost: 5 })
+  const st = r.setups[0], risk = st.entry - st.stop
+  assert.ok(Math.abs(st.costPctFut - 0.005 * (st.entry + st.stop) / 100 / risk * 100) < 1e-9)
+  assert.equal(st.valid, false, 'con Bitunix oltre il 5%'); assert.equal(st.validFut, true, 'con il future sotto il 5%')
+  const turn = st.entry + st.targets.reduce((x, t) => x + t.frac * t.p, 0)
+  assert.ok(Math.abs(st.RnetFut - (st.R - 0.005 * turn / 100 / risk)) < 1e-9); assert.ok(st.RnetFut > st.Rnet)
+})
+
 test('notizie macro: riunioni Fed, BEA e ForexFactory; tipi e doppioni', () => {
   const html = '<h4>2026 FOMC Meetings</h4><div class="fomc-meeting__month col"><strong>December</strong></div><div class="fomc-meeting__date col">8-9*</div><h4>2027 FOMC Meetings</h4><div class="fomc-meeting__month col"><strong>Apr/May</strong></div><div class="fomc-meeting__date col">30-1</div>'
   const f = parseFomc(html)

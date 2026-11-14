@@ -196,3 +196,8 @@ alter table wt_range_trades enable row level security;
 -- costi rispetto al rischio (pagina Range): commissioni di andata e ritorno in % del rischio, setup scartato per i costi
 alter table wt_range_trades add column if not exists cost_pct double precision;
 alter table wt_range_trades add column if not exists cost_reject boolean;
+-- scenario "future (tipo IBKR)" della pagina Range: validità, costi sul rischio e risultato netto con commissioni più basse
+alter table wt_range_trades add column if not exists valid_fut boolean;
+alter table wt_range_trades add column if not exists cost_pct_fut double precision;
+alter table wt_range_trades add column if not exists r_net_fut double precision;
+alter table wt_range_trades add column if not exists fees_r_fut double precision;

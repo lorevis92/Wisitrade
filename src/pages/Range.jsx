@@ -26,6 +26,7 @@ const SETTINGS_INFO = [
   ['minHours', 'Durata minima del range', 'ore', 'Da quanto tempo il prezzo deve stare nel range perché sia valido (12 = mezza giornata). Più basso: range più frequenti ma meno solidi.'],
   ['touchTol', 'Tolleranza del tocco', '× ATR', 'Quanto vicino al bordo deve arrivare il prezzo per contare un tocco. Più alta: più tocchi contati, range validi prima.'],
   ['maxCost', 'Costi massimi rispetto al rischio', '%', 'Commissioni di andata e ritorno (entrata e uscita allo stop) al massimo questa percentuale del rischio. Oltre, lo stop è troppo stretto per i costi di Bitunix e il setup non è valido. Più bassa: solo setup con stop più larghi.'],
+  ['futFee', 'Commissione del future (tipo IBKR)', '% per lato', 'Secondo scenario di costo, per capire se la strategia starebbe in piedi su un broker più economico: stessa commissione per entrata, target e stop. Bitunix resta 0,02% limite e 0,06% a mercato e stop.'],
   ['minRR', 'Rischio/rendimento minimo', ': 1', 'Un setup è valido solo se il rendimento fino all\'ultimo target è almeno questo multiplo del rischio. Più alto: meno setup, più selettivi.'],
 ]
 // stato → alone (come nella pagina RSI)
@@ -146,10 +147,19 @@ function RiskCalc({ entry, stop, limit = true }) {
   )
 }
 
+const costCls = (v, max) => (v > max ? 'down' : v <= max / 2 ? 'up' : 'sec')
 function CostLine({ t, max }) {
   if (t?.costPct === undefined) return null
-  const cls = t.costPct > max ? 'down' : t.costPct <= max / 2 ? 'up' : 'sec'
-  return <span>commissioni andata e ritorno <b className={cls}>{t.costPct.toFixed(0)}% del rischio</b> <i>soglia {max}%{t.variant === 'limite' || t.kind === 'range' ? ' · entrata limite 0,02%' : ' · entrata a mercato 0,06%'}, stop 0,06%</i></span>
+  return (
+    <>
+      <span>costi Bitunix <b className={costCls(t.costPct, max)}>{t.costPct.toFixed(0)}% del rischio</b> <i>{t.valid ? 'valido' : t.rrOk ? 'oltre la soglia: non valido' : 'non valido'} · soglia {max}%{t.variant === 'limite' || t.kind === 'range' ? ' · entrata limite 0,02%' : ' · entrata a mercato 0,06%'}, stop 0,06%</i></span>
+      <span>costi future (tipo IBKR) <b className={costCls(t.costPctFut, max)}>{t.costPctFut.toFixed(0)}% del rischio</b> <i>{t.validFut ? 'valido' : 'non valido'} con questi costi</i></span>
+    </>
+  )
+}
+function NetLine({ t }) {
+  if (t?.R === null || t?.R === undefined) return null
+  return <span>risultato <b className={t.R >= 0 ? 'up' : 'down'}>{fmtR(t.R)} lordo</b> <i>netto Bitunix {fmtR(t.Rnet)} · netto future {fmtR(t.RnetFut)}</i></span>
 }
 
 function MacroWarn({ macro, t }) {
@@ -180,11 +190,12 @@ function SetupBox({ st, big, earnings, symbol, macro = [], maxCost }) {
         <span>entrata limite sul bordo <b>{fmtPrice(st.entry)}</b> <i>R:R {st.rr.toFixed(1)} · {st.status}{st.why ? ` (${st.why})` : ''}</i></span>
         {mk && <span>oppure a mercato alla chiusura <b>{fmtPrice(mk.entry)}</b> <i>R:R {mk.rr.toFixed(1)} · costi {mk.costPct.toFixed(0)}% del rischio{mk.costReject ? ' (oltre la soglia)' : ''} · stop {fmtPrice(mk.stop)} · {mk.status}</i></span>}
         <CostLine t={st} max={maxCost} />
+        <NetLine t={st} />
         <span>stop <b className="down">{fmtPrice(st.stop)}</b> <i>oltre l'estremo del falso breakout</i></span>
         <span>se arrivano tutti i target <b className="up">{fmtR(st.rrAll)}</b> <i>un terzo a ogni target</i></span>
       </div>
       <Targets t={st} />
-      <div className="note">Dopo T1 lo stop va a pareggio. Dalle {when(st.at)}{st.openR !== undefined ? ` · ora ${fmtR(st.openR)}` : ''}{st.R !== null && st.R !== undefined ? ` · risultato ${fmtR(st.R)} (con commissioni ${fmtR(st.Rnet)})` : ''}</div>
+      <div className="note">Dopo T1 lo stop va a pareggio. Dalle {when(st.at)}{st.openR !== undefined ? ` · ora ${fmtR(st.openR)}` : ''}</div>
       {big && <RiskCalc entry={st.entry} stop={st.stop} />}
     </div>
   )
@@ -195,7 +206,7 @@ function AltTrade({ t, label }) {
   if (t.entry === undefined) return <div className="note">{label}: {t.dir > 0 ? 'sopra' : 'sotto'} · {t.status}{t.trigger ? ` (entrata oltre ${fmtPrice(t.trigger)})` : ''}.</div>
   return (
     <div className="note mono rg-alt-row">
-      {label}: <b className={t.side > 0 ? 'up' : 'down'}>{t.side > 0 ? 'long' : 'short'}</b> {fmtPrice(t.entry)} · stop {fmtPrice(t.stop)} · {t.targets.map((x, i) => `${Math.round(x.frac * 100)}% a ${fmtPrice(x.p)}`).join(', ')} · R:R {t.rr.toFixed(1)} · costi {t.costPct.toFixed(0)}% del rischio{t.costReject ? ' (oltre la soglia: non valido)' : ''} · voto {t.grade} · {t.status}{t.R !== null && t.R !== undefined ? ` ${fmtR(t.R)}` : ''}
+      {label}: <b className={t.side > 0 ? 'up' : 'down'}>{t.side > 0 ? 'long' : 'short'}</b> {fmtPrice(t.entry)} · stop {fmtPrice(t.stop)} · {t.targets.map((x, i) => `${Math.round(x.frac * 100)}% a ${fmtPrice(x.p)}`).join(', ')} · R:R {t.rr.toFixed(1)} · costi {t.costPct.toFixed(0)}% del rischio con Bitunix{t.costReject ? ' (oltre la soglia: non valido)' : ''}, {t.costPctFut.toFixed(0)}% con il future · voto {t.grade} · {t.status}{t.R !== null && t.R !== undefined ? ` ${fmtR(t.R)} lordo, netto ${fmtR(t.Rnet)} Bitunix e ${fmtR(t.RnetFut)} future` : ''}
       {t.alsoShort ? ` · oppure short ${fmtPrice(t.alsoShort.entry)} stop ${fmtPrice(t.alsoShort.stop)} target ${fmtPrice(t.alsoShort.target)}` : ''}
     </div>
   )
@@ -210,7 +221,7 @@ function RangeCard({ rg, earnings, symbol, macro, maxCost }) {
         <span className={`pill ${rg.state.startsWith('setup pronto') ? (rg.lastSetup.side > 0 ? 'long' : 'short') : rg.state === 'valido' ? 'neutral' : 'closed'}`}>{rg.state}</span>
       </div>
       <div className="rsi-vals mono">
-        <span>alto <b>{fmtPrice(rg.top)}</b></span><span>basso <b>{Number.isFinite(rg.bottom) ? fmtPrice(rg.bottom) : '—'}</b></span>
+        <span>alto <b>{Number.isFinite(rg.top) ? fmtPrice(rg.top) : '—'}</b></span><span>basso <b>{Number.isFinite(rg.bottom) ? fmtPrice(rg.bottom) : '—'}</b></span>
         <span>tocchi <b>{rg.touchUp}↑ {rg.touchDn}↓</b></span>
       </div>
       <div className="note" style={{ marginTop: 4 }}>
@@ -288,12 +299,40 @@ function AlertToggle({ symbol, params }) {
 }
 
 // ---------- Registro (server) e statistiche ----------
-function streak(rows) {
+const validWith = (b, f) => (b && f ? 'tutti e due' : b ? 'Bitunix' : f ? 'future' : 'nessuno')
+const SCEN = { bx: { label: 'Bitunix', valid: r => r.valid, net: 'r_net', fees: 'fees_r' }, fut: { label: 'Future (tipo IBKR)', valid: r => r.valid_fut, net: 'r_net_fut', fees: 'fees_r_fut' } }
+const doneOf = (rows, sc) => rows.filter(r => r.final && r[SCEN[sc].net] !== null && r[SCEN[sc].net] !== undefined)
+function streak(rows, net) {
   let best = 0, cur = 0
-  for (const r of rows.slice().sort((a, b) => (a.exit_at || 0) - (b.exit_at || 0))) { if (r.r_net < 0) { cur++; best = Math.max(best, cur) } else cur = 0 }
+  for (const r of rows.slice().sort((a, b) => (a.exit_at || 0) - (b.exit_at || 0))) { if (r[net] < 0) { cur++; best = Math.max(best, cur) } else cur = 0 }
   return best
 }
-function StatsTable({ title, rows, keyOf }) {
+// riga di totale: per ogni scenario, sui trade validi con quei costi e conclusi
+function Totals({ rows }) {
+  return (
+    <div className="table-wrap" style={{ marginTop: 8 }}>
+      <table className="tbl">
+        <thead><tr><th>Totale</th><th>Trade conclusi</th><th>R lordo</th><th>R netto</th><th>In commissioni</th></tr></thead>
+        <tbody>
+          {Object.entries(SCEN).map(([k, sc]) => {
+            const d = doneOf(rows.filter(sc.valid), k)
+            const g = d.reduce((x, r) => x + r.r_gross, 0), nt = d.reduce((x, r) => x + r[sc.net], 0), fe = d.reduce((x, r) => x + (r[sc.fees] || 0), 0)
+            return (
+              <tr key={k}>
+                <td>validi con {sc.label}</td><td>{d.length}</td>
+                <td className={g > 0 ? 'up' : g < 0 ? 'down' : ''}>{d.length ? fmtR(g) : '—'}</td>
+                <td className={nt > 0 ? 'up' : nt < 0 ? 'down' : ''}>{d.length ? fmtR(nt) : '—'}</td>
+                <td className="down">{d.length ? fmtR(-fe) : '—'}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+function StatsTable({ title, rows, keyOf, sc }) {
+  const net = SCEN[sc].net
   const groups = new Map()
   for (const r of rows) { const k = keyOf(r); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r) }
   return (
@@ -302,12 +341,12 @@ function StatsTable({ title, rows, keyOf }) {
         <thead><tr><th>{title}</th><th>Proposti</th><th>Eseguiti</th><th>Vinti</th><th>R medio</th><th>R totale</th></tr></thead>
         <tbody>
           {[...groups.entries()].sort((a, b) => b[1].length - a[1].length).map(([k, list]) => {
-            const done = list.filter(r => r.final && r.r_net !== null)
-            const tot = done.reduce((x, r) => x + r.r_net, 0)
+            const done = doneOf(list, sc)
+            const tot = done.reduce((x, r) => x + r[net], 0)
             return (
               <tr key={k}>
                 <td>{k}</td><td>{list.length}</td><td>{done.length}</td>
-                <td>{done.length ? `${Math.round(done.filter(r => r.r_net > 0).length / done.length * 100)}%` : '—'}</td>
+                <td>{done.length ? `${Math.round(done.filter(r => r[net] > 0).length / done.length * 100)}%` : '—'}</td>
                 <td className={tot > 0 ? 'up' : tot < 0 ? 'down' : ''}>{done.length ? fmtR(tot / done.length) : '—'}</td>
                 <td className={tot > 0 ? 'up' : tot < 0 ? 'down' : ''}>{done.length ? fmtR(tot) : '—'}</td>
               </tr>
@@ -318,9 +357,13 @@ function StatsTable({ title, rows, keyOf }) {
     </div>
   )
 }
-function Registry({ symbol }) {
+const statusText = r => (r.status === 'target' ? 'target raggiunto' : r.status === 'stop' ? 'stop toccato' : String(r.status).startsWith('pareggio dopo') ? `${r.status.slice(-2)}, poi pareggio` : r.status === 'scaduto' ? (r.data?.why || 'non eseguito') : r.status)
+function Registry({ symbol, onOpen }) {
   const [reg, setReg] = useState(null)
   const [msg, setMsg] = useState(null)
+  const [sc, setSc] = useState(() => load('rangeRegScen', 'bx'))
+  const [scope, setScope] = useState(() => load('rangeRegScope', 'all'))
+  const [showAll, setShowAll] = useState(false)
   const authed = !!load('adminCode', '')
   const refresh = () => get('/api/range/registry').then(setReg).catch(e => setReg({ rows: [], error: e.message }))
   useEffect(() => { refresh(); const id = setInterval(refresh, 300000); return () => clearInterval(id) }, [])
@@ -330,46 +373,77 @@ function Registry({ symbol }) {
   const toggle = async () => {
     try { await post('/api/range/follow', { symbols: on ? follow.filter(s => s !== symbol) : [...follow, symbol] }); setMsg(null); refresh() } catch (e) { setMsg(e.message) }
   }
-  const valid = (reg.rows || []).filter(r => r.valid)
-  const costRej = (reg.rows || []).filter(r => r.cost_reject)
-  const done = valid.filter(r => r.final && r.r_net !== null)
-  const tot = done.reduce((x, r) => x + r.r_net, 0)
+  const S = SCEN[sc], net = S.net
+  const rows = (reg.rows || []).filter(r => scope === 'all' || r.symbol === symbol)
+  const recognized = rows.filter(r => r.rr === null || r.rr >= RANGE_DEFAULTS.minRR)
+  const valid = recognized.filter(S.valid)
+  const rejected = recognized.filter(r => !S.valid(r))
+  const done = doneOf(valid, sc)
+  const tot = done.reduce((x, r) => x + r[net], 0)
+  const list = showAll ? recognized : recognized.slice(0, 40)
   return (
     <div className="card" style={{ padding: 12 }}>
-      <div className="row"><span className="lab">Registro automatico</span><span className="note mono">{done.length ? `${done.length} trade conclusi · ${fmtR(tot)}` : ''}</span></div>
+      <div className="row"><span className="lab">Registro automatico · trade simulati</span><span className="note mono">{done.length ? `${done.length} conclusi · ${fmtR(tot)}` : ''}</span></div>
+      <div className="warn">Sono trade simulati, non ordini veri: nessun ordine parte da questa pagina. Il server calcola come sarebbe andato ogni setup.</div>
       <p className="note" style={{ marginTop: 4 }}>
-        Il server salva ogni setup proposto sui titoli seguiti ({follow.length ? follow.map(short).join(', ') : 'nessuno'}), anche a pagina chiusa, ogni 15 minuti,
-        con le impostazioni di partenza, e ne segue l'esito con le commissioni di Bitunix (limite {FEES.maker}%, a mercato e stop {FEES.taker}%).
+        Il server salva ogni setup riconosciuto sui titoli seguiti ({follow.length ? follow.map(short).join(', ') : 'nessuno'}), anche a pagina chiusa, ogni 15 minuti,
+        con le impostazioni di partenza, e ne segue l'esito con due scenari di costo: Bitunix (limite {FEES.maker}%, a mercato e stop {FEES.taker}%) e future tipo IBKR ({RANGE_DEFAULTS.futFee}% per lato).
       </p>
       {authed
         ? <label className="toggle"><span style={{ fontSize: 13 }}>Segui {short(symbol)} nel registro <span className="note">(al massimo 8 titoli)</span></span><input type="checkbox" checked={on} onChange={toggle} /></label>
         : <p className="note">Per scegliere i titoli seguiti serve il codice di controllo (lo stesso della pagina Strategia).</p>}
+      <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
+        <div className="chips">{[['this', `Solo ${short(symbol)}`], ['all', 'Tutti i titoli']].map(([k, l]) => <button key={k} className={`chip ${scope === k ? 'active' : ''}`} onClick={() => { setScope(k); save('rangeRegScope', k) }}>{l}</button>)}</div>
+        <div className="chips">{Object.entries(SCEN).map(([k, v]) => <button key={k} className={`chip ${sc === k ? 'active' : ''}`} onClick={() => { setSc(k); save('rangeRegScen', k) }}>{v.label}</button>)}</div>
+      </div>
       {msg && <div className="note down">{msg}</div>}
       {reg.error && <div className="warn">{reg.error}</div>}
-      {!reg.error && !valid.length && <p className="note">Ancora nessun setup registrato: i primi arrivano quando sui titoli seguiti si forma un range con un falso breakout o un breakout.</p>}
-      {valid.length > 0 && (
+      {!reg.error && !recognized.length && <p className="note">Ancora nessun setup registrato{scope === 'this' ? ` su ${short(symbol)}` : ''}: i primi arrivano quando sui titoli seguiti si forma un range con un falso breakout o un breakout.</p>}
+      {recognized.length > 0 && (
         <>
           <div className="warn">Con pochi casi questi numeri non valgono ancora: servono almeno 30–50 trade conclusi per gruppo prima di trarre conclusioni.</div>
           <div className="rg-levels mono" style={{ marginTop: 8 }}>
-            <span>setup validi proposti <b>{valid.length}</b></span>
+            <span>setup riconosciuti <b>{recognized.length}</b> <i>rischio/rendimento sufficiente</i></span>
+            <span>validi con {S.label} <b>{valid.length}</b> <i>{rejected.length} scartati per i costi</i></span>
             <span>trade conclusi <b>{done.length}</b> <i>entrata eseguita e uscita completa</i></span>
-            <span>serie di perdite più lunga <b className="down">{streak(done)}</b></span>
-            <span>risultato medio <b className={tot >= 0 ? 'up' : 'down'}>{done.length ? fmtR(tot / done.length) : '—'}</b> <i>con le commissioni</i></span>
+            <span>serie di perdite più lunga <b className="down">{streak(done, net)}</b></span>
           </div>
-          <StatsTable title="Tipo di trade" rows={valid} keyOf={r => `${KIND_LABEL[r.kind]}${r.variant ? ` (${r.variant})` : ''}`} />
-          <StatsTable title="Range" rows={valid} keyOf={r => r.range_type} />
-          <StatsTable title="Rispetto all'impulso" rows={valid} keyOf={r => (r.with_impulse ? 'nella direzione' : 'contro')} />
-          <StatsTable title="Trend a 4 ore" rows={valid} keyOf={r => r.fit || '—'} />
-          <StatsTable title="Voto" rows={valid} keyOf={r => r.grade || '—'} />
-          <StatsTable title="Titolo" rows={valid} keyOf={r => short(r.symbol)} />
-        </>
-      )}
-      {costRej.length > 0 && (
-        <>
-          <div className="lab" style={{ marginTop: 14 }}>Scartati per i costi (come sarebbero andati)</div>
-          <p className="note">Setup con rischio/rendimento sufficiente ma commissioni oltre la soglia del rischio. Non contano nelle statistiche sopra.</p>
-          <StatsTable title="Tipo di trade" rows={costRej} keyOf={r => `${KIND_LABEL[r.kind]}${r.variant ? ` (${r.variant})` : ''}`} />
-          <StatsTable title="Titolo" rows={costRej} keyOf={r => short(r.symbol)} />
+          <Totals rows={recognized} />
+          <div className="lab" style={{ marginTop: 14 }}>Statistiche · validi con {S.label}</div>
+          <StatsTable sc={sc} title="Tipo di trade" rows={valid} keyOf={r => `${KIND_LABEL[r.kind]}${r.variant ? ` (${r.variant})` : ''}`} />
+          <StatsTable sc={sc} title="Range" rows={valid} keyOf={r => r.range_type} />
+          <StatsTable sc={sc} title="Rispetto all'impulso" rows={valid} keyOf={r => (r.with_impulse ? 'nella direzione' : 'contro')} />
+          <StatsTable sc={sc} title="Trend a 4 ore" rows={valid} keyOf={r => r.fit || '—'} />
+          <StatsTable sc={sc} title="Voto" rows={valid} keyOf={r => r.grade || '—'} />
+          {scope === 'all' && <StatsTable sc={sc} title="Titolo" rows={valid} keyOf={r => short(r.symbol)} />}
+          {rejected.length > 0 && (
+            <>
+              <div className="lab" style={{ marginTop: 14 }}>Scartati per i costi con {S.label} (come sarebbero andati)</div>
+              <StatsTable sc={sc} title="Tipo di trade" rows={rejected} keyOf={r => `${KIND_LABEL[r.kind]}${r.variant ? ` (${r.variant})` : ''}`} />
+            </>
+          )}
+          <div className="lab" style={{ marginTop: 14 }}>Elenco dei trade simulati</div>
+          <div className="table-wrap" style={{ marginTop: 8 }}>
+            <table className="tbl clickable">
+              <thead><tr><th>Titolo</th><th>Quando</th><th>Tipo</th><th>Lato</th><th>Voto</th><th>Costi Bitunix / future</th><th>Valido con</th><th>Esito</th><th>Lordo</th><th>Netto {S.label}</th></tr></thead>
+              <tbody>
+                {list.map(r => (
+                  <tr key={r.id} onClick={() => onOpen(r.symbol, r.id.slice(r.symbol.length + 1))}>
+                    <td>{short(r.symbol)}</td><td>{when(r.created_at)}</td><td>{KIND_LABEL[r.kind]}{r.variant ? ` (${r.variant})` : ''}</td>
+                    <td className={r.side > 0 ? 'up' : 'down'}>{r.side > 0 ? 'long' : 'short'}</td>
+                    <td><span className={gradeCls(r.grade)}>{r.grade}</span></td>
+                    <td>{r.cost_pct != null ? `${r.cost_pct.toFixed(0)}%` : '—'} / {r.cost_pct_fut != null ? `${r.cost_pct_fut.toFixed(0)}%` : '—'}</td>
+                    <td>{validWith(r.valid, r.valid_fut)}</td>
+                    <td>{statusText(r)}</td>
+                    <td className={r.r_gross > 0 ? 'up' : r.r_gross < 0 ? 'down' : ''}>{r.r_gross != null ? fmtR(r.r_gross) : '—'}</td>
+                    <td className={r[net] > 0 ? 'up' : r[net] < 0 ? 'down' : ''}>{r[net] != null ? fmtR(r[net]) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {recognized.length > 40 && <button className="chip" style={{ marginTop: 6 }} onClick={() => setShowAll(x => !x)}>{showAll ? 'Mostra solo gli ultimi 40' : `Mostra tutti (${recognized.length})`}</button>}
+          <p className="note" style={{ marginTop: 6 }}>Tocca un trade per aprire il suo titolo con il setup disegnato sul grafico (se è negli ultimi 8 giorni, quelli che la pagina scarica).</p>
         </>
       )}
     </div>
@@ -397,8 +471,10 @@ export default function Range() {
   const res = useMemo(() => (c15?.length > 50 ? analyze(c15, params, { bars1h: b1h, bars4h: c4 || [] }) : null), [c15, params, b1h, c4])
   const wp = useMemo(() => (b1h.length ? weekProfiles(b1h, now) : null), [b1h]) // eslint-disable-line react-hooks/exhaustive-deps
   const active = res ? res.ranges.filter(r => r.active).reverse() : []
-  const past = res ? res.trades.filter(t => t.valid || t.costReject).slice().reverse() : []
-  const invalidN = res ? res.setups.filter(s => !s.valid && !s.costReject).length : 0
+  const past = res ? res.trades.filter(t => t.rrOk).slice().reverse() : []
+  const invalidN = res ? res.setups.filter(s => !s.rrOk).length : 0
+  const chartRef = useRef(null)
+  const openTrade = (sym, id) => { setSymbolRaw(sym); save('rangeSymbol', sym); setFocusId(id); setTimeout(() => chartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }
   const focus = (res && focusId && res.trades.find(s => s.id === focusId)) || active.map(r => r.lastSetup).find(s => s && s.valid && ['pronto', 'in corso'].includes(s.status)) || null
   const err = data['15m']?.error || data['4h']?.error
 
@@ -441,7 +517,7 @@ export default function Range() {
         </div>
       )}
 
-      <div className="card" style={{ padding: 10 }}>
+      <div className="card" style={{ padding: 10 }} ref={chartRef}>
         <div className="row" style={{ marginBottom: 4 }}>
           <span className="lab">Decisione · 15 minuti</span>
           <span className="note">{res ? `${res.impulses.length} impulsi · ${res.ranges.filter(r => !r.dropped).length} range (${res.ranges.filter(r => r.validIdx !== null).length} validi) · ${res.ranges.filter(r => r.dropped).length} non validi · ${res.setups.length} falsi breakout` : 'Carico le candele…'}</span>
@@ -460,34 +536,37 @@ export default function Range() {
         {past.length ? (
           <div className="table-wrap" style={{ marginTop: 8 }}>
             <table className="tbl clickable">
-              <thead><tr><th>Quando</th><th>Tipo</th><th>Range</th><th>Lato</th><th>Impulso</th><th>Voto</th><th>Entrata</th><th>Stop</th><th>Target</th><th>R:R</th><th>Costi</th><th>Trend 4h</th><th>Com'è finito</th><th>Lordo</th><th>Netto</th></tr></thead>
+              <thead><tr><th>Quando</th><th>Tipo</th><th>Range</th><th>Lato</th><th>Impulso</th><th>Voto</th><th>Entrata</th><th>Stop</th><th>Target</th><th>R:R</th><th>Costi Bitunix / future</th><th>Valido con</th><th>Trend 4h</th><th>Com'è finito</th><th>Lordo</th><th>Netto Bitunix</th><th>Netto future</th></tr></thead>
               <tbody>
                 {past.map(s => (
-                  <tr key={s.id} onClick={() => setFocusId(s.id === focusId ? null : s.id)} style={s.id === focus?.id ? { background: 'var(--surface-alt)' } : s.costReject ? { opacity: 0.55 } : undefined}>
+                  <tr key={s.id} onClick={() => setFocusId(s.id === focusId ? null : s.id)} style={s.id === focus?.id ? { background: 'var(--surface-alt)' } : !s.valid && !s.validFut ? { opacity: 0.55 } : undefined}>
                     <td>{when(s.at)}</td><td>{kindName(s)}</td><td>{s.type}</td>
                     <td className={s.side > 0 ? 'up' : 'down'}>{s.side > 0 ? 'long' : 'short'}</td>
                     <td>{s.withImpulse ? 'a favore' : 'contro'}</td>
                     <td><span className={gradeCls(s.grade)}>{s.grade}</span></td>
                     <td>{fmtPrice(s.entry)}</td><td>{fmtPrice(s.stop)}</td><td>{s.targets.map(x => fmtPrice(x.p)).join(' / ')}</td>
                     <td>{s.rr.toFixed(1)}</td>
-                    <td className={s.costReject ? 'down' : ''}>{s.costPct.toFixed(0)}%{s.costReject ? ' scartato' : ''}</td>
+                    <td>{s.costPct.toFixed(0)}% / {s.costPctFut.toFixed(0)}%</td>
+                    <td>{validWith(s.valid, s.validFut)}</td>
                     <td className={fitCls(s.fit)}>{s.fit}</td>
                     <td>{s.status === 'target' ? 'target raggiunto' : s.status === 'stop' ? 'stop toccato' : String(s.status).startsWith('pareggio dopo') ? `${s.status.slice(-2)}, poi pareggio` : s.status === 'scaduto' ? (s.why || 'scaduto') : s.status}</td>
                     <td className={s.R > 0 ? 'up' : s.R < 0 ? 'down' : 'sec'}>{s.R !== null && s.R !== undefined ? fmtR(s.R) : s.openR !== undefined ? `${fmtR(s.openR)} aperto` : '—'}</td>
                     <td className={s.Rnet > 0 ? 'up' : s.Rnet < 0 ? 'down' : 'sec'}>{s.Rnet !== undefined ? fmtR(s.Rnet) : '—'}</td>
+                    <td className={s.RnetFut > 0 ? 'up' : s.RnetFut < 0 ? 'down' : 'sec'}>{s.RnetFut !== undefined ? fmtR(s.RnetFut) : '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : <p className="note">{res ? 'Nessun setup valido negli ultimi 8 giorni con queste impostazioni.' : '…'}</p>}
+        {past.length > 0 && <Totals rows={past.map(t => ({ valid: t.valid, valid_fut: t.validFut, r_gross: t.R ?? null, r_net: t.Rnet ?? null, fees_r: t.feesR ?? null, r_net_fut: t.RnetFut ?? null, fees_r_fut: t.feesRFut ?? null, final: t.R !== null && t.R !== undefined }))} />}
         <p className="note" style={{ marginTop: 6 }}>
           Tocca un setup per disegnarlo sul grafico. Uscite secondo il tipo: falso breakout un terzo a ogni target (stop a pareggio dopo T1); range trade tutto sul bordo opposto; breakout con conferma 30% al primo target, il resto corre.
-          Netto = con le commissioni di Bitunix. Le righe chiare sono scartate perché le commissioni superano il {params.maxCost}% del rischio: restano per vedere come sarebbero andate. {invalidN ? `Altri ${invalidN} falsi breakout hanno un rischio/rendimento sotto ${params.minRR}. ` : ''}Sono pochi casi: servono per capire, non come statistica.
+          Netto = con le commissioni di Bitunix o del future (tipo IBKR, {params.futFee}% per lato). "Valido con" dice con quali costi le commissioni restano sotto il {params.maxCost}% del rischio; le righe chiare non sono valide con nessuno dei due, e restano per vedere come sarebbero andate. {invalidN ? `Altri ${invalidN} falsi breakout hanno un rischio/rendimento sotto ${params.minRR}. ` : ''}Sono pochi casi: servono per capire, non come statistica.
         </p>
       </div>
 
-      <Registry symbol={symbol} />
+      <Registry symbol={symbol} onOpen={openTrade} />
       <Settings params={params} setParams={setParams} />
       <div className="card" style={{ padding: 12 }}><AlertToggle symbol={symbol} params={params} /></div>
       <p className="note">

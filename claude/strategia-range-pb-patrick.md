@@ -223,12 +223,17 @@ Il Calendario ha solo le trimestrali delle azioni, senza ora. Le notizie macro (
 - A mercato e stop (taker): 0,06%.
 - Entrata limite sul bordo e target come ordini limite; entrata a mercato, breakout e stop a mercato.
 
-I risultati sono in multipli del rischio: lordi, e netti con le commissioni.
+Secondo scenario, **future tipo IBKR**: 0,005% per lato (modificabile), uguale per entrata, target e stop. Serve a capire se la strategia starebbe in piedi su un broker più economico.
+
+**Costi rispetto al rischio:** per ogni setup si calcola quanto pesano le commissioni di andata e ritorno (entrata e uscita allo stop) sul rischio, in tutti e due gli scenari. Oltre la soglia (di partenza il 20%, modificabile) il setup non è valido con quei costi. Il peso dei costi Bitunix conta nel voto: fino a metà soglia +1, oltre la soglia −1.
+
+I risultati sono in multipli del rischio: lordi, e netti con le commissioni dei due scenari.
 
 ### Registro automatico
 - **Titoli seguiti:** di partenza BTC, ETH e oro, al massimo 8. Si cambiano dalla pagina con il codice di controllo.
 - **Quando:** il server gira ogni 15 minuti, anche a pagina chiusa, nel controllo ogni minuto dopo la chiusura della candela. Si salta dalle 9:25 alle 10:40 di New York nei giorni feriali.
 - **Cosa salva:** in `wt_range_trades`, ogni setup proposto da quando il titolo è seguito: falso breakout con entrata limite e a mercato, range trade, breakout con conferma. Usa sempre le impostazioni di partenza, così i numeri sono confrontabili.
+- **Validità:** salva tutti i setup riconosciuti e segna per ognuno se è valido con i costi Bitunix, con quelli del future, con tutti e due o con nessuno. Statistiche e totali (R lordo, R netto, quanto è andato in commissioni) si vedono per l'uno o per l'altro scenario, per un titolo o per tutti. Sono trade simulati, non ordini veri.
 - **Esito:** lo segue fino alla fine (entrata eseguita o no, target, stop, risultato lordo e netto). Un trade ancora aperto dopo 6 giorni si chiude come "dati finiti".
 - **Statistiche nella pagina,** sui setup validi: per tipo di trade, P o B, a favore o contro l'impulso, contesto a 4 ore, voto e titolo, con la serie di perdite più lunga. Con pochi casi i numeri non valgono ancora: servono almeno 30–50 trade conclusi per gruppo.
 
