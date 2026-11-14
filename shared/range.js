@@ -13,6 +13,7 @@ export const RANGE_DEFAULTS = {
   minHours: 12,      // durata minima del range in ore (mezza giornata)
   touchTol: 0.25,    // tolleranza per contare un tocco, in multipli dell'ATR
   minRR: 3,          // rapporto rischio/rendimento minimo (fino all'ultimo target) per un setup valido
+  maxCost: 20,       // commissioni di andata e ritorno al massimo questa percentuale del rischio, altrimenti il setup non è valido
 }
 const MAX_RETRACE = 0.6   // il range non deve ritracciare più del 60% dell'impulso (altrimenti non è una P o una B)
 const STOP_BUF = 0.1      // stop oltre l'estremo: + 0,1 ATR
@@ -24,7 +25,7 @@ const LEVEL_TOL = 0.5     // un livello settimanale "tocca" il range o il falso 
 export const FEES = { maker: 0.02, taker: 0.06 }
 const Q = 15 * 60000, H1 = 3600000
 
-export const LIMITS = { impulseAtr: [1.5, 8], impulseBars: [4, 48], minTouches: [2, 8], minHours: [2, 48], touchTol: [0.05, 1], minRR: [1, 6] }
+export const LIMITS = { impulseAtr: [1.5, 8], impulseBars: [4, 48], minTouches: [2, 8], minHours: [2, 48], touchTol: [0.05, 1], minRR: [1, 6], maxCost: [5, 100] }
 export function cleanRangeSettings(p) {
   const out = { ...RANGE_DEFAULTS }
   for (const [k, [lo, hi]] of Object.entries(LIMITS)) { const v = +p?.[k]; if (Number.isFinite(v) && v >= lo && v <= hi) out[k] = v }
@@ -160,7 +161,7 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
 
   // Voto di qualità (A, B, C) con i motivi: livelli settimanali, tocchi e durata, rischio/rendimento, contesto a 4 ore,
   // volume della candela di rottura, strada verso il target (zone con poco volume) o ostacoli (zone con molto volume, POC).
-  const gradeOf = ({ rg, k, side, entry, path, rr, fit, outIdx = null, ext = null, kind }) => {
+  const gradeOf = ({ rg, k, side, entry, path, rr, fit, costPct, outIdx = null, ext = null, kind }) => {
     const reasons = []
     let sc = 0
     const add = (pts, txt) => { sc += pts; reasons.push({ pts, txt }) }
@@ -173,6 +174,7 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
     add(hours >= 24 ? 1 : 0, `range di ${Math.round(hours)} ore`)
     add(rr >= 5 ? 1 : rr < s.minRR ? -1 : 0, `rischio/rendimento ${rr.toFixed(1)}`)
     add(fit === 'a favore' ? 1 : fit === 'contro' ? -1 : 0, `trend a 4 ore ${fit}`)
+    add(costPct <= s.maxCost / 2 ? 1 : costPct > s.maxCost ? -1 : 0, `commissioni ${costPct.toFixed(0)}% del rischio${costPct <= s.maxCost / 2 ? ' (basse)' : costPct > s.maxCost ? ' (troppo alte)' : ''}`)
     if (outIdx !== null) {
       const prev = bars.slice(Math.max(0, outIdx - 20), outIdx).map(b => b.v || 0)
       const avg = prev.reduce((x, y) => x + y, 0) / (prev.length || 1)
@@ -241,9 +243,15 @@ export function analyze(bars, settings = RANGE_DEFAULTS, { bars1h = [], bars4h =
     tr.rrs = tr.targets.map(t => tr.side * (t.p - tr.entry) / risk)
     tr.rr = tr.rrs.at(-1)
     tr.rrAll = tr.targets.reduce((x, t, i) => x + t.frac * tr.rrs[i], 0)
-    tr.valid = tr.rr >= s.minRR
-    tr.invalid = tr.valid ? null : `rischio/rendimento ${tr.rr.toFixed(1)} sotto ${s.minRR}`
-    Object.assign(tr, gradeOf({ rg, k, side: tr.side, entry: tr.entry, rr: tr.rr, fit: tr.fit, kind: tr.kind, path: [tr.targets[0].p, tr.targets.at(-1).p], ...gradeArgs }))
+    // commissioni di andata e ritorno rispetto al rischio: entrata (limite o a mercato) e uscita allo stop (a mercato),
+    // il caso in cui pesano di più. Sopra la soglia il setup non è valido: lo stop è troppo stretto per i costi di Bitunix.
+    const feeIn = tr.kind === 'range' || tr.variant === 'limite' ? FEES.maker : FEES.taker
+    tr.costPct = (feeIn * tr.entry + FEES.taker * tr.stop) / 100 / risk * 100
+    const rrOk = tr.rr >= s.minRR, costOk = tr.costPct <= s.maxCost
+    tr.valid = rrOk && costOk
+    tr.costReject = rrOk && !costOk
+    tr.invalid = !rrOk ? `rischio/rendimento ${tr.rr.toFixed(1)} sotto ${s.minRR}` : !costOk ? `commissioni ${tr.costPct.toFixed(0)}% del rischio, oltre il ${s.maxCost}%` : null
+    Object.assign(tr, gradeOf({ rg, k, side: tr.side, entry: tr.entry, rr: tr.rr, fit: tr.fit, costPct: tr.costPct, kind: tr.kind, path: [tr.targets[0].p, tr.targets.at(-1).p], ...gradeArgs }))
     return tr
   }
 

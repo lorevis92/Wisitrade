@@ -1,6 +1,7 @@
 // Prova del riconoscimento dei range P e B (shared/range.js) con candele costruite a mano.
 // node tests/range.test.mjs
 import assert from 'node:assert/strict'
+import { parseFomc, parseBea, parseFf, merge, kindOf } from '../server/macro.js'
 import { analyze, events, volumeProfile, trend4h, weekProfiles, FEES, gradeAtLeast, isFinal } from '../shared/range.js'
 
 const Q = 15 * 60000, T0 = Date.UTC(2026, 10, 3) // martedì: la settimana in corso parte da lunedì 2 novembre
@@ -12,14 +13,14 @@ const H4 = 4 * 3600000
 const trendBars = dir => (dir ? Array.from({ length: 120 }, (_, i) => { const c = 200 + dir * i; return { t: T0 - (120 - i) * H4, o: c - dir * 0.5, h: c + 1, l: c - 1, c, v: 1 } }) : [])
 
 // base piatta (ATR ~1), impulso al rialzo 99,3 → 110,5, range 107–110,5 per 15 ore con tocchi, poi uno scenario finale
-function pRange(final, trend = 1, opts = {}) {
+function pRange(final, trend = 1, opts = {}, settings = {}) {
   reset()
   for (let i = 0; i < 60; i++) { const c = 100 + (i % 2 ? 0.2 : -0.2); bar(c, c + 0.5, c - 0.5, c) }
   for (let i = 0; i < 8; i++) { const o = 100 + i * 1.3; bar(o, o + 1.4, o - 0.1, o + 1.3) }
   const swing = [109.5, 108.5, 107.5, 108.5, 109.5]
   for (let i = 0; i < 60; i++) { const c = swing[i % 5]; bar(c, Math.min(c + 0.5, 110.0), Math.max(c - 0.5, 107.0), c) }
   final()
-  return analyze(bars, {}, { bars4h: trendBars(trend), ...opts })
+  return analyze(bars, settings, { bars4h: trendBars(trend), ...opts })
 }
 const fakeDown = (v = 100) => { bar(107.4, 107.5, 106.2, 106.6, v); bar(106.6, 107.6, 106.5, 107.5) }
 const fakeUp = (v = 100) => { bar(109.6, 110.9, 109.5, 110.6, v); bar(110.6, 110.7, 109.4, 109.6) }
@@ -164,5 +165,32 @@ test('volume profile, trend a 4 ore e voto minimo', () => {
   assert.equal(trend4h(up).trend, 'up')
   assert.equal(trend4h(up.map(b => ({ ...b, o: 400 - b.o, h: 400 - b.l, l: 400 - b.h, c: 400 - b.c }))).trend, 'down')
   assert.ok(gradeAtLeast('A', 'B') && gradeAtLeast('B', 'B') && !gradeAtLeast('C', 'B') && gradeAtLeast('C', 'C'))
+})
+
+test('commissioni rispetto al rischio: sempre calcolate; oltre la soglia il setup non è valido (scartato per i costi)', () => {
+  const st = pRange(fakeDown).setups[0]
+  const risk = st.entry - st.stop
+  assert.ok(Math.abs(st.costPct - (FEES.maker * st.entry + FEES.taker * st.stop) / 100 / risk * 100) < 1e-9)
+  assert.ok(st.valid && !st.costReject && st.reasons.some(r => /commissioni/.test(r.txt)))
+  const mk = st.market
+  assert.ok(Math.abs(mk.costPct - (FEES.taker * mk.entry + FEES.taker * mk.stop) / 100 / (mk.entry - mk.stop) * 100) < 1e-9, 'a mercato: commissione taker anche in entrata')
+  const tight = pRange(fakeDown, 1, {}, { maxCost: 5 })
+  const t0 = tight.setups[0]
+  assert.equal(t0.valid, false); assert.equal(t0.costReject, true); assert.match(t0.invalid, /commissioni .* oltre il 5%/)
+  assert.ok(!events(tight).some(e => e.kind === 'setup'), 'niente avvisi per i setup scartati')
+})
+
+test('notizie macro: riunioni Fed, BEA e ForexFactory; tipi e doppioni', () => {
+  const html = '<h4>2026 FOMC Meetings</h4><div class="fomc-meeting__month col"><strong>December</strong></div><div class="fomc-meeting__date col">8-9*</div><h4>2027 FOMC Meetings</h4><div class="fomc-meeting__month col"><strong>Apr/May</strong></div><div class="fomc-meeting__date col">30-1</div>'
+  const f = parseFomc(html)
+  assert.equal(new Date(f[0].t).toISOString(), '2026-12-09T19:00:00.000Z', 'decisione alle 14:00 di New York')
+  assert.equal(new Date(f[1].t).toISOString(), '2027-05-01T18:00:00.000Z')
+  const b = parseBea({ 'Gross Domestic Product': { release_dates: ['2026-11-25T13:30:00+00:00'] }, 'Personal Income and Outlays': { release_dates: ['2026-11-25T13:30:00+00:00'] } })
+  assert.deepEqual(b.map(e => e.kind), ['pil', 'inflazione'])
+  const x = parseFf([{ title: 'Non-Farm Employment Change', country: 'USD', impact: 'High', date: '2026-12-04T08:30:00-05:00' }, { title: 'CPI m/m', country: 'EUR', impact: 'High', date: '2026-12-04T08:30:00-05:00' }, { title: 'Core PCE Price Index m/m', country: 'USD', impact: 'High', date: '2026-11-25T08:30:00-05:00' }])
+  assert.equal(x.length, 2); assert.equal(x[0].kind, 'occupazione')
+  const m = merge([f, b, x], Date.parse('2026-11-20T00:00:00Z'))
+  assert.equal(m.filter(e => e.kind === 'inflazione' && e.t === Date.parse('2026-11-25T13:30:00Z')).length, 1, 'PCE: un solo evento, quello di ForexFactory')
+  assert.equal(kindOf('FOMC Statement'), 'fed'); assert.equal(kindOf('Advance GDP q/q'), 'pil')
 })
 console.log(`\n${n} prove superate`)

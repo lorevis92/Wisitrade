@@ -21,6 +21,7 @@ import { waitUntil } from '@vercel/functions'
 import { fastEntries } from '../server/fast-run.js'
 import { operable, keepOperable, operableView, clearMarks } from '../server/operable.js'
 import { compareDay } from '../server/compare.js'
+import { getMacro } from '../server/macro.js'
 import { getRangeAlerts, setRangeAlerts, getRegistry, getFollow, setFollow } from '../server/range-alerts.js'
 import { manualInfo, manualOpen, manualClose, manualPositions, ManualError } from '../server/manual.js'
 import { loadLiveSlip, slipValues, PSLIP_KINDS, PSLIP_DEFAULT, PSLIP_LAST, PSLIP_MIN_N } from '../server/pslip.js'
@@ -379,6 +380,10 @@ async function route(req, url) {
     return { __cache: tf.ttl, symbol: sym, tf: tfKey, bars }
   }
   if (path === '/range/alerts' && m === 'GET') return getRangeAlerts(url.searchParams.get('endpoint'))
+  if (path === '/macro' && m === 'GET') {
+    const v = await getMacro()
+    return { __cache: 600, at: v.at, sources: v.sources, events: v.events.filter(e => e.t > Date.now() - 864e5) }
+  }
   if (path === '/range/registry' && m === 'GET') return getRegistry()
   if (path === '/range/follow' && m === 'GET') return getFollow()
   if (path === '/range/follow' && m === 'POST') { requireAdmin(req); return setFollow(body.symbols) }

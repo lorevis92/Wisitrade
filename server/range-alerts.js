@@ -9,6 +9,8 @@
 import { klinesBack } from './bitunix.js'
 import { db, q, getMeta, setMeta } from './db.js'
 import { deliver } from './push.js'
+import { getMacro } from './macro.js'
+
 import { analyze, events, cleanRangeSettings, gradeAtLeast, isFinal, RANGE_DEFAULTS, GRADES } from '../shared/range.js'
 
 const KEY = 'range:alerts', SENT = 'range:sent', FOLLOW = 'range:follow', REG_ERR = 'range:registry:error'
@@ -71,15 +73,16 @@ const fmt = p => (p >= 1000 ? p.toFixed(1) : p >= 10 ? p.toFixed(2) : p.toPrecis
 const short = s => s.replace(/USDT$/, '')
 const rowOf = (sym, t, now) => ({
   id: `${sym}:${t.id}`, symbol: sym, kind: t.kind, variant: t.variant || null, range_type: t.type, side: t.side, with_impulse: t.withImpulse,
-  fit: t.fit, grade: t.grade, score: t.score, valid: !!t.valid, created_at: t.at, entry: t.entry, stop: t.stop,
+  fit: t.fit, grade: t.grade, score: t.score, valid: !!t.valid, cost_pct: t.costPct ?? null, cost_reject: !!t.costReject, created_at: t.at, entry: t.entry, stop: t.stop,
   targets: t.targets.map(x => ({ p: x.p, frac: x.frac, why: x.why })), rr: t.rr, status: t.status,
   fill_at: t.fillAt ?? null, exit_at: t.exitAt ?? null, r_gross: t.R ?? null, r_net: t.Rnet ?? null, fees_r: t.feesR ?? null,
-  final: isFinal(t), data: { reasons: t.reasons, weekLevels: t.weekLevels, why: t.why || null, openR: t.openR ?? null }, updated_at: now,
+  final: isFinal(t), data: { reasons: t.reasons, weekLevels: t.weekLevels, why: t.why || null, invalid: t.invalid || null, openR: t.openR ?? null }, updated_at: now,
 })
 
 // Un giro ogni 15 minuti: candele dei titoli seguiti e di quelli con avvisi, registro, poi avvisi
 export async function runRangeAlerts({ budgetMs = 15000, now = Date.now() } = {}) {
   const t0 = Date.now()
+  const macro = ((await getMacro(now).catch(() => null))?.events || []).filter(e => e.t > now && e.t < now + 24 * 3600000)
   const all = (await getMeta(KEY)) || {}
   const ids = Object.keys(all)
   const subs = ids.length ? await q(db().from('wt_subs').select('*').in('id', ids)) : []
@@ -131,7 +134,9 @@ export async function runRangeAlerts({ budgetMs = 15000, now = Date.now() } = {}
           payload = { title: `${short(sym)}: range ${r.type} valido${r.strong ? ' su livello settimanale' : ''}`, body: `${fmt(r.bottom)} – ${fmt(r.top)} · tocchi ${r.touchUp} in alto, ${r.touchDn} in basso${r.strong ? ` · ${r.strong.map(x => x.name).join(', ')}` : ''}`, url: '/range', tag: `range-${sym}` }
         } else {
           const s = ev.setup, tg = s.targets
-          payload = { title: `${short(sym)}: ${s.side > 0 ? 'LONG' : 'SHORT'} voto ${s.grade} (${s.type}, ${s.withImpulse ? 'a favore' : 'contro'} l'impulso)`, body: `limite ${fmt(s.entry)} · stop ${fmt(s.stop)} · T1 ${fmt(tg[0].p)} · T2 ${fmt(tg[1].p)} · T3 ${fmt(tg[2].p)} · R:R ${s.rr.toFixed(1)} · trend 4h ${s.fit}`, url: '/range', tag: `range-${sym}` }
+          const nx = macro[0]
+          const warn = nx ? ` · ATTENZIONE: ${nx.title} tra ${Math.max(1, Math.round((nx.t - now) / 3600000))} ore` : ''
+          payload = { title: `${short(sym)}: ${s.side > 0 ? 'LONG' : 'SHORT'} voto ${s.grade} (${s.type}, ${s.withImpulse ? 'a favore' : 'contro'} l'impulso)`, body: `limite ${fmt(s.entry)} · stop ${fmt(s.stop)} · T1 ${fmt(tg[0].p)} · T2 ${fmt(tg[1].p)} · T3 ${fmt(tg[2].p)} · R:R ${s.rr.toFixed(1)} · costi ${s.costPct.toFixed(0)}% del rischio · trend 4h ${s.fit}${warn}`, url: '/range', tag: `range-${sym}` }
         }
         items.push({ sub, payload, topic: payload.tag })
         done.push(`${sym} ${ev.key}`)

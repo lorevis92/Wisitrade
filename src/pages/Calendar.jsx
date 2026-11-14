@@ -22,10 +22,14 @@ function usTimes() {
   ]
 }
 
+const MACRO_KIND = { fed: 'Fed', inflazione: 'Inflazione', occupazione: 'Occupazione', pil: 'PIL', altro: 'Altro' }
+
 export default function Calendar() {
   const [events, setEvents] = useState(null)
   const [signals, setSignals] = useState(null)
+  const [macro, setMacro] = useState(null)
   useEffect(() => {
+    get('/api/macro').then(setMacro).catch(e => setMacro({ events: [], error: e.message }))
     get('/api/events').then(j => setEvents(j.earnings)).catch(() => setEvents([]))
     get('/api/signals').then(j => setSignals(j.signals)).catch(() => setSignals([]))
   }, [])
@@ -36,6 +40,22 @@ export default function Calendar() {
       <div className="card">
         {usTimes().map(([l, t]) => <div className="kv" key={l}><span>{l}</span><span className="mono">{t}</span></div>)}
         <div className="note" style={{ marginTop: 6 }}>Crypto monitorate 24/7. I breakout di apertura valgono solo nei giorni di borsa.</div>
+      </div>
+
+      <div className="lab section-title">Notizie macro USA (ora locale)</div>
+      <div className="card">
+        {!macro && <div className="note">Carico…</div>}
+        {macro?.events?.length === 0 && <div className="note">Nessun evento: {macro.error || 'le fonti non hanno risposto'}.</div>}
+        {macro?.events?.filter(e => e.t > Date.now() - 3 * 3600000).slice(0, 30).map((e, i) => (
+          <div className="kv" key={i}>
+            <span><span className={`pill ${e.kind === 'fed' ? 'short' : e.kind === 'altro' ? 'neutral' : 'long'}`}>{MACRO_KIND[e.kind]}</span> {e.title}{e.forecast ? <span className="muted" style={{ fontSize: 11 }}> · previsto {e.forecast}</span> : null}</span>
+            <span className="mono" style={{ color: 'var(--warn)', whiteSpace: 'nowrap' }}>{new Date(e.t).toLocaleString('it-CH', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+          </div>
+        ))}
+        <div className="note" style={{ marginTop: 6 }}>
+          Fonti gratuite: Federal Reserve (decisioni sui tassi, alle 14:00 di New York), BEA (PIL, inflazione PCE) e il calendario settimanale di ForexFactory (eventi USA ad alto impatto con ora: inflazione CPI, occupazione e altri).
+          Il calendario ufficiale del BLS non accetta richieste automatiche: inflazione CPI e occupazione compaiono solo nella settimana in cui escono. Aggiornate ogni 6 ore.
+        </div>
       </div>
 
       <div className="lab section-title">Prossime trimestrali</div>

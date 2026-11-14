@@ -193,3 +193,6 @@ create table if not exists wt_range_trades (
 );
 create index if not exists wt_range_trades_created on wt_range_trades (created_at);
 alter table wt_range_trades enable row level security;
+-- costi rispetto al rischio (pagina Range): commissioni di andata e ritorno in % del rischio, setup scartato per i costi
+alter table wt_range_trades add column if not exists cost_pct double precision;
+alter table wt_range_trades add column if not exists cost_reject boolean;

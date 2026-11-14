@@ -25,6 +25,7 @@ const SETTINGS_INFO = [
   ['minTouches', 'Tocchi minimi', 'tocchi', 'Tocchi dei bordi (alto + basso, almeno uno per lato) perché il range sia valido. Più alto: range più "provati", ma meno numerosi e più tardi.'],
   ['minHours', 'Durata minima del range', 'ore', 'Da quanto tempo il prezzo deve stare nel range perché sia valido (12 = mezza giornata). Più basso: range più frequenti ma meno solidi.'],
   ['touchTol', 'Tolleranza del tocco', '× ATR', 'Quanto vicino al bordo deve arrivare il prezzo per contare un tocco. Più alta: più tocchi contati, range validi prima.'],
+  ['maxCost', 'Costi massimi rispetto al rischio', '%', 'Commissioni di andata e ritorno (entrata e uscita allo stop) al massimo questa percentuale del rischio. Oltre, lo stop è troppo stretto per i costi di Bitunix e il setup non è valido. Più bassa: solo setup con stop più larghi.'],
   ['minRR', 'Rischio/rendimento minimo', ': 1', 'Un setup è valido solo se il rendimento fino all\'ultimo target è almeno questo multiplo del rischio. Più alto: meno setup, più selettivi.'],
 ]
 // stato → alone (come nella pagina RSI)
@@ -77,6 +78,18 @@ function useEarnings() {
   useEffect(() => { get('/api/events').then(j => setEv(j.earnings || [])).catch(() => {}) }, [])
   return ev
 }
+function useMacro() {
+  const [ev, setEv] = useState([])
+  useEffect(() => { get('/api/macro').then(j => setEv(j.events || [])).catch(() => {}) }, [])
+  return ev
+}
+// eventi macro USA nelle 24 ore dopo il setup (o da adesso, se il setup è ancora aperto)
+const MACRO_H = 24
+function macroFor(macro, t) {
+  const from = Math.max(t, Date.now() - 3600000)
+  return macro.filter(e => e.t >= from && e.t <= from + MACRO_H * 3600000)
+}
+const macroWhen = e => new Date(e.t).toLocaleString('it-CH', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
 const dayOf = t => new Date(t).toISOString().slice(0, 10)
 function newsFor(earnings, symbol, t) {
   const from = dayOf(t), to = dayOf(t + 2 * 864e5)
@@ -133,7 +146,19 @@ function RiskCalc({ entry, stop, limit = true }) {
   )
 }
 
-function SetupBox({ st, big, earnings, symbol }) {
+function CostLine({ t, max }) {
+  if (t?.costPct === undefined) return null
+  const cls = t.costPct > max ? 'down' : t.costPct <= max / 2 ? 'up' : 'sec'
+  return <span>commissioni andata e ritorno <b className={cls}>{t.costPct.toFixed(0)}% del rischio</b> <i>soglia {max}%{t.variant === 'limite' || t.kind === 'range' ? ' · entrata limite 0,02%' : ' · entrata a mercato 0,06%'}, stop 0,06%</i></span>
+}
+
+function MacroWarn({ macro, t }) {
+  const list = macroFor(macro, t)
+  if (!list.length) return null
+  return <div className="warn">Notizie macro USA nelle {MACRO_H} ore successive: {list.slice(0, 3).map(e => `${e.title} (${macroWhen(e)})`).join(' · ')}. Patrick non tiene posizioni durante le notizie forti.</div>
+}
+
+function SetupBox({ st, big, earnings, symbol, macro = [], maxCost }) {
   if (!st) return null
   const mk = st.market
   const news = newsFor(earnings, symbol, st.at)
@@ -149,10 +174,12 @@ function SetupBox({ st, big, earnings, symbol }) {
         <span className={`note ${fitCls(st.fit)}`}>trend 4h {st.fit}{st.trend ? ` (${TREND[st.trend]})` : ''}</span>
         {st.invalid && <span className="note down">{st.invalid}</span>}
       </div>
+      {st.status !== 'scaduto' && st.R == null && <MacroWarn macro={macro} t={st.at} />}
       {news.length > 0 && <div className="warn">Trimestrale di {news.map(e => `${e.symbol} il ${e.date}`).join(', ')}: Patrick non tiene posizioni durante le notizie forti.</div>}
       <div className="rg-levels mono">
         <span>entrata limite sul bordo <b>{fmtPrice(st.entry)}</b> <i>R:R {st.rr.toFixed(1)} · {st.status}{st.why ? ` (${st.why})` : ''}</i></span>
-        {mk && <span>oppure a mercato alla chiusura <b>{fmtPrice(mk.entry)}</b> <i>R:R {mk.rr.toFixed(1)} · stop {fmtPrice(mk.stop)} · {mk.status}</i></span>}
+        {mk && <span>oppure a mercato alla chiusura <b>{fmtPrice(mk.entry)}</b> <i>R:R {mk.rr.toFixed(1)} · costi {mk.costPct.toFixed(0)}% del rischio{mk.costReject ? ' (oltre la soglia)' : ''} · stop {fmtPrice(mk.stop)} · {mk.status}</i></span>}
+        <CostLine t={st} max={maxCost} />
         <span>stop <b className="down">{fmtPrice(st.stop)}</b> <i>oltre l'estremo del falso breakout</i></span>
         <span>se arrivano tutti i target <b className="up">{fmtR(st.rrAll)}</b> <i>un terzo a ogni target</i></span>
       </div>
@@ -168,13 +195,13 @@ function AltTrade({ t, label }) {
   if (t.entry === undefined) return <div className="note">{label}: {t.dir > 0 ? 'sopra' : 'sotto'} · {t.status}{t.trigger ? ` (entrata oltre ${fmtPrice(t.trigger)})` : ''}.</div>
   return (
     <div className="note mono rg-alt-row">
-      {label}: <b className={t.side > 0 ? 'up' : 'down'}>{t.side > 0 ? 'long' : 'short'}</b> {fmtPrice(t.entry)} · stop {fmtPrice(t.stop)} · {t.targets.map((x, i) => `${Math.round(x.frac * 100)}% a ${fmtPrice(x.p)}`).join(', ')} · R:R {t.rr.toFixed(1)} · voto {t.grade} · {t.status}{t.R !== null && t.R !== undefined ? ` ${fmtR(t.R)}` : ''}
+      {label}: <b className={t.side > 0 ? 'up' : 'down'}>{t.side > 0 ? 'long' : 'short'}</b> {fmtPrice(t.entry)} · stop {fmtPrice(t.stop)} · {t.targets.map((x, i) => `${Math.round(x.frac * 100)}% a ${fmtPrice(x.p)}`).join(', ')} · R:R {t.rr.toFixed(1)} · costi {t.costPct.toFixed(0)}% del rischio{t.costReject ? ' (oltre la soglia: non valido)' : ''} · voto {t.grade} · {t.status}{t.R !== null && t.R !== undefined ? ` ${fmtR(t.R)}` : ''}
       {t.alsoShort ? ` · oppure short ${fmtPrice(t.alsoShort.entry)} stop ${fmtPrice(t.alsoShort.stop)} target ${fmtPrice(t.alsoShort.target)}` : ''}
     </div>
   )
 }
 
-function RangeCard({ rg, earnings, symbol }) {
+function RangeCard({ rg, earnings, symbol, macro, maxCost }) {
   const g = glowFor(rg)
   return (
     <div className={`rsi-card rg-card ${g.pulse ? 'pulse' : ''}`} style={g.style}>
@@ -190,7 +217,7 @@ function RangeCard({ rg, earnings, symbol }) {
         impulso {fmtPrice(rg.imp.from)} → {fmtPrice(rg.imp.to)} ({rg.imp.strength.toFixed(1)}× ATR, non si opera) · {rg.validAt ? `valido dalle ${when(rg.validAt)}` : 'non ancora valido'}{rg.fakeouts.length ? ` · falsi breakout ${rg.fakeouts.length}` : ''}
       </div>
       {rg.strong && <div className="rg-tags"><span className="pill rg-strong">su livello settimanale: {rg.strong.map(x => `${x.name} ${fmtPrice(x.p)}`).join(', ')}</span></div>}
-      {rg.lastSetup && ['setup pronto', 'setup in corso', 'falso breakout in corso', 'setup scaduto'].includes(rg.state) && <SetupBox st={rg.lastSetup} earnings={earnings} symbol={symbol} />}
+      {rg.lastSetup && ['setup pronto', 'setup in corso', 'falso breakout in corso', 'setup scaduto'].includes(rg.state) && <SetupBox st={rg.lastSetup} earnings={earnings} symbol={symbol} macro={macro} maxCost={maxCost} />}
       {rg.alt && (
         <details className="rg-alt">
           <summary className="note">Altri due modi di operare questo range (meno importanti)</summary>
@@ -211,7 +238,7 @@ function Settings({ params, setParams }) {
   const isDefault = Object.entries(RANGE_DEFAULTS).every(([k, v]) => params[k] === v)
   return (
     <details className="card" style={{ padding: 12 }}>
-      <summary className="row"><span className="lab">Impostazioni del riconoscimento</span><span className="mono muted" style={{ fontSize: 11 }}>{params.impulseAtr}×ATR · {params.minTouches} tocchi · {params.minHours}h · R:R {params.minRR}</span></summary>
+      <summary className="row"><span className="lab">Impostazioni del riconoscimento</span><span className="mono muted" style={{ fontSize: 11 }}>{params.impulseAtr}×ATR · {params.minTouches} tocchi · {params.minHours}h · R:R {params.minRR} · costi {params.maxCost}%</span></summary>
       {SETTINGS_INFO.map(([k, label, unit, help]) => (
         <div key={k} className="rg-set">
           <label className="field">
@@ -304,6 +331,7 @@ function Registry({ symbol }) {
     try { await post('/api/range/follow', { symbols: on ? follow.filter(s => s !== symbol) : [...follow, symbol] }); setMsg(null); refresh() } catch (e) { setMsg(e.message) }
   }
   const valid = (reg.rows || []).filter(r => r.valid)
+  const costRej = (reg.rows || []).filter(r => r.cost_reject)
   const done = valid.filter(r => r.final && r.r_net !== null)
   const tot = done.reduce((x, r) => x + r.r_net, 0)
   return (
@@ -336,6 +364,14 @@ function Registry({ symbol }) {
           <StatsTable title="Titolo" rows={valid} keyOf={r => short(r.symbol)} />
         </>
       )}
+      {costRej.length > 0 && (
+        <>
+          <div className="lab" style={{ marginTop: 14 }}>Scartati per i costi (come sarebbero andati)</div>
+          <p className="note">Setup con rischio/rendimento sufficiente ma commissioni oltre la soglia del rischio. Non contano nelle statistiche sopra.</p>
+          <StatsTable title="Tipo di trade" rows={costRej} keyOf={r => `${KIND_LABEL[r.kind]}${r.variant ? ` (${r.variant})` : ''}`} />
+          <StatsTable title="Titolo" rows={costRej} keyOf={r => short(r.symbol)} />
+        </>
+      )}
     </div>
   )
 }
@@ -350,6 +386,7 @@ export default function Range() {
   const setParams = p => { setParamsRaw(p); save('rangeParams', p) }
   const data = useBars(symbol)
   const earnings = useEarnings()
+  const macro = useMacro()
 
   const now = Date.now()
   const closed = tf => data[tf]?.bars?.filter(b => b.t + TF_MS[tf] <= now) || null
@@ -360,8 +397,8 @@ export default function Range() {
   const res = useMemo(() => (c15?.length > 50 ? analyze(c15, params, { bars1h: b1h, bars4h: c4 || [] }) : null), [c15, params, b1h, c4])
   const wp = useMemo(() => (b1h.length ? weekProfiles(b1h, now) : null), [b1h]) // eslint-disable-line react-hooks/exhaustive-deps
   const active = res ? res.ranges.filter(r => r.active).reverse() : []
-  const past = res ? res.trades.filter(t => t.valid).slice().reverse() : []
-  const invalidN = res ? res.setups.filter(s => !s.valid).length : 0
+  const past = res ? res.trades.filter(t => t.valid || t.costReject).slice().reverse() : []
+  const invalidN = res ? res.setups.filter(s => !s.valid && !s.costReject).length : 0
   const focus = (res && focusId && res.trades.find(s => s.id === focusId)) || active.map(r => r.lastSetup).find(s => s && s.valid && ['pronto', 'in corso'].includes(s.status)) || null
   const err = data['15m']?.error || data['4h']?.error
 
@@ -400,7 +437,7 @@ export default function Range() {
 
       {res && (
         <div className="rsi-grid">
-          {active.length ? active.map(rg => <RangeCard key={rg.id} rg={rg} earnings={earnings} symbol={symbol} />) : <div className="card note" style={{ padding: 12 }}>Nessun range attivo adesso: l'ultimo impulso non ha ancora formato un range, o il range è finito con un breakout. Patrick non opera l'impulso, solo il range che lo segue.</div>}
+          {active.length ? active.map(rg => <RangeCard key={rg.id} rg={rg} earnings={earnings} symbol={symbol} macro={macro} maxCost={params.maxCost} />) : <div className="card note" style={{ padding: 12 }}>Nessun range attivo adesso: l'ultimo impulso non ha ancora formato un range, o il range è finito con un breakout. Patrick non opera l'impulso, solo il range che lo segue.</div>}
         </div>
       )}
 
@@ -415,7 +452,7 @@ export default function Range() {
           Freccia "falso" = una candela ha chiuso fuori dal range e la successiva di nuovo dentro. Range passati più chiari = aree di valore.
           {focus ? ' Linee spesse: entrata, stop e target del setup in evidenza.' : ''} Pallini: com'è finito ogni falso breakout passato. Trascina per scorrere, pizzica per ingrandire.
         </p>
-        {focus && (focus.kind === 'falso' ? <SetupBox st={focus.variant === 'mercato' ? res.setups.find(s => s.market?.id === focus.id) || focus : focus} big earnings={earnings} symbol={symbol} /> : <><AltTrade t={focus} label={KIND_LABEL[focus.kind]} /><RiskCalc entry={focus.entry} stop={focus.stop} limit={focus.kind === 'range'} /></>)}
+        {focus && (focus.kind === 'falso' ? <SetupBox st={focus.variant === 'mercato' ? res.setups.find(s => s.market?.id === focus.id) || focus : focus} big earnings={earnings} symbol={symbol} macro={macro} maxCost={params.maxCost} /> : <><AltTrade t={focus} label={KIND_LABEL[focus.kind]} /><MacroWarn macro={macro} t={focus.at} /><RiskCalc entry={focus.entry} stop={focus.stop} limit={focus.kind === 'range'} /></>)}
       </div>
 
       <div className="card" style={{ padding: 12 }}>
@@ -423,16 +460,17 @@ export default function Range() {
         {past.length ? (
           <div className="table-wrap" style={{ marginTop: 8 }}>
             <table className="tbl clickable">
-              <thead><tr><th>Quando</th><th>Tipo</th><th>Range</th><th>Lato</th><th>Impulso</th><th>Voto</th><th>Entrata</th><th>Stop</th><th>Target</th><th>R:R</th><th>Trend 4h</th><th>Com'è finito</th><th>Lordo</th><th>Netto</th></tr></thead>
+              <thead><tr><th>Quando</th><th>Tipo</th><th>Range</th><th>Lato</th><th>Impulso</th><th>Voto</th><th>Entrata</th><th>Stop</th><th>Target</th><th>R:R</th><th>Costi</th><th>Trend 4h</th><th>Com'è finito</th><th>Lordo</th><th>Netto</th></tr></thead>
               <tbody>
                 {past.map(s => (
-                  <tr key={s.id} onClick={() => setFocusId(s.id === focusId ? null : s.id)} style={s.id === focus?.id ? { background: 'var(--surface-alt)' } : undefined}>
+                  <tr key={s.id} onClick={() => setFocusId(s.id === focusId ? null : s.id)} style={s.id === focus?.id ? { background: 'var(--surface-alt)' } : s.costReject ? { opacity: 0.55 } : undefined}>
                     <td>{when(s.at)}</td><td>{kindName(s)}</td><td>{s.type}</td>
                     <td className={s.side > 0 ? 'up' : 'down'}>{s.side > 0 ? 'long' : 'short'}</td>
                     <td>{s.withImpulse ? 'a favore' : 'contro'}</td>
                     <td><span className={gradeCls(s.grade)}>{s.grade}</span></td>
                     <td>{fmtPrice(s.entry)}</td><td>{fmtPrice(s.stop)}</td><td>{s.targets.map(x => fmtPrice(x.p)).join(' / ')}</td>
                     <td>{s.rr.toFixed(1)}</td>
+                    <td className={s.costReject ? 'down' : ''}>{s.costPct.toFixed(0)}%{s.costReject ? ' scartato' : ''}</td>
                     <td className={fitCls(s.fit)}>{s.fit}</td>
                     <td>{s.status === 'target' ? 'target raggiunto' : s.status === 'stop' ? 'stop toccato' : String(s.status).startsWith('pareggio dopo') ? `${s.status.slice(-2)}, poi pareggio` : s.status === 'scaduto' ? (s.why || 'scaduto') : s.status}</td>
                     <td className={s.R > 0 ? 'up' : s.R < 0 ? 'down' : 'sec'}>{s.R !== null && s.R !== undefined ? fmtR(s.R) : s.openR !== undefined ? `${fmtR(s.openR)} aperto` : '—'}</td>
@@ -445,7 +483,7 @@ export default function Range() {
         ) : <p className="note">{res ? 'Nessun setup valido negli ultimi 8 giorni con queste impostazioni.' : '…'}</p>}
         <p className="note" style={{ marginTop: 6 }}>
           Tocca un setup per disegnarlo sul grafico. Uscite secondo il tipo: falso breakout un terzo a ogni target (stop a pareggio dopo T1); range trade tutto sul bordo opposto; breakout con conferma 30% al primo target, il resto corre.
-          Netto = con le commissioni di Bitunix. {invalidN ? `Altri ${invalidN} falsi breakout hanno un rischio/rendimento sotto ${params.minRR}. ` : ''}Sono pochi casi: servono per capire, non come statistica.
+          Netto = con le commissioni di Bitunix. Le righe chiare sono scartate perché le commissioni superano il {params.maxCost}% del rischio: restano per vedere come sarebbero andate. {invalidN ? `Altri ${invalidN} falsi breakout hanno un rischio/rendimento sotto ${params.minRR}. ` : ''}Sono pochi casi: servono per capire, non come statistica.
         </p>
       </div>
 
@@ -457,7 +495,7 @@ export default function Range() {
         Falso breakout verso il basso con rientro = long, verso l'alto = short, nelle P e nelle B, con qualunque trend. Entrata limite sul bordo o a mercato alla chiusura della candela di rientro;
         stop appena oltre l'estremo del falso breakout (+0,1 ATR, almeno mezzo ATR dall'entrata). Contro l'impulso: T1 bordo opposto, poi verso l'origine dell'impulso;
         nella direzione dell'impulso: T1 bordo opposto, poi le aree di valore successive o la proiezione 1:1 dell'impulso; senza riferimenti, 2 volte il rischio.
-        Le notizie: il Calendario ha solo le trimestrali delle azioni, senza ora; le notizie macro (Fed, inflazione) non ci sono. Regole complete in claude/strategia-range-pb-patrick.md. Solo analisi: nessun ordine.
+        Commissioni: un setup è valido solo se andata e ritorno costano al massimo il {params.maxCost}% del rischio. Notizie: eventi macro USA (Fed, inflazione, occupazione, PIL) del Calendario nelle 24 ore successive, per tutti i titoli; per le azioni anche le trimestrali. Regole complete in claude/strategia-range-pb-patrick.md. Solo analisi: nessun ordine.
       </p>
     </div>
   )
