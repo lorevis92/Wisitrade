@@ -7,7 +7,7 @@ import { runSimulation, simulationSteps } from '../shared/engine.js'
 import { addDays, weekdayOf, nyTs } from '../shared/time.js'
 import { archiveStatus, fillArchive, loadDays, dayBars, EXTRA_SYMBOLS } from '../server/archive.js'
 import { db, q, getMeta, setMeta } from '../server/db.js'
-import { klinesBack, account, hasKeys, tickers } from '../server/bitunix.js'
+import { klinesBack, account, hasKeys, tickers, tradingPairs } from '../server/bitunix.js'
 import { nyInfo } from '../server/session.js'
 import { durationStats, durationText, getPairs } from '../server/scanner.js'
 import { refreshContexts, generateContext } from '../server/context.js'
@@ -31,6 +31,14 @@ const TF = {
   '4h': { bx: '4h', n: 400, ttl: 600 },
   '1d': { bx: '1d', n: 400, ttl: 1800 },
 }
+
+// Pagina RSI: candele di qualunque coppia Bitunix (solo dati pubblici). ttl = cache della CDN in secondi,
+// così più schede aperte non moltiplicano le richieste a Bitunix.
+const RSI_TF = {
+  '1m': { n: 300, ttl: 10 }, '3m': { n: 300, ttl: 20 }, '5m': { n: 300, ttl: 30 }, '15m': { n: 300, ttl: 60 },
+  '1h': { n: 300, ttl: 120 }, '4h': { n: 300, ttl: 300 }, '1d': { n: 300, ttl: 600 },
+}
+let rsiPairs = null // { at, list } coppie aperte di Bitunix, rilette ogni ora
 
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status } }
 const safeEq = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b))
@@ -342,6 +350,20 @@ async function route(req, url) {
     if (!a || !tf) throw new HttpError(400, 'Parametri non validi')
     const bars = await klinesBack(a.perp, tf.bx, tf.n)
     return { __cache: tf.ttl, symbol: a.symbol, tf: tfKey, bars }
+  }
+
+  if (path === '/rsi/pairs' && m === 'GET') {
+    if (!rsiPairs || Date.now() - rsiPairs.at > 3600000) rsiPairs = { at: Date.now(), list: (await tradingPairs()).map(p => p.symbol).sort() }
+    return { __cache: 3600, symbols: rsiPairs.list }
+  }
+
+  if (path === '/rsi/candles' && m === 'GET') {
+    const sym = (url.searchParams.get('symbol') || '').toUpperCase(), tfKey = url.searchParams.get('tf') || '', tf = RSI_TF[tfKey]
+    if (!/^[A-Z0-9]{2,24}$/.test(sym) || !tf) throw new HttpError(400, 'Parametri non validi')
+    let bars
+    try { bars = await klinesBack(sym, tfKey, tf.n) } catch { throw new HttpError(502, `Candele di ${sym} non disponibili su Bitunix`) }
+    if (!bars.length) throw new HttpError(404, `${sym} non ha candele su Bitunix`)
+    return { __cache: tf.ttl, symbol: sym, tf: tfKey, bars }
   }
 
   if (path === '/signals' && m === 'GET') {

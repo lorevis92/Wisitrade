@@ -28,6 +28,7 @@ export function Navbar({ pushOn, live }) {
           <NavLink to="/watchlist" className={({ isActive }) => `tab ${isActive ? 'active' : ''}`}>Watchlist</NavLink>
           <NavLink to="/strategia" className={({ isActive }) => `tab ${isActive ? 'active' : ''}`}>Strategia</NavLink>
           <NavLink to="/calendario" className={({ isActive }) => `tab ${isActive ? 'active' : ''}`}>Calendario</NavLink>
+          <NavLink to="/rsi" className={({ isActive }) => `tab ${isActive ? 'active' : ''}`}>RSI</NavLink>
         </nav>
       </div>
     </header>

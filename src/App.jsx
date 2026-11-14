@@ -7,6 +7,7 @@ import Calendar from './pages/Calendar.jsx'
 import Asset from './pages/Asset.jsx'
 import Settings from './pages/Settings.jsx'
 import Strategy from './pages/Strategy.jsx'
+import Rsi from './pages/Rsi.jsx'
 import { get } from './lib/api.js'
 import { load, save } from './lib/store.js'
 import { registerSW, currentSubscription, syncSubscription } from './lib/push.js'
@@ -55,6 +56,7 @@ export default function App() {
             <Route path="/watchlist" element={<Watchlist />} />
             <Route path="/strategia" element={<Strategy />} />
             <Route path="/calendario" element={<Calendar />} />
+            <Route path="/rsi" element={<Rsi />} />
             <Route path="/asset/:symbol" element={<Asset />} />
             <Route path="/impostazioni" element={<Settings />} />
             <Route path="*" element={<Live />} />
