@@ -248,31 +248,32 @@ export function narrate({ price, levels, atr4h, near = LEVELS_DEFAULTS.near, rea
   // 3. Lettura combinata: livello × stocastico
   const F = sp.fav, word = F?.word, ext = F ? list(F.ext) : '', crs = F ? list(F.cross) : ''
   const lv = focus ? `${role} ${focus.strong ? 'forte' : 'debole'} a ${fmt(focus.p)}` : ''
+  const Lv = lv ? lv[0].toUpperCase() + lv.slice(1) : ''
   const M = {
     strong: {
-      cross: `Punto interessante: ${lv} e K incrocia D ${F?.cw} su ${crs}. Livello solido e primo segnale di reazione nello stesso punto: è la combinazione da guardare, aspettando che la candela chiuda e che il prezzo non chiuda oltre il livello.`,
-      extreme: `Punto interessante in preparazione: ${lv} con lo stocastico in ${word} su ${ext}. Manca ancora l'incrocio K/D che confermi la reazione: finché non arriva il prezzo può ancora spingersi dentro la zona.`,
-      against: `Attenzione: ${lv}, ma lo stocastico sui timeframe grandi (${list(sp.against)}) ha appena girato ${F?.cw === "verso l'alto" ? 'verso il basso' : "verso l'alto"}, cioè contro la reazione che ci si aspetterebbe. Il livello è buono, il tempismo no: meglio aspettare.`,
-      opposite: `${lv[0].toUpperCase() + lv.slice(1)}, ma lo stocastico è all'estremo opposto (${list(sp.opp.ext)} in ${sp.opp.word}): il prezzo ci arriva con spinta${dir > 0 ? ' e senza essere sceso abbastanza' : ' e senza essere salito abbastanza'}. Non è un segnale di reazione; se il livello cede, il movimento può continuare.`,
-      neutral: `${lv[0].toUpperCase() + lv.slice(1)}, con lo stocastico neutro: il livello c'è ma manca un segnale di esaurimento. Da tenere d'occhio se i timeframe piccoli vanno in ${dir > 0 ? 'ipervenduto' : 'ipercomprato'} o se K incrocia D ${dir > 0 ? "verso l'alto" : 'verso il basso'}.`,
-      none: `${lv[0].toUpperCase() + lv.slice(1)}; lo stocastico non è ancora caricato.`,
+      cross: () => `Punto interessante: ${lv} e K incrocia D ${F?.cw} su ${crs}. Livello solido e primo segnale di reazione nello stesso punto: è la combinazione da guardare, aspettando che la candela chiuda e che il prezzo non chiuda oltre il livello.`,
+      extreme: () => `Punto interessante in preparazione: ${lv} con lo stocastico in ${word} su ${ext}. Manca ancora l'incrocio K/D che confermi la reazione: finché non arriva il prezzo può ancora spingersi dentro la zona.`,
+      against: () => `Attenzione: ${lv}, ma lo stocastico sui timeframe grandi (${list(sp.against)}) ha appena girato ${F?.cw === "verso l'alto" ? 'verso il basso' : "verso l'alto"}, cioè contro la reazione che ci si aspetterebbe. Il livello è buono, il tempismo no: meglio aspettare.`,
+      opposite: () => `${Lv}, ma lo stocastico è all'estremo opposto (${list(sp.opp.ext)} in ${sp.opp.word}): il prezzo ci arriva con spinta${dir > 0 ? ' e senza essere sceso abbastanza' : ' e senza essere salito abbastanza'}. Non è un segnale di reazione; se il livello cede, il movimento può continuare.`,
+      neutral: () => `${Lv}, con lo stocastico neutro: il livello c'è ma manca un segnale di esaurimento. Da tenere d'occhio se i timeframe piccoli vanno in ${dir > 0 ? 'ipervenduto' : 'ipercomprato'} o se K incrocia D ${dir > 0 ? "verso l'alto" : 'verso il basso'}.`,
+      none: () => `${Lv}; lo stocastico non è ancora caricato.`,
     },
     weak: {
-      cross: `Segnale su un livello debole: ${lv} e K incrocia D ${F?.cw} su ${crs}. Lo stocastico dà il segnale ma il livello non ha il volume dietro: reazione possibile ma meno affidabile, spesso breve.`,
-      extreme: `${lv[0].toUpperCase() + lv.slice(1)} con lo stocastico in ${word} su ${ext}: c'è esaurimento ma il livello è debole e senza incrocio K/D. Probabile una pausa più che un'inversione.`,
-      against: `${lv[0].toUpperCase() + lv.slice(1)} e lo stocastico grande (${list(sp.against)}) ha appena girato contro: livello debole e tempismo sfavorevole, probabile che venga attraversato.`,
-      opposite: `${lv[0].toUpperCase() + lv.slice(1)} con lo stocastico all'estremo opposto (${list(sp.opp.ext)} in ${sp.opp.word}): il prezzo arriva con forza su un livello che regge poco. È più facile che lo passi.`,
-      neutral: `${lv[0].toUpperCase() + lv.slice(1)} e stocastico neutro: niente di particolare, né il livello né l'indicatore danno un segnale chiaro.`,
-      none: `${lv[0].toUpperCase() + lv.slice(1)}; lo stocastico non è ancora caricato.`,
+      cross: () => `Segnale su un livello debole: ${lv} e K incrocia D ${F?.cw} su ${crs}. Lo stocastico dà il segnale ma il livello non ha il volume dietro: reazione possibile ma meno affidabile, spesso breve.`,
+      extreme: () => `${Lv} con lo stocastico in ${word} su ${ext}: c'è esaurimento ma il livello è debole e senza incrocio K/D. Probabile una pausa più che un'inversione.`,
+      against: () => `${Lv} e lo stocastico grande (${list(sp.against)}) ha appena girato contro: livello debole e tempismo sfavorevole, probabile che venga attraversato.`,
+      opposite: () => `${Lv} con lo stocastico all'estremo opposto (${list(sp.opp.ext)} in ${sp.opp.word}): il prezzo arriva con forza su un livello che regge poco. È più facile che lo passi.`,
+      neutral: () => `${Lv} e stocastico neutro: niente di particolare, né il livello né l'indicatore danno un segnale chiaro.`,
+      none: () => `${Lv}; lo stocastico non è ancora caricato.`,
     },
     none: {
-      cross: `Lo stocastico dà un incrocio in zona estrema (${list(spLevel.ready.filter(tf => reads[tf].cross?.ago <= 2 && reads[tf].cross.inZone))}), ma il prezzo non è vicino a nessun livello: un segnale senza un punto di appoggio vale poco, il prezzo può continuare fino al livello successivo.`,
-      extreme: `Lo stocastico è in zona estrema (${spLevel.os.length >= spLevel.ob.length ? `${list(spLevel.os)} in ipervenduto` : `${list(spLevel.ob)} in ipercomprato`}) ma lontano dai livelli: l'esaurimento da solo non basta, conviene aspettare che il prezzo arrivi su un livello.`,
-      neutral: 'Né livello vicino né segnale dallo stocastico: situazione senza punti di interesse, meglio aspettare.',
-      none: 'Nessun livello vicino; lo stocastico non è ancora caricato.',
+      cross: () => `Lo stocastico dà un incrocio in zona estrema (${list(spLevel.ready.filter(tf => reads[tf].cross?.ago <= 2 && reads[tf].cross.inZone))}), ma il prezzo non è vicino a nessun livello: un segnale senza un punto di appoggio vale poco, il prezzo può continuare fino al livello successivo.`,
+      extreme: () => `Lo stocastico è in zona estrema (${spLevel.os.length >= spLevel.ob.length ? `${list(spLevel.os)} in ipervenduto` : `${list(spLevel.ob)} in ipercomprato`}) ma lontano dai livelli: l'esaurimento da solo non basta, conviene aspettare che il prezzo arrivi su un livello.`,
+      neutral: () => 'Né livello vicino né segnale dallo stocastico: situazione senza punti di interesse, meglio aspettare.',
+      none: () => 'Nessun livello vicino; lo stocastico non è ancora caricato.',
     },
   }
-  const combo = (M[prox][focus ? sp.cat : spLevel.cat]) || M[prox].neutral
+  const combo = (M[prox][focus ? sp.cat : spLevel.cat] || M[prox].neutral)()
   let tone = 'neutral'
   if (prox === 'strong' && sp.cat === 'cross') tone = 'interesting'
   else if (prox === 'strong' && sp.cat === 'extreme') tone = 'watch'
@@ -304,7 +305,7 @@ export function narrate({ price, levels, atr4h, near = LEVELS_DEFAULTS.near, rea
     interesting: `Punto interessante: ${lv} con segnale dello stocastico`,
     watch: focus ? `Da seguire: ${lv}` : 'Da seguire',
     risk: 'Contesto a rischio',
-    neutral: focus ? `${lv[0].toUpperCase() + lv.slice(1)}, nessun segnale` : 'Nessun punto di interesse',
+    neutral: focus ? `${Lv}, nessun segnale` : 'Nessun punto di interesse',
   }[tone]
   blocks.push({ title: 'Trend a 4 ore', text: `Trend di fondo ${trWord} (prezzo rispetto alla media a 50 candele da 4 ore e la sua pendenza).` })
   return { tone, headline, blocks, warnings, focus, dir, sp }
