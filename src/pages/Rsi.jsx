@@ -19,7 +19,7 @@ const fmtP = v => (v === null || v === undefined ? '—' : `${v >= 0 ? '+' : ''}
 const agoText = n => (n === 0 ? 'candela in corso' : n === 1 ? '1 candela fa' : `${n} candele fa`)
 const timeOf = (t, tf) => new Date(t).toLocaleString('it-CH', tf === '1d' ? { day: '2-digit', month: 'short' } : { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
 
-function cleanParams(p) {
+export function cleanParams(p) {
   const out = { ...RSI_DEFAULTS }
   for (const [k, [lo, hi]] of Object.entries(LIMITS)) { const v = Math.round(+p?.[k]); if (Number.isFinite(v) && v >= lo && v <= hi) out[k] = v }
   if (out.low >= out.high) { out.low = RSI_DEFAULTS.low; out.high = RSI_DEFAULTS.high }
@@ -52,7 +52,7 @@ function StatePill({ state }) {
   return <span className={`pill ${state === 'oversold' ? 'long' : state === 'overbought' ? 'short' : 'neutral'}`}>{STATE[state]}</span>
 }
 
-function TfCard({ tf, entry, read, params, onOpen }) {
+export function TfCard({ tf, entry, read, params, onOpen }) {
   const bars = entry?.bars
   return (
     <div role="button" tabIndex={0} onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onOpen())} className={`rsi-card ${read?.state && read.state !== 'neutral' ? 'lit' : ''} ${isPulse(read) ? 'pulse' : ''}`} style={glowStyle(read)} onClick={onOpen}>
@@ -85,7 +85,7 @@ function exitStats(exits, from) {
   return { n: xs.length, a5: avg(xs.filter(e => e.a5 !== null).map(e => e.a5)), a10: avg(xs.map(e => e.a10)), right: xs.filter(e => dir * e.a10 > 0).length }
 }
 
-function BigView({ symbol, tf, entry, read, params, onClose }) {
+export function BigView({ symbol, tf, entry, read, params, onClose }) {
   useEffect(() => {
     const onKey = e => e.key === 'Escape' && onClose()
     document.addEventListener('keydown', onKey)
@@ -221,8 +221,8 @@ function Settings({ params, setParams }) {
   )
 }
 
-function Summary({ reads }) {
-  const order = [...TFS].reverse()
+export function Summary({ reads, tfs = TFS }) {
+  const order = [...tfs].reverse()
   const ready = order.filter(tf => reads[tf]?.state)
   const nOs = ready.filter(tf => reads[tf].state === 'oversold').length, nOb = ready.filter(tf => reads[tf].state === 'overbought').length
   const nUp = ready.filter(tf => reads[tf].K > reads[tf].D).length

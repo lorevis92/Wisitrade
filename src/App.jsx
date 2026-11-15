@@ -9,6 +9,7 @@ import Settings from './pages/Settings.jsx'
 import Strategy from './pages/Strategy.jsx'
 import Rsi from './pages/Rsi.jsx'
 import Range from './pages/Range.jsx'
+import Levels from './pages/Levels.jsx'
 import { get } from './lib/api.js'
 import { load, save } from './lib/store.js'
 import { registerSW, currentSubscription, syncSubscription } from './lib/push.js'
@@ -59,6 +60,7 @@ export default function App() {
             <Route path="/calendario" element={<Calendar />} />
             <Route path="/rsi" element={<Rsi />} />
             <Route path="/range" element={<Range />} />
+            <Route path="/livelli" element={<Levels />} />
             <Route path="/asset/:symbol" element={<Asset />} />
             <Route path="/impostazioni" element={<Settings />} />
             <Route path="*" element={<Live />} />

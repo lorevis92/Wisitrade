@@ -15,7 +15,7 @@ function Logo() {
 
 // Menu ad hamburger: tutte le sezioni in gruppi; la voce della pagina aperta è evidenziata. Gli indirizzi non cambiano.
 const MENU = [
-  ['Mercato', [['/', 'Live'], ['/watchlist', 'Watchlist'], ['/calendario', 'Calendario']]],
+  ['Mercato', [['/', 'Live'], ['/watchlist', 'Watchlist'], ['/calendario', 'Calendario'], ['/livelli', 'Livelli']]],
   ['Strategie', [['/strategia', 'Apertura USA'], ['/rsi', 'RSI'], ['/range', 'Range']]],
   ['Impostazioni', [['/impostazioni', 'Impostazioni']]],
 ]
