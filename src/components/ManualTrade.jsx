@@ -1,7 +1,7 @@
 // Ordini manuali dalla pagina RSI: apertura a mercato LONG/SHORT senza stop loss, posizioni aperte con CHIUDI, storico.
 // Solo con il codice di controllo; le regole di sicurezza sono sul server (server/manual.js).
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { get, post, fmtPrice, fmtSigned } from '../lib/api.js'
+import { get, post, fmtPrice, fmtSigned, fmtUsd } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
 import { liqPriceOf } from '@shared/opening.js'
 
@@ -57,20 +57,22 @@ function useNow(active) {
   return now
 }
 
-export function ManualPanel({ symbol, price, suggestion, makeSnapshot, positions, reloadPositions, onAuthError }) {
+export function ManualPanel({ symbol, price, suggestion, makeSnapshot, positions, reloadPositions, onAuthError, mode = 'live' }) {
+  const paper = mode === 'paper', mq = paper ? '&mode=paper' : ''
   const [info, setInfo] = useState(null)
   const [err, setErr] = useState(null)
-  const [prefs, setPrefsRaw] = useState(() => ({ leverage: 5, margin: 10, confirm: true, ...load('manualPrefs', {}) }))
+  const prefKey = paper ? 'manualPrefsPaper' : 'manualPrefs'
+  const [prefs, setPrefsRaw] = useState(() => ({ leverage: 5, margin: 10, confirm: true, ...load(prefKey, {}) }))
   const [levTxt, setLevTxt] = useState(String(prefs.leverage))
   const [mgTxt, setMgTxt] = useState(String(prefs.margin))
   const [pending, setPending] = useState(null) // lato in attesa di conferma
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState(null)
-  const setPrefs = p => setPrefsRaw(x => { const n = { ...x, ...p }; save('manualPrefs', n); return n })
+  const setPrefs = p => setPrefsRaw(x => { const n = { ...x, ...p }; save(prefKey, n); return n })
 
-  const loadInfo = useCallback(() => get(`/api/manual/info?symbol=${encodeURIComponent(symbol)}`)
+  const loadInfo = useCallback(() => get(`/api/manual/info?symbol=${encodeURIComponent(symbol)}${mq}`)
     .then(j => { setInfo(j); setErr(null) })
-    .catch(e => { if (/codice/i.test(e.message)) onAuthError(); else setErr(e.message) }), [symbol, onAuthError])
+    .catch(e => { if (/codice/i.test(e.message)) onAuthError(); else setErr(e.message) }), [symbol, onAuthError, mq])
   useEffect(() => { setInfo(null); setPending(null); setMsg(null); loadInfo(); const id = setInterval(loadInfo, 30000); return () => clearInterval(id) }, [loadInfo])
 
   const lev = Math.round(+levTxt), margin = +mgTxt
@@ -89,7 +91,7 @@ export function ManualPanel({ symbol, price, suggestion, makeSnapshot, positions
   if (info?.pair?.api === false) problems.push('Bitunix non accetta ordini via API su questa coppia')
   if (info?.strategyOpen) problems.push('La strategia ha una posizione aperta su questo titolo')
   if (info?.strategyWindow) problems.push(info.strategyWindow[0].toUpperCase() + info.strategyWindow.slice(1))
-  if (mineHere) problems.push('Hai già una posizione manuale su questo titolo: chiudila prima')
+  if (mineHere) problems.push(`Hai già una posizione ${paper ? 'di prova' : 'manuale'} su questo titolo: chiudila prima`)
   if (!(lev >= 1)) problems.push('Leva non valida')
   else if (Number.isFinite(maxLev) && lev > maxLev) problems.push(`Leva oltre il massimo di Bitunix (${maxLev}x)`)
   if (!(margin >= 1)) problems.push('Margine minimo 1 USDT')
@@ -100,8 +102,8 @@ export function ManualPanel({ symbol, price, suggestion, makeSnapshot, positions
   const send = async side => {
     setBusy(true); setMsg(null); setPending(null)
     try {
-      const { trade } = await post('/api/manual/open', { symbol, side, leverage: lev, margin, snapshot: makeSnapshot() })
-      setMsg({ ok: true, text: `${sideName(side)} aperto: ${trade.qty} ${short(symbol)} a ${fmtPrice(trade.entry)}` })
+      const { trade } = await post('/api/manual/open', { symbol, side, leverage: lev, margin, snapshot: makeSnapshot(), mode })
+      setMsg({ ok: true, text: `${sideName(side)} ${paper ? 'di prova ' : ''}aperto: ${trade.qty} ${short(symbol)} a ${fmtPrice(trade.entry)}` })
     } catch (e) {
       if (/codice/i.test(e.message)) onAuthError()
       setMsg({ ok: false, text: e.message })
@@ -161,12 +163,14 @@ export function ManualPanel({ symbol, price, suggestion, makeSnapshot, positions
       {problems.length > 0 && info && <div className="warn">{problems.join(' · ')}</div>}
       {err && <div className="note down" style={{ marginTop: 6 }}>{err}</div>}
       {msg && <div className={`note ${msg.ok ? 'up' : 'down'}`} style={{ marginTop: 6 }}>{msg.text}</div>}
-      <p className="note" style={{ marginTop: 6 }}>Ordine a mercato su Bitunix, margine isolato, senza stop loss: puoi perdere al massimo il margine. Liquidazione stimata dal prezzo attuale ({price ? fmtPrice(price) : '—'}). Separati dalla strategia: non usano il suo capitale e non contano nei suoi risultati.</p>
+      {paper
+        ? <p className="note" style={{ marginTop: 6 }}>Prova: nessun ordine parte. Esecuzione al prezzo di Bitunix di quel momento con slittamento 0,05% e commissione 0,06% per lato, margine isolato con liquidazione simulata (si perde il margine). Capitale fittizio, separato da tutto il resto. Liquidazione stimata dal prezzo attuale ({price ? fmtPrice(price) : '—'}).</p>
+        : <p className="note" style={{ marginTop: 6 }}>Ordine a mercato su Bitunix, margine isolato, senza stop loss: puoi perdere al massimo il margine. Liquidazione stimata dal prezzo attuale ({price ? fmtPrice(price) : '—'}). Separati dalla strategia: non usano il suo capitale e non contano nei suoi risultati.</p>}
     </div>
   )
 }
 
-export function ManualPositions({ positions, reloadPositions, onAuthError }) {
+export function ManualPositions({ positions, reloadPositions, onAuthError, mode = 'live' }) {
   const [closing, setClosing] = useState({})
   const [msg, setMsg] = useState(null)
   const open = positions?.open || []
@@ -174,14 +178,14 @@ export function ManualPositions({ positions, reloadPositions, onAuthError }) {
   const close = async t => {
     setClosing(c => ({ ...c, [t.id]: true })); setMsg(null)
     try {
-      const { trade } = await post('/api/manual/close', { id: t.id })
+      const { trade } = await post('/api/manual/close', { id: t.id, mode })
       setMsg({ ok: true, text: `${short(t.perp)} chiusa${trade.pnl !== null ? `: ${fmtSigned(trade.pnl)} USDT` : ''}` })
     } catch (e) { if (/codice/i.test(e.message)) onAuthError(); setMsg({ ok: false, text: e.message }) } finally { setClosing(c => ({ ...c, [t.id]: false })); reloadPositions() }
   }
   if (!open.length && !msg) return null
   return (
     <div className="card" style={{ padding: 12 }}>
-      <div className="lab">Posizioni manuali aperte</div>
+      <div className="lab">{mode === 'paper' ? 'Posizioni di prova aperte' : 'Posizioni manuali aperte'}</div>
       {open.map(t => (
         <div key={t.id} className="mpos">
           <div className="mpos-main">
@@ -224,7 +228,7 @@ function SnapDetail({ t }) {
   )
 }
 
-export function ManualHistory({ positions }) {
+export function ManualHistory({ positions, mode = 'live' }) {
   const [openId, setOpenId] = useState(null)
   const hist = positions?.history || []
   const stats = useMemo(() => {
@@ -236,7 +240,7 @@ export function ManualHistory({ positions }) {
   const row = (label, s) => s.n > 0 && <div><span className="muted">{label}</span> <b>{s.n}</b> trade · vinti {s.win} · <b className={tone(s.pnl)}>{fmtSigned(s.pnl)} USDT</b></div>
   return (
     <div className="card" style={{ padding: 12 }}>
-      <div className="lab">Storico ordini manuali</div>
+      <div className="lab">{mode === 'paper' ? 'Diario degli ordini di prova' : 'Storico ordini manuali'}</div>
       <div className="manual-calc mono" style={{ gridTemplateColumns: '1fr' }}>
         {row('totale', stats.all)}
         {row('seguendo il suggerimento', stats.follow)}
@@ -255,7 +259,7 @@ export function ManualHistory({ positions }) {
                   <td>{short(t.perp)}</td>
                   <td className={t.side > 0 ? 'up' : 'down'}>{sideName(t.side)}</td>
                   <td className={sg === 1 ? 'up' : sg === -1 ? 'down' : 'muted'}>{sg ? sideName(sg) : '—'}{sg ? (sg === t.side ? ' ✓' : ' ✗') : ''}</td>
-                  <td className={tone(t.pnl)}>{t.status === 'unknown' ? 'da verificare' : t.pnl !== null && t.pnl !== undefined ? fmtSigned(t.pnl) : '—'}</td>
+                  <td className={tone(t.pnl)}>{t.status === 'unknown' ? 'da verificare' : t.liquidated ? `liquidata ${fmtSigned(t.pnl)}` : t.pnl !== null && t.pnl !== undefined ? fmtSigned(t.pnl) : '—'}</td>
                   <td className={tone(t.pnl)}>{pctTxt(t.pnlPct)}</td>
                   <td>{dur(t.durationMs)}</td>
                 </tr>,
@@ -265,20 +269,21 @@ export function ManualHistory({ positions }) {
           </tbody>
         </table>
       </div>
-      <p className="note" style={{ marginTop: 6 }}>Tocca un trade per vedere lo Stocastico RSI di tutti i timeframe al momento dell'apertura. Risultato con commissioni e funding veri di Bitunix; % sul margine.</p>
+      <p className="note" style={{ marginTop: 6 }}>Tocca un trade per vedere lo Stocastico RSI di tutti i timeframe al momento dell'apertura. {mode === 'paper' ? 'Risultato con commissioni e slittamento simulati' : 'Risultato con commissioni e funding veri di Bitunix'}; % sul margine.</p>
     </div>
   )
 }
 
 // Stato condiviso: codice, posizioni (ogni 2 s con posizioni aperte, altrimenti ogni 20 s; ferme a pagina nascosta)
-export function useManual() {
+export function useManual(mode = 'live') {
   const [authed, setAuthed] = useState(() => !!load('adminCode', ''))
   const [positions, setPositions] = useState(null)
   const onAuthError = useCallback(() => { save('adminCode', ''); setAuthed(false) }, [])
   const reloadPositions = useCallback(() => {
     if (!load('adminCode', '') || document.visibilityState === 'hidden') return Promise.resolve()
-    return get('/api/manual/positions').then(setPositions).catch(e => { if (/codice/i.test(e.message)) onAuthError() })
-  }, [onAuthError])
+    return get(`/api/manual/positions${mode === 'paper' ? '?mode=paper' : ''}`).then(setPositions).catch(e => { if (/codice/i.test(e.message)) onAuthError() })
+  }, [onAuthError, mode])
+  useEffect(() => { setPositions(null) }, [mode])
   const hasOpen = !!positions?.open?.length
   useEffect(() => {
     if (!authed) return
@@ -287,4 +292,43 @@ export function useManual() {
     return () => clearInterval(id)
   }, [authed, hasOpen, reloadPositions])
   return { authed, setAuthed, positions, reloadPositions, onAuthError, Gate }
+}
+
+// Conto di prova degli ordini manuali RSI: capitale, risultato, andamento e azzeramento
+export function Sparkline({ points, height = 60 }) {
+  if (!points || points.length < 2) return <div className="note">L'andamento compare dopo il primo trade chiuso.</div>
+  const xs = points.map(p => p.t), ys = points.map(p => p.v)
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys)
+  const W = 300, H = height, sx = x => (x1 > x0 ? (x - x0) / (x1 - x0) * W : 0), sy = y => (y1 > y0 ? H - (y - y0) / (y1 - y0) * (H - 6) - 3 : H / 2)
+  const d = points.map((p, i) => `${i ? 'L' : 'M'}${sx(p.t).toFixed(1)},${sy(p.v).toFixed(1)}`).join(' ')
+  const up = ys.at(-1) >= ys[0]
+  return <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height }}><path d={d} fill="none" stroke={up ? '#00E5C7' : '#FF5C7A'} strokeWidth="2" vectorEffect="non-scaling-stroke" /></svg>
+}
+
+export function PaperAccount({ positions, reloadPositions, onAuthError }) {
+  const acc = positions?.account
+  const [cap, setCap] = useState('')
+  const [msg, setMsg] = useState(null)
+  if (!acc) return null
+  const res = acc.balance - acc.start
+  const reset = async () => {
+    const c = +(cap || acc.start)
+    try { await post('/api/manual/reset', { capital: c, mode: 'paper' }); setMsg({ ok: true, text: `Conto di prova azzerato: ${fmtUsd(c)} USDT` }); setCap(''); reloadPositions() } catch (e) { if (/codice/i.test(e.message)) onAuthError(); setMsg({ ok: false, text: e.message }) }
+  }
+  return (
+    <div className="card" style={{ padding: 12 }}>
+      <div className="row"><span className="lab">Conto di prova · RSI</span><span className="note mono">dal {when(acc.startAt)}</span></div>
+      <div className="manual-calc mono">
+        <div><span className="muted">capitale</span> <b>{fmtUsd(acc.balance)} USDT</b></div>
+        <div><span className="muted">risultato</span> <b className={tone(res)}>{fmtSigned(res)} USDT ({pctTxt(res / acc.start * 100)})</b></div>
+      </div>
+      <Sparkline points={(acc.curve || []).map(p => ({ t: p.t, v: p.balance }))} />
+      <div className="row" style={{ marginTop: 8, gap: 8 }}>
+        <div className="input-suffix" style={{ flex: 1 }}><input type="number" inputMode="decimal" placeholder={`capitale di partenza (ora ${acc.start})`} value={cap} onChange={e => setCap(e.target.value)} /><span>USDT</span></div>
+        <button className="chip" onClick={reset}>Azzera il conto</button>
+      </div>
+      {msg && <div className={`note ${msg.ok ? 'up' : 'down'}`} style={{ marginTop: 6 }}>{msg.text}</div>}
+      <p className="note" style={{ marginTop: 6 }}>Capitale fittizio, solo per la strategia RSI. Azzerare chiude le posizioni di prova aperte senza risultato e riparte dal capitale scelto; il diario precedente resta salvato ma non conta più.</p>
+    </div>
+  )
 }

@@ -63,7 +63,7 @@ export async function getRegistry() {
   const follow = await getFollow()
   try {
     const rows = await q(db().from('wt_range_trades').select('*').order('created_at', { ascending: false }).limit(2000))
-    return { rows, follow, error: null, lastError: await getMeta(REG_ERR).catch(() => null) }
+    return { rows, follow, paper: await getMeta('range:paper').catch(() => null), error: null, lastError: await getMeta(REG_ERR).catch(() => null) }
   } catch (e) {
     return { rows: [], follow, error: /wt_range_trades/.test(e.message) ? TABLE_HINT : e.message }
   }

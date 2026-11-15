@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { NavLink, Link } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { NavLink, Link, useLocation } from 'react-router-dom'
 
 function Logo() {
   const [img, setImg] = useState(true)
@@ -12,26 +12,55 @@ function Logo() {
   )
 }
 
+// Menu ad hamburger: tutte le sezioni in gruppi; la voce della pagina aperta è evidenziata. Gli indirizzi non cambiano.
+const MENU = [
+  ['Mercato', [['/', 'Live'], ['/watchlist', 'Watchlist'], ['/calendario', 'Calendario']]],
+  ['Strategie', [['/strategia', 'Apertura USA'], ['/rsi', 'RSI'], ['/range', 'Range']]],
+  [null, [['/impostazioni', 'Impostazioni']]],
+]
+const sectionOf = path => MENU.flatMap(([, items]) => items).find(([to]) => (to === '/' ? path === '/' : path.startsWith(to)))?.[1] || ''
+
 export function Navbar({ pushOn, live }) {
+  const [open, setOpen] = useState(false)
+  const loc = useLocation()
+  useEffect(() => { setOpen(false) }, [loc.pathname])
+  useEffect(() => {
+    if (!open) return
+    const onKey = e => e.key === 'Escape' && setOpen(false)
+    document.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow; document.body.style.overflow = 'hidden'
+    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = prev }
+  }, [open])
+  const here = sectionOf(loc.pathname)
   return (
     <header className="nav">
       <div className="wrap">
         <div className="nav-top">
-          <Link to="/impostazioni" className="icon-btn" aria-label="Menu">☰</Link>
+          <button className="icon-btn" aria-label="Menu" aria-expanded={open} onClick={() => setOpen(true)}>☰ <span className="nav-here">{here}</span></button>
           <Logo />
           <Link to="/impostazioni" className={`icon-btn ${pushOn ? 'on' : ''}`} aria-label="Notifiche">
             <span className={`dot ${live ? '' : 'off'}`} /> {pushOn ? 'ON' : 'OFF'}
           </Link>
         </div>
-        <nav className="tabs">
-          <NavLink to="/" end className={({ isActive }) => `tab ${isActive ? 'active' : ''}`}>Live</NavLink>
-          <NavLink to="/watchlist" className={({ isActive }) => `tab ${isActive ? 'active' : ''}`}>Watchlist</NavLink>
-          <NavLink to="/strategia" className={({ isActive }) => `tab ${isActive ? 'active' : ''}`}>Strategia</NavLink>
-          <NavLink to="/calendario" className={({ isActive }) => `tab ${isActive ? 'active' : ''}`}>Calendario</NavLink>
-          <NavLink to="/rsi" className={({ isActive }) => `tab ${isActive ? 'active' : ''}`}>RSI</NavLink>
-          <NavLink to="/range" className={({ isActive }) => `tab ${isActive ? 'active' : ''}`}>Range</NavLink>
-        </nav>
       </div>
+      {open && (
+        <div className="menu-bg" onClick={() => setOpen(false)}>
+          <nav className="menu" onClick={e => e.stopPropagation()} aria-label="Sezioni">
+            <div className="row" style={{ marginBottom: 6 }}>
+              <span className="lab">Wisi Trade</span>
+              <button className="icon-btn" aria-label="Chiudi il menu" onClick={() => setOpen(false)}>✕</button>
+            </div>
+            {MENU.map(([group, items], i) => (
+              <div key={i} className="menu-group">
+                {group && <div className="menu-title">{group}</div>}
+                {items.map(([to, label]) => (
+                  <NavLink key={to} to={to} end={to === '/'} className={({ isActive }) => `menu-item ${isActive ? 'active' : ''}`}>{label}</NavLink>
+                ))}
+              </div>
+            ))}
+          </nav>
+        </div>
+      )}
     </header>
   )
 }

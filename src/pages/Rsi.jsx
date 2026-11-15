@@ -3,7 +3,8 @@ import RsiChart from '../components/RsiChart.jsx'
 import { get, fmtPrice } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
 import { readStoch, suggest, RSI_DEFAULTS } from '../lib/stochrsi.js'
-import { ManualPanel, ManualPositions, ManualHistory, useManual, snapshotOf } from '../components/ManualTrade.jsx'
+import { ManualPanel, ManualPositions, ManualHistory, PaperAccount, useManual, snapshotOf } from '../components/ManualTrade.jsx'
+import StrategyTabs, { useStrategyMode, ComingSoon } from '../components/StrategyTabs.jsx'
 
 export const BASE = ['BTCUSDT', 'ETHUSDT', 'XAUUSDT', 'GOOGLUSDT', 'NVDAUSDT', 'TSLAUSDT', 'MSTRUSDT', 'COINUSDT', 'QQQUSDT']
 export const NAMES = { XAUUSDT: 'oro' }
@@ -284,31 +285,36 @@ export default function Rsi() {
   const reads = useMemo(() => Object.fromEntries(TFS.map(tf => [tf, data[tf]?.bars?.length ? readStoch(data[tf].bars, params) : null])), [data, params])
   const suggestion = useMemo(() => suggest(reads, TFS), [reads])
   const price = data['1m']?.bars?.at(-1)?.c ?? null
-  const manual = useManual()
+  const [mode, setMode] = useStrategyMode('rsi', 'paper')
+  const tradeMode = mode === 'paper' ? 'paper' : 'live'
+  const manual = useManual(tradeMode)
 
   return (
     <div>
       <div className="row" style={{ marginBottom: 10 }}>
         <div>
-          <div className="lab">Stocastico RSI</div>
+          <div className="lab">Strategia · RSI (Stocastico RSI)</div>
           <div style={{ fontSize: 20, fontWeight: 800, marginTop: 2 }}>{short(symbol)}{NAMES[symbol] ? <span className="sec" style={{ fontSize: 14, fontWeight: 600 }}> · {NAMES[symbol]}</span> : null}</div>
         </div>
         <span className="note mono">{symbol}</span>
       </div>
+      <StrategyTabs mode={mode} setMode={setMode} />
       <SymbolPicker symbol={symbol} setSymbol={setSymbol} custom={custom} setCustom={setCustom} />
       <Summary reads={reads} />
-      {manual.authed
-        ? <>
-            <ManualPanel symbol={symbol} price={price} suggestion={suggestion} makeSnapshot={() => snapshotOf(reads, TFS, suggestion, params)}
-              positions={manual.positions} reloadPositions={manual.reloadPositions} onAuthError={manual.onAuthError} />
-            <ManualPositions positions={manual.positions} reloadPositions={manual.reloadPositions} onAuthError={manual.onAuthError} />
-          </>
-        : <manual.Gate onOk={() => manual.setAuthed(true)} />}
       <div className="rsi-grid">
         {TFS.map(tf => <TfCard key={symbol + tf} tf={tf} entry={data[tf]} read={reads[tf]} params={params} onOpen={() => setOpen(tf)} />)}
       </div>
+      {mode === 'sim' ? <ComingSoon what="Simulazione della strategia RSI sullo storico" />
+        : manual.authed
+          ? <>
+              {mode === 'paper' && <PaperAccount positions={manual.positions} reloadPositions={manual.reloadPositions} onAuthError={manual.onAuthError} />}
+              <ManualPanel key={tradeMode} mode={tradeMode} symbol={symbol} price={price} suggestion={suggestion} makeSnapshot={() => snapshotOf(reads, TFS, suggestion, params)}
+                positions={manual.positions} reloadPositions={manual.reloadPositions} onAuthError={manual.onAuthError} />
+              <ManualPositions mode={tradeMode} positions={manual.positions} reloadPositions={manual.reloadPositions} onAuthError={manual.onAuthError} />
+              <ManualHistory mode={tradeMode} positions={manual.positions} />
+            </>
+          : <manual.Gate onOk={() => manual.setAuthed(true)} />}
       <Settings params={params} setParams={setParams} />
-      {manual.authed && <ManualHistory positions={manual.positions} />}
       <p className="note">Candele del perpetual su Bitunix, aggiornate da sole: ogni 15 secondi l'1m, ogni 30 il 3m e il 5m, ogni minuto il 15m, più di rado gli altri. Alone verde = ipervenduto (K sotto {params.low}), rosso = ipercomprato (K sopra {params.high}), più acceso quanto più K è estremo; l'impulso segnala un incrocio K/D dentro una zona estrema. Tocca una card per aprirla in grande.</p>
       {open && <BigView symbol={symbol} tf={open} entry={data[open]} read={reads[open]} params={params} onClose={() => setOpen(null)} />}
     </div>

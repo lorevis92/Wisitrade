@@ -2,6 +2,8 @@
 // Solo analisi: nessun ordine. Regole in shared/range.js (le stesse del server: avvisi push e registro, server/range-alerts.js).
 import { useEffect, useMemo, useRef, useState } from 'react'
 import RangeChart, { TrendChart } from '../components/RangeChart.jsx'
+import StrategyTabs, { useStrategyMode, ComingSoon } from '../components/StrategyTabs.jsx'
+import { Sparkline } from '../components/ManualTrade.jsx'
 import { SymbolPicker, NAMES } from './Rsi.jsx'
 import { get, post, fmtPrice } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
@@ -358,6 +360,68 @@ function StatsTable({ title, rows, keyOf, sc }) {
   )
 }
 const statusText = r => (r.status === 'target' ? 'target raggiunto' : r.status === 'stop' ? 'stop toccato' : String(r.status).startsWith('pareggio dopo') ? `${r.status.slice(-2)}, poi pareggio` : r.status === 'scaduto' ? (r.data?.why || 'non eseguito') : r.status)
+// Conto di prova: ogni setup valido del registro (con quello scenario di costo) diventa un trade che rischia la percentuale
+// scelta del capitale di quel momento; la dimensione viene dallo stop, quindi il risultato in USDT = R netto × rischio in USDT.
+function paperRun(rows, sc, cfg) {
+  const S = SCEN[sc]
+  const list = rows.filter(r => S.valid(r) && r.final && r.fill_at && r[S.net] !== null && r[S.net] !== undefined && r.created_at >= cfg.since)
+    .sort((a, b) => a.fill_at - b.fill_at)
+  const done = []
+  for (const r of list) {
+    const bal = cfg.capital + done.filter(d => d.exit <= r.fill_at).reduce((x, d) => x + d.pnl, 0)
+    const risk = bal * cfg.riskPct / 100
+    done.push({ exit: r.exit_at || r.fill_at, pnl: r[S.net] * risk, fees: (r[S.fees] || 0) * risk, R: r[S.net], gross: (r.r_gross || 0) * risk })
+  }
+  const sorted = done.slice().sort((a, b) => a.exit - b.exit)
+  let b = cfg.capital
+  const curve = [{ t: cfg.since, v: b }, ...sorted.map(d => ({ t: d.exit, v: (b += d.pnl) }))]
+  return { n: done.length, balance: b, pnl: b - cfg.capital, R: done.reduce((x, d) => x + d.R, 0), fees: done.reduce((x, d) => x + d.fees, 0), gross: done.reduce((x, d) => x + d.gross, 0), curve, win: done.filter(d => d.pnl > 0).length }
+}
+function PaperRange({ reg, onSaved }) {
+  const cfg = reg.paper
+  const [cap, setCap] = useState(String(cfg?.capital ?? 300))
+  const [risk, setRisk] = useState(String(cfg?.riskPct ?? 1))
+  const [msg, setMsg] = useState(null)
+  const authed = !!load('adminCode', '')
+  const send = async resetIt => {
+    try { await post('/api/range/paper', { capital: +cap, riskPct: +risk, reset: resetIt }); setMsg({ ok: true, text: resetIt ? 'Conto di prova azzerato: i trade contano da adesso' : 'Impostazioni salvate' }); onSaved() } catch (e) { setMsg({ ok: false, text: e.message }) }
+  }
+  return (
+    <div className="card" style={{ padding: 12 }}>
+      <div className="row"><span className="lab">Conto di prova · Range</span>{cfg && <span className="note mono">dal {when(cfg.since)}</span>}</div>
+      {cfg ? (
+        <div className="rg-paper">
+          {Object.keys(SCEN).map(k => {
+            const r = paperRun(reg.rows || [], k, cfg)
+            return (
+              <div key={k} className="tile">
+                <div className="lab" style={{ fontSize: 10 }}>Costi {SCEN[k].label}</div>
+                <div className="mono" style={{ fontSize: 12, lineHeight: 1.6, marginTop: 4 }}>
+                  <div>capitale <b>{fmtU(r.balance)} USDT</b></div>
+                  <div>risultato <b className={r.pnl >= 0 ? 'up' : 'down'}>{r.pnl >= 0 ? '+' : ''}{fmtU(r.pnl)} USDT</b> ({((r.balance / cfg.capital - 1) * 100).toFixed(1)}%)</div>
+                  <div>in multipli del rischio <b className={r.R >= 0 ? 'up' : 'down'}>{fmtR(r.R)}</b> su {r.n} trade · vinti {r.win}</div>
+                  <div className="muted">lordo {fmtU(r.gross)} · commissioni −{fmtU(r.fees)} USDT</div>
+                </div>
+                <Sparkline points={r.curve} height={50} />
+              </div>
+            )
+          })}
+        </div>
+      ) : <p className="note">Conto di prova non ancora avviato: scegli capitale e rischio per trade e premi Avvia.</p>}
+      {authed ? (
+        <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
+          <div className="input-suffix" style={{ flex: 1, minWidth: 120 }}><input type="number" inputMode="decimal" value={cap} onChange={e => setCap(e.target.value)} /><span>USDT</span></div>
+          <div className="input-suffix" style={{ width: 110 }}><input type="number" inputMode="decimal" step="0.1" value={risk} onChange={e => setRisk(e.target.value)} /><span>% rischio</span></div>
+          {cfg && <button className="chip" onClick={() => send(false)}>Salva</button>}
+          <button className="chip" onClick={() => send(true)}>{cfg ? 'Azzera il conto' : 'Avvia'}</button>
+        </div>
+      ) : <p className="note">Per avviare, cambiare o azzerare il conto di prova serve il codice di controllo.</p>}
+      {msg && <div className={`note ${msg.ok ? 'up' : 'down'}`} style={{ marginTop: 6 }}>{msg.text}</div>}
+      <p className="note" style={{ marginTop: 6 }}>Ogni setup valido del registro (con quei costi) diventa un trade simulato che rischia il {cfg?.riskPct ?? risk}% del capitale di quel momento: la dimensione viene dalla distanza dello stop, il risultato è R netto × rischio in USDT. Nessun ordine vero. Azzerare fa ripartire il conto da adesso con il capitale scelto.</p>
+    </div>
+  )
+}
+
 function Registry({ symbol, onOpen }) {
   const [reg, setReg] = useState(null)
   const [msg, setMsg] = useState(null)
@@ -369,6 +433,7 @@ function Registry({ symbol, onOpen }) {
   useEffect(() => { refresh(); const id = setInterval(refresh, 300000); return () => clearInterval(id) }, [])
   if (!reg) return <div className="card note" style={{ padding: 12 }}>Carico il registro…</div>
   const follow = reg.follow?.symbols || []
+  const paperCard = <PaperRange reg={reg} onSaved={refresh} />
   const on = follow.includes(symbol)
   const toggle = async () => {
     try { await post('/api/range/follow', { symbols: on ? follow.filter(s => s !== symbol) : [...follow, symbol] }); setMsg(null); refresh() } catch (e) { setMsg(e.message) }
@@ -382,6 +447,8 @@ function Registry({ symbol, onOpen }) {
   const tot = done.reduce((x, r) => x + r[net], 0)
   const list = showAll ? recognized : recognized.slice(0, 40)
   return (
+    <>
+    {paperCard}
     <div className="card" style={{ padding: 12 }}>
       <div className="row"><span className="lab">Registro automatico · trade simulati</span><span className="note mono">{done.length ? `${done.length} conclusi · ${fmtR(tot)}` : ''}</span></div>
       <div className="warn">Sono trade simulati, non ordini veri: nessun ordine parte da questa pagina. Il server calcola come sarebbe andato ogni setup.</div>
@@ -447,6 +514,7 @@ function Registry({ symbol, onOpen }) {
         </>
       )}
     </div>
+    </>
   )
 }
 
@@ -455,6 +523,7 @@ export default function Range() {
   const [symbol, setSymbolRaw] = useState(() => load('rangeSymbol', FEATURED[0]))
   const [params, setParamsRaw] = useState(() => cleanRangeSettings(load('rangeParams', RANGE_DEFAULTS)))
   const [focusId, setFocusId] = useState(null)
+  const [mode, setMode] = useStrategyMode('range', 'paper')
   const setCustom = v => { setCustomRaw(v); save('rangeCustom', v) }
   const setSymbol = s => { setSymbolRaw(s); save('rangeSymbol', s); setFocusId(null) }
   const setParams = p => { setParamsRaw(p); save('rangeParams', p) }
@@ -482,11 +551,12 @@ export default function Range() {
     <div>
       <div className="row" style={{ marginBottom: 10 }}>
         <div>
-          <div className="lab">Range P e B · metodo di Patrick Nill</div>
+          <div className="lab">Strategia · Range P e B (metodo di Patrick Nill)</div>
           <div style={{ fontSize: 20, fontWeight: 800, marginTop: 2 }}>{short(symbol)}{NAMES[symbol] ? <span className="sec" style={{ fontSize: 14, fontWeight: 600 }}> · {NAMES[symbol]}</span> : null}</div>
         </div>
         <span className="note mono">{b15?.length ? fmtPrice(b15.at(-1).c) : ''}</span>
       </div>
+      <StrategyTabs mode={mode} setMode={setMode} />
       <SymbolPicker symbol={symbol} setSymbol={setSymbol} custom={custom} setCustom={setCustom} featured={FEATURED} />
       {err && <div className="warn">Dati non disponibili: {err}</div>}
 
@@ -566,7 +636,9 @@ export default function Range() {
         </p>
       </div>
 
-      <Registry symbol={symbol} onOpen={openTrade} />
+      {mode === 'paper' && <Registry symbol={symbol} onOpen={openTrade} />}
+      {mode === 'sim' && <ComingSoon what="Simulazione della strategia Range sullo storico" />}
+      {mode === 'live' && <ComingSoon what="Ordini veri della strategia Range" />}
       <Settings params={params} setParams={setParams} />
       <div className="card" style={{ padding: 12 }}><AlertToggle symbol={symbol} params={params} /></div>
       <p className="note">

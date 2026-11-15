@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import StrategyTabs from '../components/StrategyTabs.jsx'
 import { get, post, fmtPrice, fmtUsd, fmtSigned, ago } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
 import { OPTIONS, exitLevel, normalizeSettings, sizing } from '@shared/opening.js'
@@ -194,11 +195,10 @@ export default function Strategy() {
   if (!authed) return <CodeGate onOk={() => setAuthed(true)} />
 
   const tabs = (
-    <div className="seg" style={{ marginBottom: 12 }}>
-      <button className={mode === 'paper' ? 'on' : ''} onClick={() => setParams({ mode: 'paper' })}>Prova · capitale fittizio</button>
-      <button className={mode === 'live' ? 'on' : ''} onClick={() => setParams({ mode: 'live' })}>Reale · Bitunix</button>
-      <button className={mode === 'sim' ? 'on' : ''} onClick={() => setParams({ mode: 'sim' })}>Simulazione</button>
-    </div>
+    <>
+      <div className="lab" style={{ marginBottom: 8 }}>Strategia · Apertura USA</div>
+      <StrategyTabs mode={mode} setMode={m => setParams({ mode: m })} />
+    </>
   )
   if (mode === 'sim') return <>{tabs}<Simulation onAuthError={() => { save('adminCode', ''); setAuthed(false) }} /></>
   if (!view) return <>{tabs}<div className="card empty">{err || 'Carico la strategia…'}</div></>

@@ -22,6 +22,7 @@ import { fastEntries } from '../server/fast-run.js'
 import { operable, keepOperable, operableView, clearMarks } from '../server/operable.js'
 import { compareDay } from '../server/compare.js'
 import { getMacro } from '../server/macro.js'
+import { paperInfo, paperOpen, paperClose, paperPositions, paperReset } from '../server/manual-paper.js'
 import { getRangeAlerts, setRangeAlerts, getRegistry, getFollow, setFollow } from '../server/range-alerts.js'
 import { manualInfo, manualOpen, manualClose, manualPositions, ManualError } from '../server/manual.js'
 import { loadLiveSlip, slipValues, PSLIP_KINDS, PSLIP_DEFAULT, PSLIP_LAST, PSLIP_MIN_N } from '../server/pslip.js'
@@ -387,6 +388,15 @@ async function route(req, url) {
   if (path === '/range/registry' && m === 'GET') return getRegistry()
   if (path === '/range/follow' && m === 'GET') return getFollow()
   if (path === '/range/follow' && m === 'POST') { requireAdmin(req); return setFollow(body.symbols) }
+  // Range · Prova: impostazioni del conto di prova (capitale, rischio per trade, da quando); i trade sono quelli del registro
+  if (path === '/range/paper' && m === 'POST') {
+    requireAdmin(req)
+    const capital = +body.capital, riskPct = +body.riskPct
+    if (!(capital >= 10 && capital < 1e9) || !(riskPct > 0 && riskPct <= 5)) throw new HttpError(400, 'Capitale (minimo 10) o rischio (fino al 5%) non validi')
+    const v = { capital, riskPct, since: body.reset ? Date.now() : ((await getMeta('range:paper'))?.since ?? Date.now()) }
+    await setMeta('range:paper', v)
+    return v
+  }
   if (path === '/range/alerts' && m === 'POST') {
     try { return await setRangeAlerts(body) } catch (e) { throw new HttpError(e.status || 500, e.message) }
   }
@@ -439,7 +449,17 @@ async function route(req, url) {
   if (path.startsWith('/manual/')) {
     requireAdmin(req)
     const sym = (url.searchParams.get('symbol') || '').toUpperCase()
+    const paper = (url.searchParams.get('mode') || body.mode) === 'paper'
     try {
+      // RSI · Prova: stesso pannello, capitale fittizio (server/manual-paper.js); nessun ordine vero
+      if (paper) {
+        if (path === '/manual/info' && m === 'GET') { if (!/^[A-Z0-9]{2,24}$/.test(sym)) throw new HttpError(400, 'Coppia non valida'); return await paperInfo(sym) }
+        if (path === '/manual/positions' && m === 'GET') return await paperPositions()
+        if (path === '/manual/open' && m === 'POST') return { trade: await paperOpen(body) }
+        if (path === '/manual/close' && m === 'POST') return { trade: await paperClose(body.id) }
+        if (path === '/manual/reset' && m === 'POST') return { account: await paperReset(body.capital) }
+        throw new HttpError(404, 'Non trovato')
+      }
       if (path === '/manual/info' && m === 'GET') {
         if (!/^[A-Z0-9]{2,24}$/.test(sym)) throw new HttpError(400, 'Coppia non valida')
         return await manualInfo(sym)
