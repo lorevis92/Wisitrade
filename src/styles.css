@@ -301,11 +301,11 @@ details > summary::-webkit-details-marker { display: none; }
 /* Menu ad hamburger */
 .nav-top { padding-bottom: 12px; }
 .nav-here { font-family: var(--font-ui); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text); }
-.menu-bg { position: fixed; inset: 0; z-index: 60; background: rgba(3, 5, 9, .72); }
-.menu { position: absolute; top: 0; left: 0; bottom: 0; width: min(300px, 84vw); background: var(--surface); border-right: 1px solid var(--border-hi); padding: calc(14px + env(safe-area-inset-top)) 14px 20px; overflow-y: auto; box-shadow: 8px 0 30px rgba(0, 0, 0, .5); }
+.menu-bg { position: fixed; inset: 0; z-index: 100; background: rgba(3, 5, 9, .72); }
+.menu { position: absolute; top: 0; left: 0; bottom: 0; width: min(300px, 84vw); display: flex; flex-direction: column; flex-wrap: nowrap; overflow-x: hidden; background: var(--surface); border-right: 1px solid var(--border-hi); padding: calc(14px + env(safe-area-inset-top)) 14px 20px; overflow-y: auto; box-shadow: 8px 0 30px rgba(0, 0, 0, .5); }
 .menu-group { margin-top: 14px; }
 .menu-title { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin: 0 0 6px 4px; }
-.menu-item { display: block; padding: 12px 12px; border-radius: 4px; font-size: 15px; font-weight: 600; color: var(--text-sec); }
+.menu-item { display: block; width: 100%; min-height: 46px; padding: 13px 14px; border-radius: 4px; font-size: 15px; font-weight: 600; color: var(--text-sec); }
 .menu-item:hover { background: var(--surface-alt); color: var(--text); }
 .menu-item.active { background: var(--primary); color: #fff; }
 @media (max-width: 360px) { .nav-here { display: none; } }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Link, useLocation } from 'react-router-dom'
+import { createPortal } from 'react-dom'
 
 function Logo() {
   const [img, setImg] = useState(true)
@@ -16,7 +17,7 @@ function Logo() {
 const MENU = [
   ['Mercato', [['/', 'Live'], ['/watchlist', 'Watchlist'], ['/calendario', 'Calendario']]],
   ['Strategie', [['/strategia', 'Apertura USA'], ['/rsi', 'RSI'], ['/range', 'Range']]],
-  [null, [['/impostazioni', 'Impostazioni']]],
+  ['Impostazioni', [['/impostazioni', 'Impostazioni']]],
 ]
 const sectionOf = path => MENU.flatMap(([, items]) => items).find(([to]) => (to === '/' ? path === '/' : path.startsWith(to)))?.[1] || ''
 
@@ -43,7 +44,8 @@ export function Navbar({ pushOn, live }) {
           </Link>
         </div>
       </div>
-      {open && (
+      {/* il pannello va nel body: la barra in alto ha backdrop-filter, che confinerebbe il position: fixed alla barra */}
+      {open && createPortal(
         <div className="menu-bg" onClick={() => setOpen(false)}>
           <nav className="menu" onClick={e => e.stopPropagation()} aria-label="Sezioni">
             <div className="row" style={{ marginBottom: 6 }}>
@@ -59,7 +61,8 @@ export function Navbar({ pushOn, live }) {
               </div>
             ))}
           </nav>
-        </div>
+        </div>,
+        document.body,
       )}
     </header>
   )
