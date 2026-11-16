@@ -13,7 +13,7 @@ const TFS = ['1d', '4h', '1h', '15m', '5m', '1m']
 const REFRESH = { '1m': 15000, '5m': 30000, '15m': 60000, '1h': 120000, '4h': 300000, '1d': 600000 }
 const short = s => s.replace(/USDT$/, '')
 const tzShift = t => Math.floor(t / 1000) - new Date(t).getTimezoneOffset() * 60
-const TONE = { interesting: 'up', watch: 'warn', risk: 'down', neutral: 'sec' }
+const TONE = { interesting: '#00E5C7', watch: '#F5B83D', risk: '#FF5C7A', neutral: '#9AA6C2' }
 
 function LevelsChart({ bars, levels, wp, price, height = 420 }) {
   const box = useRef(null)
@@ -98,16 +98,16 @@ export default function Levels() {
 
       <div className="card" style={{ padding: 12 }}>
         <div className="lab">Commento</div>
-        <div className={TONE[story.tone]} style={{ fontSize: 16, fontWeight: 800, margin: '4px 0 8px' }}>{story.headline}</div>
+        <div style={{ color: TONE[story.tone], fontSize: 16, fontWeight: 800, margin: '4px 0 8px', overflowWrap: 'anywhere' }}>{story.headline}</div>
         {story.blocks.map(b => <p key={b.title} style={{ margin: '0 0 8px', lineHeight: 1.5 }}><b>{b.title}.</b> {b.text}</p>)}
         {story.warnings.map((w, i) => <div key={i} className="warn" style={{ marginTop: 6 }}>⚠ {w}</div>)}
         <p className="note" style={{ marginTop: 8 }}>Commento scritto da regole fisse, si aggiorna da solo con le candele. Non è un consiglio di investimento.</p>
       </div>
 
       <div className="card" style={{ padding: 12 }}>
-        <div className="row">
+        <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
           <span className="lab">Grafico con i livelli</span>
-          <div className="seg">{['4h', '1d'].map(k => <button key={k} className={chartTf === k ? 'on' : ''} onClick={() => setChartTf(k)}>{k === '1d' ? 'giornaliero' : '4 ore'}</button>)}</div>
+          <div className="seg" style={{ whiteSpace: 'nowrap' }}>{['4h', '1d'].map(k => <button key={k} className={chartTf === k ? 'on' : ''} onClick={() => setChartTf(k)}>{k === '1d' ? '1 giorno' : '4 ore'}</button>)}</div>
         </div>
         {data[chartTf]?.bars?.length && lv
           ? <LevelsChart bars={data[chartTf].bars} levels={lv.levels} wp={lv.wp} price={price} />
@@ -116,22 +116,21 @@ export default function Levels() {
       </div>
 
       {lv && (
-        <div className="card" style={{ padding: 12, overflowX: 'auto' }}>
+        <div className="card" style={{ padding: 12 }}>
           <div className="lab">Livelli vicini</div>
-          <table className="table mono" style={{ fontSize: 12, width: '100%', marginTop: 6 }}>
-            <thead><tr><th>prezzo</th><th>tipo</th><th>voto</th><th>distanza</th><th style={{ textAlign: 'left' }}>perché</th></tr></thead>
-            <tbody>
-              {lv.levels.map((l, i) => (
-                <tr key={i}>
-                  <td>{fmtPrice(l.p)}</td>
-                  <td className={l.p < price ? 'up' : 'down'}>{l.p < price ? 'supporto' : 'resistenza'}</td>
-                  <td className={l.strong ? 'warn' : 'sec'}>{l.strong ? 'forte' : 'debole'}</td>
-                  <td>{((l.p / price - 1) * 100).toFixed(2)}%</td>
-                  <td style={{ textAlign: 'left', fontFamily: 'inherit' }}>{[l.structure, l.volume && `volume: ${l.volume}`].filter(Boolean).join(' · ')}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="lv-list">
+            {lv.levels.map((l, i) => (
+              <div key={i} className="lv-item">
+                <div className="lv-head mono">
+                  <b>{fmtPrice(l.p)}</b>
+                  <span className={l.p < price ? 'up' : 'down'}>{l.p < price ? 'supporto' : 'resistenza'}</span>
+                  <span style={{ color: l.strong ? '#F5B83D' : '#6B7590' }}>{l.strong ? 'forte' : 'debole'}</span>
+                  <span className="sec">{((l.p / price - 1) * 100 >= 0 ? '+' : '')}{((l.p / price - 1) * 100).toFixed(2)}%</span>
+                </div>
+                <div className="note">{[l.structure && `Struttura: ${l.structure}`, l.volume && `volume: ${l.volume}`].filter(Boolean).join(' · ')}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

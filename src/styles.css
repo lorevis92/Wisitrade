@@ -309,3 +309,8 @@ details > summary::-webkit-details-marker { display: none; }
 .menu-item:hover { background: var(--surface-alt); color: var(--text); }
 .menu-item.active { background: var(--primary); color: #fff; }
 @media (max-width: 360px) { .nav-here { display: none; } }
+
+.lv-list { display: grid; gap: 6px; margin-top: 6px; }
+.lv-item { padding: 8px 10px; background: var(--surface-2, #0B0F19); border: 1px solid var(--border); border-radius: 6px; min-width: 0; }
+.lv-head { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; align-items: baseline; }
+.lv-item .note { margin-top: 3px; overflow-wrap: anywhere; }
