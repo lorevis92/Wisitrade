@@ -321,3 +321,9 @@ details > summary::-webkit-details-marker { display: none; }
 .lv-msg.assistant { align-self: flex-start; background: var(--surface-2, #0B0F19); border: 1px solid var(--border); }
 .lv-chat-input { display: flex; gap: 8px; margin-top: 8px; align-items: flex-end; }
 .lv-chat-input textarea { flex: 1; min-width: 0; resize: vertical; background: #0B0F19; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font: inherit; font-size: 16px; }
+
+.tt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+@media (min-width: 720px) { .tt-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.tt-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 8px 0; }
+.tt-tiles .tile { min-width: 0; padding: 7px 8px; overflow-wrap: anywhere; }
+@media (max-width: 400px) { .tt-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
