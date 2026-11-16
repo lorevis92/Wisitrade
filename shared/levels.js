@@ -30,27 +30,40 @@ function pivots(bars, w) {
   return out
 }
 
-// Raggruppa i prezzi dei pivot entro la tolleranza: ogni gruppo è un livello, i tocchi sono i pivot del gruppo
-function cluster(piv, tol, tf) {
+// Raggruppa i prezzi dei pivot entro la tolleranza (ogni gruppo largo al massimo 2 tolleranze, così livelli vicini non si
+// fondono a catena): ogni gruppo è un livello candidato. I tocchi sono le reazioni del prezzo lì, contate su tutte le candele:
+// i pivot del gruppo e le candele che toccano il livello con lo stoppino e chiudono lontano (rifiuto), anche se non sono un
+// pivot (per esempio i massimi decrescenti di un ribasso che ritestano una resistenza). Un tocco ogni 3 candele al massimo.
+function cluster(bars, piv, tol, tf) {
   const sorted = piv.slice().sort((a, b) => a.p - b.p)
   const groups = []
   for (const x of sorted) {
     const g = last(groups)
-    if (g && x.p - g.mean <= tol) { g.items.push(x); g.mean = g.items.reduce((s, y) => s + y.p, 0) / g.items.length }
+    if (g && x.p - g.items[0].p <= 2 * tol) { g.items.push(x); g.mean = g.items.reduce((s, y) => s + y.p, 0) / g.items.length }
     else groups.push({ mean: x.p, items: [x] })
   }
   return groups.map(g => {
-    // tocchi distinti: pivot ad almeno 3 candele di distanza
-    const items = g.items.slice().sort((a, b) => a.i - b.i).filter((x, k, arr) => k === 0 || x.i - arr[k - 1].i >= 3)
-    return { p: g.mean, tf, touches: items.length, highs: items.filter(x => x.type === 'h').length, lows: items.filter(x => x.type === 'l').length, lastT: Math.max(...items.map(x => x.t)), tol }
+    const p = g.mean, hits = new Map()
+    for (const x of g.items) hits.set(x.i, x.type)
+    bars.forEach((b, i) => {
+      if (!i || hits.has(i)) return
+      const pc = bars[i - 1].c, top = Math.max(b.o, b.c), bot = Math.min(b.o, b.c)
+      // rifiuto dall'alto: arriva da sotto, lo stoppino entra nel livello, il corpo resta sotto
+      if (pc < p - tol && b.h >= p - tol && b.h <= p + tol && top < p - tol) hits.set(i, 'h')
+      // rifiuto dal basso: arriva da sopra, lo stoppino entra nel livello, il corpo resta sopra
+      else if (pc > p + tol && b.l <= p + tol && b.l >= p - tol && bot > p + tol) hits.set(i, 'l')
+    })
+    const items = [...hits].map(([i, type]) => ({ i, type, t: bars[i].t })).sort((a, b) => a.i - b.i)
+      .filter((x, k, arr) => k === 0 || x.i - arr[k - 1].i >= 3)
+    return { p, tf, touches: items.length, highs: items.filter(x => x.type === 'h').length, lows: items.filter(x => x.type === 'l').length, lastT: Math.max(...items.map(x => x.t)), tol }
   })
 }
 
 // Supporti e resistenze di struttura su 4 ore e giornaliero, uniti quando coincidono
 export function structureLevels(bars4h, bars1d, cfg = LEVELS_DEFAULTS) {
   const a4 = lastNum(atr(bars4h, 14)) || 0, a1 = lastNum(atr(bars1d, 14)) || a4 * 2.5
-  const c4 = bars4h.length > 30 ? cluster(pivots(bars4h, cfg.pivot4h), cfg.tol4h * a4, '4h') : []
-  const c1 = bars1d.length > 20 ? cluster(pivots(bars1d, cfg.pivot1d), cfg.tol1d * a1, '1d') : []
+  const c4 = bars4h.length > 30 ? cluster(bars4h, pivots(bars4h, cfg.pivot4h), cfg.tol4h * a4, '4h') : []
+  const c1 = bars1d.length > 20 ? cluster(bars1d, pivots(bars1d, cfg.pivot1d), cfg.tol1d * a1, '1d') : []
   const all = [...c4, ...c1].sort((a, b) => a.p - b.p)
   const merged = []
   for (const x of all) {

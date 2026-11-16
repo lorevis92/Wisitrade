@@ -25,6 +25,7 @@ import { getMacro } from '../server/macro.js'
 import { paperInfo, paperOpen, paperClose, paperPositions, paperReset } from '../server/manual-paper.js'
 import { getRangeAlerts, setRangeAlerts, getRegistry, getFollow, setFollow } from '../server/range-alerts.js'
 import { manualInfo, manualOpen, manualClose, manualPositions, ManualError } from '../server/manual.js'
+import { levelsChat } from '../server/levels-chat.js'
 import { loadLiveSlip, slipValues, PSLIP_KINDS, PSLIP_DEFAULT, PSLIP_LAST, PSLIP_MIN_N } from '../server/pslip.js'
 
 const TF = {
@@ -44,6 +45,8 @@ const RSI_TF = {
 }
 // Pagina Range: candele a 15 minuti (8 giorni), 1 ora (volume profile settimanale) e 4 ore (trend)
 const RANGE_TF = { '15m': { n: 768, ttl: 60 }, '1h': { n: 450, ttl: 300 }, '4h': { n: 260, ttl: 600 } }
+// Pagina Livelli: più storico a 4 ore (circa 5 mesi) e giornaliero (circa 1 anno e mezzo) per i livelli di struttura
+const LEVELS_TF = { '4h': { n: 900, ttl: 300 }, '1d': { n: 500, ttl: 600 } }
 let rsiPairs = null // { at, list } coppie aperte di Bitunix, rilette ogni ora
 
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status } }
@@ -372,6 +375,19 @@ async function route(req, url) {
     return { __cache: tf.ttl, symbol: sym, tf: tfKey, bars }
   }
 
+  if (path === '/levels/candles' && m === 'GET') {
+    const sym = (url.searchParams.get('symbol') || '').toUpperCase(), tfKey = url.searchParams.get('tf') || '', tf = LEVELS_TF[tfKey]
+    if (!/^[A-Z0-9]{2,24}$/.test(sym) || !tf) throw new HttpError(400, 'Parametri non validi')
+    let bars
+    try { bars = await klinesBack(sym, tfKey, tf.n) } catch { throw new HttpError(502, `Candele di ${sym} non disponibili su Bitunix`) }
+    if (!bars.length) throw new HttpError(404, `${sym} non ha candele su Bitunix`)
+    return { __cache: tf.ttl, symbol: sym, tf: tfKey, bars }
+  }
+  // chat AI della pagina Livelli: costa chiamate ad Anthropic, quindi serve il codice di controllo
+  if (path === '/levels/chat' && m === 'POST') {
+    requireAdmin(req)
+    try { return await levelsChat(body) } catch (e) { throw new HttpError(e.status || 502, e.message) }
+  }
   if (path === '/range/candles' && m === 'GET') {
     const sym = (url.searchParams.get('symbol') || '').toUpperCase(), tfKey = url.searchParams.get('tf') || '', tf = RANGE_TF[tfKey]
     if (!/^[A-Z0-9]{2,24}$/.test(sym) || !tf) throw new HttpError(400, 'Parametri non validi')

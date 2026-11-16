@@ -12,6 +12,7 @@
     "vapid": "web-push generate-vapid-keys"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
     "@supabase/supabase-js": "^2.45.0",
     "@vercel/functions": "^2.2.13",
     "lightweight-charts": "^5.0.0",
