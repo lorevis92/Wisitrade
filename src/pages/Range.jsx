@@ -485,6 +485,7 @@ function FollowPicker({ reg, refresh }) {
           {found.length > 0 && <div className="chips" style={{ marginTop: 4 }}>{found.map(x => <button key={x} className="chip" onClick={() => { setDraft([...sel, x]); setQ('') }}>+ {short(x)}</button>)}</div>}
           <div className="row" style={{ gap: 8, marginTop: 10 }}>
             <button className="btn" style={{ width: 'auto' }} disabled={!changed || sel.length > 200} onClick={saveIt}>Salva ({sel.length})</button>
+            {reg?.defaults?.length > 0 && <button className="chip" onClick={() => setDraft(reg.defaults)} title="BTC, ETH e le azioni di Apertura USA operabili via API">Selezione di default ({reg.defaults.length})</button>}
             {changed && <button className="chip" onClick={() => setDraft(null)}>Annulla</button>}
           </div>
         </>
@@ -542,7 +543,7 @@ function Overview({ reg, onOpen }) {
                 return (
                   <tr key={x.sym} onClick={() => onOpen(x.sym)} style={!x.followed ? { opacity: 0.55 } : undefined}>
                     <td><b>{short(x.sym)}</b></td>
-                    <td className={su ? (su.side > 0 ? 'up' : 'down') : ''}>{nowTxt}</td>
+                    <td className={su ? (su.side > 0 ? 'up' : 'down') : ''}>{nowTxt}{reg.hot?.[x.sym] && <div className="warn-text" style={{ color: '#F5B83D', fontSize: 11 }} title={reg.hot[x.sym].why}>⚡ {reg.hot[x.sym].why} · ricalcolo al prossimo giro</div>}</td>
                     <td className={st?.trend === 'up' ? 'up' : st?.trend === 'down' ? 'down' : 'sec'}>{st?.trend ? TREND[st.trend] : '—'}</td>
                     <td>{x.n}</td><td>{x.valid}</td><td>{x.done}</td>
                     <td>{x.done ? `${Math.round(x.win / x.done * 100)}%` : '—'}</td>
@@ -555,7 +556,7 @@ function Overview({ reg, onOpen }) {
           </table>
         </div>
       ) : <p className="note">Nessun titolo seguito: sceglili qui sopra.</p>}
-      <p className="note" style={{ marginTop: 6 }}>Tocca un titolo per aprire il suo dettaglio (contesto, range, zone, setup sul grafico). "Adesso" = ultimo controllo del server con le impostazioni di partenza{checked.length ? `, l'ultimo ${when(Math.max(...checked))}` : ''}; "in attesa" = non ancora controllato. Righe chiare = titoli non più seguiti con setup ancora nel registro. Numeri del registro automatico, stesse regole e stessi costi.</p>
+      <p className="note" style={{ marginTop: 6 }}>Tocca un titolo per aprire il suo dettaglio (contesto, range, zone, setup sul grafico). "Adesso" = ultimo controllo del server con le impostazioni di partenza{checked.length ? `, l'ultimo ${when(Math.max(...checked))}` : ''}; "in attesa" = non ancora controllato; ⚡ = il controllo leggero di ogni minuto ha visto il prezzo vicino a un bordo del range o oltre un livello già noto: il titolo passa in prima fila per il prossimo ricalcolo completo (ogni 15 minuti). Righe chiare = titoli non più seguiti con setup ancora nel registro. Numeri del registro automatico, stesse regole e stessi costi.</p>
     </div>
   )
 }

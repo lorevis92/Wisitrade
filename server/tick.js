@@ -3,7 +3,7 @@
 // molti titoli nella strategia si scaricano prima solo le candele da 1 minuto che servono alla strategia
 // (posizioni aperte e titoli ancora in gioco nella finestra d'entrata), poi quelle dello scanner.
 import { ASSETS, ASSET_MAP } from '../shared/assets.js'
-import { runRangeAlerts } from './range-alerts.js'
+import { runRangeAlerts, runRangeFast } from './range-alerts.js'
 import { many } from './bitunix.js'
 import { getMeta, setMeta } from './db.js'
 import { nyInfo } from './session.js'
@@ -94,6 +94,11 @@ export async function tick() {
     const busyOpen = info.isWeekday && info.minutes >= 565 && info.minutes <= 640
     if (new Date().getUTCMinutes() % 15 === 1 && !busyOpen && Date.now() - t0 < 30000) {
       try { out.range = await runRangeAlerts({ budgetMs: Math.min(15000, 42000 - (Date.now() - t0)) }) } catch (e) { out.range = { error: e.message } }
+    }
+    // Range, controllo leggero ogni minuto (una richiesta, nessun ricalcolo): titoli vicini a un bordo o oltre un livello in prima fila
+    // per il prossimo giro pesante. Mai durante l'apertura USA (il giro pesante lì non gira comunque).
+    else if (!busyOpen && Date.now() - t0 < 42000) {
+      try { out.rangeFast = await runRangeFast() } catch (e) { out.rangeFast = { error: e.message } }
     }
     // archivio per la Simulazione: solo lontano dall'orario della strategia (dopo le 16:35 o prima delle 7:50 di New York, e nel fine settimana)
     const quiet = !info.isWeekday || info.minutes >= 995 || info.minutes < 470

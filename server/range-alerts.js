@@ -6,19 +6,30 @@
 //   setup proposto (falso breakout con entrata limite e a mercato, range trade, breakout con conferma) si salva in wt_range_trades
 //   con le impostazioni di partenza e se ne segue l'esito fino alla fine (commissioni di Bitunix comprese). Anche a pagina chiusa.
 // Gira dal controllo ogni minuto (server/tick.js) una volta ogni 15 minuti, dopo la chiusura della candela, fuori dall'apertura USA.
-import { klinesBack } from './bitunix.js'
+import { klinesBack, allTickers } from './bitunix.js'
+import { operable } from './operable.js'
+import { atr } from '../shared/indicators.js'
+import { ASSET_MAP } from '../shared/assets.js'
+import { STRATEGY_SYMBOLS } from '../shared/opening.js'
 import { db, q, getMeta, setMeta } from './db.js'
 import { deliver } from './push.js'
 import { getMacro } from './macro.js'
 
-import { analyze, events, cleanRangeSettings, gradeAtLeast, isFinal, trend4h, RANGE_DEFAULTS, GRADES } from '../shared/range.js'
+import { analyze, events, cleanRangeSettings, gradeAtLeast, isFinal, trend4h, weekProfiles, RANGE_DEFAULTS, GRADES } from '../shared/range.js'
 
-const KEY = 'range:alerts', SENT = 'range:sent', FOLLOW = 'range:follow', REG_ERR = 'range:registry:error', STATUS = 'range:status'
+const KEY = 'range:alerts', SENT = 'range:sent', FOLLOW = 'range:follow', REG_ERR = 'range:registry:error', STATUS = 'range:status', HOT = 'range:hot', FAST = 'range:fast'
 const MAX_SYMBOLS = 8      // titoli con avvisi push controllati a ogni giro (6 richieste a Bitunix ciascuno)
 export const MAX_FOLLOW = 200 // titoli seguiti dal registro: a rotazione, prima quelli controllati da più tempo (entro il tempo del giro)
 const FRESH = 20 * 60000   // si avvisa solo di eventi degli ultimi 20 minuti (niente avvisi vecchi alla prima iscrizione)
 const STALE = 6 * 864e5    // un trade non concluso dopo 6 giorni esce dai dati: si chiude nel registro come "dati finiti"
-export const FOLLOW_DEFAULT = ['BTCUSDT', 'ETHUSDT', 'XAUUSDT']
+const OLD_DEFAULT = ['BTCUSDT', 'ETHUSDT', 'XAUUSDT'] // selezione di partenza precedente: si sostituisce con quella nuova
+// Selezione di default: crypto solo BTC ed ETH (storico affidabile); azioni = i titoli di Apertura USA operabili via API su
+// Bitunix (stessa lista e stessa logica della strategia: server/operable.js), così il registro è già pronto per l'automatico.
+export async function defaultFollow() {
+  const op = await operable().catch(() => null)
+  const stocks = STRATEGY_SYMBOLS.filter(sym => ASSET_MAP[sym] && ASSET_MAP[sym].kind !== 'crypto' && (!op || !op.check(sym))).map(sym => ASSET_MAP[sym].perp)
+  return ['BTCUSDT', 'ETHUSDT', ...new Set(stocks)].slice(0, MAX_FOLLOW)
+}
 const isSym = s => typeof s === 'string' && /^[A-Z0-9]{2,24}$/.test(s)
 const TABLE_HINT = 'tabella wt_range_trades mancante: esegui la migrazione in fondo a supabase/schema.sql nell\'editor SQL di Supabase'
 
@@ -47,7 +58,8 @@ export async function setRangeAlerts({ endpoint, symbols, settings, minGrade }) 
 
 export async function getFollow() {
   const f = await getMeta(FOLLOW)
-  return f?.symbols ? f : { symbols: FOLLOW_DEFAULT, since: {} }
+  const old = f?.symbols && f.symbols.length === OLD_DEFAULT.length && OLD_DEFAULT.every(x => f.symbols.includes(x))
+  return f?.symbols && !old ? f : { symbols: await defaultFollow(), since: f?.since || {}, isDefault: true }
 }
 export async function setFollow(symbols, now = Date.now()) {
   const cur = await getFollow()
@@ -64,7 +76,7 @@ export async function getRegistry() {
   const follow = await getFollow()
   try {
     const rows = await q(db().from('wt_range_trades').select('*').order('created_at', { ascending: false }).limit(2000))
-    return { rows, follow, status: (await getMeta(STATUS).catch(() => null)) || {}, paper: await getMeta('range:paper').catch(() => null), error: null, lastError: await getMeta(REG_ERR).catch(() => null) }
+    return { rows, follow, defaults: await defaultFollow(), hot: (await getMeta(HOT).catch(() => null)) || {}, status: (await getMeta(STATUS).catch(() => null)) || {}, paper: await getMeta('range:paper').catch(() => null), error: null, lastError: await getMeta(REG_ERR).catch(() => null) }
   } catch (e) {
     return { rows: [], follow, status: (await getMeta(STATUS).catch(() => null)) || {}, error: /wt_range_trades/.test(e.message) ? TABLE_HINT : e.message }
   }
@@ -90,12 +102,15 @@ export async function runRangeAlerts({ budgetMs = 15000, now = Date.now() } = {}
   const byId = Object.fromEntries(subs.map(x => [x.id, x]))
   let follow = await getFollow()
   // prima volta: i titoli di partenza si seguono da adesso
-  if (follow.symbols.some(s => !follow.since?.[s])) follow = await setFollow(follow.symbols, now)
+  if (follow.isDefault || follow.symbols.some(s => !follow.since?.[s])) follow = await setFollow(follow.symbols, now)
   const alertSyms = ids.flatMap(id => (byId[id] ? all[id].symbols : []))
   // prima i titoli con avvisi (servono subito), poi i titoli seguiti a rotazione: quelli controllati da più tempo
   const status = (await getMeta(STATUS).catch(() => null)) || {}
   const rot = follow.symbols.slice().sort((a, b) => (status[a]?.at || 0) - (status[b]?.at || 0))
-  const symbols = [...new Set([...alertSyms.slice(0, MAX_SYMBOLS), ...rot])]
+  // titoli segnalati dal controllo leggero (prezzo vicino a un bordo o livello rotto): in prima fila, i più vecchi prima
+  const hot = (await getMeta(HOT).catch(() => null)) || {}
+  const hotSyms = Object.keys(hot).filter(x => follow.symbols.includes(x)).sort((a, b) => hot[a].at - hot[b].at)
+  const symbols = [...new Set([...alertSyms.slice(0, MAX_SYMBOLS), ...hotSyms, ...rot])]
   const sent = (await getMeta(SENT)) || {}
   const items = [], done = [], reg = { saved: 0, error: null }
   let finalIds = null
@@ -113,8 +128,11 @@ export async function runRangeAlerts({ budgetMs = 15000, now = Date.now() } = {}
       try {
         const res = run(RANGE_DEFAULTS), act = res.ranges.filter(r => r.active)
         const ready = act.map(r => r.lastSetup).find(x => x && x.valid && ['pronto', 'in corso'].includes(x.status))
+        const wp = weekProfiles(b1h, now), A = atr(closed, 14)
+        const lv = []
+        for (const [w, nm] of [[wp.cur, 'settimana'], [wp.prev, 'settimana prima']]) if (w) for (const k of ['poc', 'vah', 'val']) if (Number.isFinite(w[k])) lv.push({ p: w[k], name: `${k.toUpperCase()} ${nm}` })
         status[sym] = {
-          at: now, price: closed.at(-1)?.c ?? null, trend: closed4.length ? trend4h(closed4)?.trend ?? null : null,
+          at: now, price: closed.at(-1)?.c ?? null, trend: closed4.length ? trend4h(closed4)?.trend ?? null : null, atr: A.at(-1) ?? null, levels: lv,
           ranges: act.map(r => ({ type: r.type, valid: r.validIdx !== null, top: r.top, bottom: r.bottom })),
           setup: ready ? { side: ready.side, grade: ready.grade, kind: ready.kind, status: ready.status, entry: ready.entry } : null,
         }
@@ -162,8 +180,57 @@ export async function runRangeAlerts({ budgetMs = 15000, now = Date.now() } = {}
   if (reg.error) await setMeta(REG_ERR, { at: now, error: reg.error }).catch(() => {})
   for (const k of Object.keys(status)) if (!follow.symbols.includes(k)) delete status[k]
   await setMeta(STATUS, status).catch(() => {})
+  // titoli ricalcolati in questo giro: escono dalla prima fila
+  const fresh = Object.keys(hot).filter(k => status[k]?.at === now || !follow.symbols.includes(k))
+  if (fresh.length) { const h = (await getMeta(HOT).catch(() => null)) || {}; for (const k of fresh) if (!h[k] || h[k].at <= now) delete h[k]; await setMeta(HOT, h).catch(() => {}) }
   for (const [k, at] of Object.entries(sent)) if (now - at > 7 * 864e5) delete sent[k]
   if (items.length) await setMeta(SENT, sent)
   const r = items.length ? await deliver(items) : { sent: 0 }
   return { subs: ids.length, symbols: Object.values(status).filter(x => x.at === now).length, follow: follow.symbols.length, registry: reg, events: done, sent: r.sent, ms: Date.now() - t0 }
+}
+
+// ---------- Controllo leggero (ogni minuto, dal controllo ogni minuto) ----------
+// Una sola richiesta a Bitunix (tutti i prezzi) e i range e livelli già calcolati nell'ultimo giro pesante (wt_meta range:status),
+// senza ricalcolare niente. Un titolo va in prima fila per il prossimo giro pesante (wt_meta range:hot) quando:
+//  - il prezzo arriva vicino a un bordo di un range attivo (entro NEAR_ATR × ATR a 15 minuti) o ne esce;
+//  - il prezzo attraversa un livello già noto (bordi dei range, POC, VAH, VAL della settimana e di quella prima).
+// Si segnala solo il cambiamento (ultimo prezzo e vicinanza in wt_meta range:fast), non a ogni minuto.
+export const NEAR_ATR = 0.5
+export function fastCheck(st, prev, px) {
+  const a = st?.atr > 0 ? st.atr : null
+  if (!a || !(px > 0)) return { near: false, why: null }
+  const edges = (st.ranges || []).flatMap(r => [{ p: r.top, name: `bordo alto del range ${r.type}`, top: true, r }, { p: r.bottom, name: `bordo basso del range ${r.type}`, top: false, r }])
+  const outside = (st.ranges || []).find(r => px > r.top || px < r.bottom)
+  const nearEdge = edges.find(e => Math.abs(px - e.p) <= NEAR_ATR * a)
+  const near = !!(nearEdge || outside)
+  let why = null
+  const last = prev?.px
+  if (last > 0) {
+    const crossed = [...edges, ...(st.levels || [])].find(l => (last - l.p) * (px - l.p) < 0)
+    if (crossed) why = `prezzo oltre ${crossed.name} (${crossed.p.toPrecision(6)})`
+  }
+  if (!why && near && !prev?.near) why = outside ? `prezzo fuori dal range ${outside.type}` : `prezzo vicino al ${nearEdge.name}`
+  return { near, why }
+}
+export async function runRangeFast({ now = Date.now() } = {}) {
+  const [follow, status, prevAll] = await Promise.all([getFollow(), getMeta(STATUS).catch(() => null), getMeta(FAST).catch(() => null)])
+  if (!status || !follow.symbols.length) return { idle: true }
+  const prices = await allTickers()
+  const next = {}, flagged = {}
+  for (const sym of follow.symbols) {
+    const st = status[sym], px = prices[sym]
+    if (!st || !(px > 0)) continue
+    // dopo un ricalcolo pesante si riparte dal suo stato (niente segnali su livelli appena ricalcolati)
+    const prev = prevAll?.[sym] && prevAll[sym].at >= st.at ? prevAll[sym] : { px: st.price, near: false }
+    const r = fastCheck(st, prev, px)
+    next[sym] = { px, near: r.near, at: now }
+    if (r.why) flagged[sym] = { at: now, why: r.why, px }
+  }
+  await setMeta(FAST, next).catch(() => {})
+  if (Object.keys(flagged).length) {
+    const hot = (await getMeta(HOT).catch(() => null)) || {}
+    for (const [k, v] of Object.entries(flagged)) if (!hot[k]) hot[k] = v
+    await setMeta(HOT, hot)
+  }
+  return { checked: Object.keys(next).length, flagged: Object.entries(flagged).map(([k, v]) => `${k.replace(/USDT$/, '')}: ${v.why}`) }
 }
