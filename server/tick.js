@@ -17,6 +17,7 @@ import { recordSpreads } from './spreads.js'
 import { isTradingDay } from '../shared/opening.js'
 import { eveningCompare } from './compare.js'
 import { runTurtle } from './turtle.js'
+import { runSmc } from './smc.js'
 
 const SCAN_DEADLINE = 40000 // oltre questo tempo dall'inizio lo scanner salta il giro (la strategia ha la precedenza)
 
@@ -99,6 +100,10 @@ export async function tick() {
     // Turtle (Prova e Reale): uscite sempre (se resta tempo), livelli ed entrate mai durante l'apertura USA
     if (Date.now() - t0 < 40000) {
       try { out.turtle = await runTurtle({ budgetMs: Math.min(busyOpen ? 5000 : 12000, 48000 - (Date.now() - t0)), entries: !busyOpen }) } catch (e) { out.turtle = { error: e.message } }
+    }
+    // SMC (Prova e Reale): uscite sempre, analisi alla chiusura delle candele d'entrata; entrate mai durante l'apertura USA (come Turtle)
+    if (Date.now() - t0 < 44000) {
+      try { out.smc = await runSmc({ budgetMs: Math.min(busyOpen ? 5000 : 10000, 50000 - (Date.now() - t0)), entries: !busyOpen }) } catch (e) { out.smc = { error: e.message } }
     }
     // archivio per la Simulazione: solo lontano dall'orario della strategia (dopo le 16:35 o prima delle 7:50 di New York, e nel fine settimana)
     const quiet = !info.isWeekday || info.minutes >= 995 || info.minutes < 470
