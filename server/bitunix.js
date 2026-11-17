@@ -210,11 +210,6 @@ export const placeStopLoss = ({ symbol, positionId, slPrice, qty }) =>
   signed('POST', '/api/v1/futures/tpsl/place_order', {
     body: { symbol, positionId: String(positionId), slPrice: String(slPrice), slStopType: 'LAST_PRICE', slOrderType: 'MARKET', slQty: String(qty) },
   })
-// Take profit di una sola posizione e per una quantità precisa (usato da SMC: target sull'ordine di Bitunix se accettato)
-export const placeTakeProfit = ({ symbol, positionId, tpPrice, qty }) =>
-  signed('POST', '/api/v1/futures/tpsl/place_order', {
-    body: { symbol, positionId: String(positionId), tpPrice: String(tpPrice), tpStopType: 'LAST_PRICE', tpOrderType: 'MARKET', tpQty: String(qty) },
-  })
 export const modifyStopLoss = ({ orderId, slPrice, qty }) =>
   signed('POST', '/api/v1/futures/tpsl/modify_order', { body: { orderId: String(orderId), slPrice: String(slPrice), slStopType: 'LAST_PRICE', slOrderType: 'MARKET', slQty: String(qty) } })
 export const cancelStopLoss = ({ symbol, orderId }) =>

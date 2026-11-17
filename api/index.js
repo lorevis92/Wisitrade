@@ -26,8 +26,6 @@ import { paperInfo, paperOpen, paperClose, paperPositions, paperReset } from '..
 import { getRangeAlerts, setRangeAlerts, getRegistry, getFollow, setFollow } from '../server/range-alerts.js'
 import { manualInfo, manualOpen, manualClose, manualPositions, ManualError } from '../server/manual.js'
 import { levelsChat } from '../server/levels-chat.js'
-import { smcSim, smcChart, smcPairs, getState as smcState, saveSettings as smcSave, resetAccount as smcReset, closeSmcPos, getPresets as smcPresets, savePreset as smcSavePreset, deletePreset as smcDeletePreset, SmcError } from '../server/smc.js'
-import { turtleSim, getState as turtleState, saveSettings as turtleSave, resetAccount as turtleReset, closeTurtle, TurtleError } from '../server/turtle.js'
 import { loadLiveSlip, slipValues, PSLIP_KINDS, PSLIP_DEFAULT, PSLIP_LAST, PSLIP_MIN_N } from '../server/pslip.js'
 
 const TF = {
@@ -224,45 +222,6 @@ function simPayload(p, r) {
   return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: p.s0, symbolsUsed: p.s.symbols, apiExcluded: p.apiExcluded, symbolsWithData: withData, ms: { load: p.loadMs, run: Date.now() - p.t0 - p.loadMs } }
 }
 
-// Turtle · Simulazione in streaming (NDJSON): avanzamento del caricamento delle candele giornaliere, poi il risultato
-async function streamTurtle(req, res) {
-  res.setHeader('content-type', 'application/x-ndjson; charset=utf-8')
-  res.setHeader('cache-control', 'no-store')
-  res.setHeader('x-accel-buffering', 'no')
-  let closed = false
-  res.on('close', () => { if (!res.writableEnded) closed = true })
-  const send = obj => { if (!closed) res.write(JSON.stringify(obj) + '\n') }
-  try {
-    requireAdmin(req)
-    const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {})
-    const result = await turtleSim(body, send, () => closed)
-    if (result) send({ t: 'result', result })
-  } catch (e) {
-    send({ t: 'error', error: e.message, status: e.status || 500 })
-  }
-  res.end()
-}
-
-// SMC · Simulazione in streaming (NDJSON): avanzamento del caricamento delle candele, poi il risultato
-async function streamSmc(req, res) {
-  res.setHeader('content-type', 'application/x-ndjson; charset=utf-8')
-  res.setHeader('cache-control', 'no-store')
-  res.setHeader('x-accel-buffering', 'no')
-  let closed = false
-  res.on('close', () => { if (!res.writableEnded) closed = true })
-  const send = obj => { if (!closed) res.write(JSON.stringify(obj) + '
-') }
-  try {
-    requireAdmin(req)
-    const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {})
-    const result = await smcSim(body, send, () => closed)
-    if (result) send({ t: 'result', result })
-  } catch (e) {
-    send({ t: 'error', error: e.message, status: e.status || 500 })
-  }
-  res.end()
-}
-
 // Simulazione in streaming (NDJSON, una riga JSON per evento) per la sfera animata, mentre il calcolo gira:
 // { t: 'phase', msg } · { t: 'load', sym, days, done, total } (un titolo caricato) · { t: 'start', total } ·
 // { t: 'prep', p, day } (preparazione delle candele) · { t: 'days', list: [giorno…] } · { t: 'result', result } · { t: 'error', error }
@@ -428,35 +387,6 @@ async function route(req, url) {
   if (path === '/levels/chat' && m === 'POST') {
     requireAdmin(req)
     try { return await levelsChat(body) } catch (e) { throw new HttpError(e.status || 502, e.message) }
-  }
-  // Turtle: stato, impostazioni, azzeramento e chiusura a mano (Prova e Reale), sempre con il codice di controllo
-  if (path.startsWith('/turtle/')) {
-    requireAdmin(req)
-    try {
-      if (path === '/turtle/state' && m === 'GET') return await turtleState(url.searchParams.get('mode'))
-      if (path === '/turtle/settings' && m === 'POST') return await turtleSave(body.mode, body.settings)
-      if (path === '/turtle/reset' && m === 'POST') return await turtleReset(body.mode, body.capital)
-      if (path === '/turtle/close' && m === 'POST') return await closeTurtle(body.mode, body.id)
-    } catch (e) { throw new HttpError(e.status || 500, e.message) }
-  }
-  // SMC: stato, impostazioni, azzeramento, chiusura a mano, configurazioni, coppie e grafico, sempre con il codice di controllo
-  if (path.startsWith('/smc/')) {
-    requireAdmin(req)
-    try {
-      if (path === '/smc/state' && m === 'GET') return await smcState(url.searchParams.get('mode'))
-      if (path === '/smc/settings' && m === 'POST') return await smcSave(body.mode, body.settings)
-      if (path === '/smc/reset' && m === 'POST') return await smcReset(body.mode, body.capital)
-      if (path === '/smc/close' && m === 'POST') return await closeSmcPos(body.mode, body.id)
-      if (path === '/smc/presets' && m === 'GET') return { presets: await smcPresets() }
-      if (path === '/smc/presets' && m === 'POST') return { presets: await smcSavePreset(body.name, body.settings) }
-      if (path === '/smc/presets/delete' && m === 'POST') return { presets: await smcDeletePreset(body.name) }
-      if (path === '/smc/pairs' && m === 'GET') return { pairs: await smcPairs() }
-      if (path === '/smc/chart' && m === 'POST') {
-        const sym = String(body.symbol || '').toUpperCase()
-        if (!/^[A-Z0-9]{2,24}$/.test(sym)) throw new SmcError('Titolo non valido')
-        return await smcChart(sym, body.settings || {})
-      }
-    } catch (e) { throw new HttpError(e.status || 500, e.message) }
   }
   if (path === '/range/candles' && m === 'GET') {
     const sym = (url.searchParams.get('symbol') || '').toUpperCase(), tfKey = url.searchParams.get('tf') || '', tf = RANGE_TF[tfKey]
@@ -768,8 +698,6 @@ export default async function handler(req, res) {
   const url = new URL(req.url, `https://${req.headers.host || 'localhost'}`)
   const path = '/' + (url.searchParams.get('route') || url.pathname.replace(/^\/api\/?/, '')).replace(/\/+$/, '')
   if (path === '/sim/stream' && req.method === 'POST') return streamSim(req, res, url)
-  if (path === '/turtle/sim' && req.method === 'POST') return streamTurtle(req, res)
-  if (path === '/smc/sim' && req.method === 'POST') return streamSmc(req, res)
   res.setHeader('content-type', 'application/json; charset=utf-8')
   try {
     const out = await route(req, url)

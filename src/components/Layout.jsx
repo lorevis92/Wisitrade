@@ -16,7 +16,7 @@ function Logo() {
 // Menu ad hamburger: tutte le sezioni in gruppi; la voce della pagina aperta è evidenziata. Gli indirizzi non cambiano.
 const MENU = [
   ['Mercato', [['/', 'Live'], ['/watchlist', 'Watchlist'], ['/calendario', 'Calendario'], ['/livelli', 'Livelli']]],
-  ['Strategie', [['/strategia', 'Apertura USA'], ['/rsi', 'RSI'], ['/range', 'Range'], ['/turtle', 'Turtle'], ['/smc', 'SMC']]],
+  ['Strategie', [['/strategia', 'Apertura USA'], ['/rsi', 'RSI'], ['/range', 'Range']]],
   ['Impostazioni', [['/impostazioni', 'Impostazioni']]],
 ]
 const sectionOf = path => MENU.flatMap(([, items]) => items).find(([to]) => (to === '/' ? path === '/' : path.startsWith(to)))?.[1] || ''
