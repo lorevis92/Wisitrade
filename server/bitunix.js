@@ -77,6 +77,14 @@ export async function allTickers() {
   return out
 }
 
+// Tutti i ticker con volume delle ultime 24 ore (USDT) e prezzo: per l'universo dell'ICC Scanner
+export async function marketTickers() {
+  const data = await getJson('/api/v1/futures/market/tickers', { timeout: 8000 })
+  const out = {}
+  for (const t of data || []) out[t.symbol] = { last: +t.lastPrice || +t.last || null, quoteVol: +t.quoteVol || 0 }
+  return out
+}
+
 // Coppie disponibili con precisione e quantità minima (servono per gli ordini)
 export async function tradingPairs() {
   const data = await getJson('/api/v1/futures/market/trading_pairs')

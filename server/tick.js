@@ -4,6 +4,7 @@
 // (posizioni aperte e titoli ancora in gioco nella finestra d'entrata), poi quelle dello scanner.
 import { ASSETS, ASSET_MAP } from '../shared/assets.js'
 import { runRangeAlerts, runRangeFast } from './range-alerts.js'
+import { runIccScan } from './icc.js'
 import { many } from './bitunix.js'
 import { getMeta, setMeta } from './db.js'
 import { nyInfo } from './session.js'
@@ -99,6 +100,10 @@ export async function tick() {
     // per il prossimo giro pesante. Mai durante l'apertura USA (il giro pesante lì non gira comunque).
     else if (!busyOpen && Date.now() - t0 < 42000) {
       try { out.rangeFast = await runRangeFast() } catch (e) { out.rangeFast = { error: e.message } }
+    }
+    // ICC Scanner: dopo ogni chiusura 1H aggiorna a lotti i mercati seguiti (solo analisi), mai durante l'apertura USA e solo se resta tempo
+    if (!busyOpen && Date.now() - t0 < 40000) {
+      try { out.icc = await runIccScan({ budgetMs: Math.min(9000, 48000 - (Date.now() - t0)) }) } catch (e) { out.icc = { error: e.message } }
     }
     // archivio per la Simulazione: solo lontano dall'orario della strategia (dopo le 16:35 o prima delle 7:50 di New York, e nel fine settimana)
     const quiet = !info.isWeekday || info.minutes >= 995 || info.minutes < 470

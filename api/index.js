@@ -25,6 +25,7 @@ import { getMacro } from '../server/macro.js'
 import { paperInfo, paperOpen, paperClose, paperPositions, paperReset } from '../server/manual-paper.js'
 import { getRangeAlerts, setRangeAlerts, getRegistry, getFollow, setFollow } from '../server/range-alerts.js'
 import { rangeBacktest } from '../server/range-backtest.js'
+import { iccState, iccChart, iccBacktest, saveSettings as iccSave, universe as iccUniverse, IccError } from '../server/icc.js'
 import { manualInfo, manualOpen, manualClose, manualPositions, ManualError } from '../server/manual.js'
 import { levelsChat } from '../server/levels-chat.js'
 import { loadLiveSlip, slipValues, PSLIP_KINDS, PSLIP_DEFAULT, PSLIP_LAST, PSLIP_MIN_N } from '../server/pslip.js'
@@ -223,6 +224,25 @@ function simPayload(p, r) {
   return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: p.s0, symbolsUsed: p.s.symbols, apiExcluded: p.apiExcluded, symbolsWithData: withData, ms: { load: p.loadMs, run: Date.now() - p.t0 - p.loadMs } }
 }
 
+// ICC Scanner · backtest in streaming NDJSON: avanzamento per mercato, poi i segnali con l'esito
+async function streamIccBacktest(req, res) {
+  res.setHeader('content-type', 'application/x-ndjson; charset=utf-8')
+  res.setHeader('cache-control', 'no-store')
+  res.setHeader('x-accel-buffering', 'no')
+  let closed = false
+  res.on('close', () => { if (!res.writableEnded) closed = true })
+  const send = obj => { if (!closed) res.write(`${JSON.stringify(obj)}\n`) }
+  try {
+    requireAdmin(req)
+    const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {})
+    const result = await iccBacktest(body, send, () => closed)
+    if (result) send({ t: 'result', result })
+  } catch (e) {
+    send({ t: 'error', error: e.message, status: e.status || 500 })
+  }
+  res.end()
+}
+
 // Range · Simulazione (backtest indipendente dal registro dal vivo) in streaming NDJSON: avanzamento per titolo, poi il risultato
 async function streamRangeBacktest(req, res) {
   res.setHeader('content-type', 'application/x-ndjson; charset=utf-8')
@@ -407,6 +427,17 @@ async function route(req, url) {
   if (path === '/levels/chat' && m === 'POST') {
     requireAdmin(req)
     try { return await levelsChat(body) } catch (e) { throw new HttpError(e.status || 502, e.message) }
+  }
+  // ICC Scanner: dashboard e grafico in sola lettura; impostazioni solo con il codice di controllo
+  if (path === '/icc/state' && m === 'GET') return iccState()
+  if (path === '/icc/chart' && m === 'GET') {
+    try { return await iccChart((url.searchParams.get('symbol') || '').toUpperCase()) } catch (e) { throw new HttpError(e.status || 502, e.message) }
+  }
+  if (path === '/icc/settings' && m === 'POST') {
+    requireAdmin(req)
+    const s = await iccSave(body.settings || {})
+    const u = await iccUniverse(s, Date.now(), true).catch(() => null)
+    return { settings: s, universe: u ? { at: u.at, n: u.list.length, total: u.total } : null }
   }
   if (path === '/range/candles' && m === 'GET') {
     const sym = (url.searchParams.get('symbol') || '').toUpperCase(), tfKey = url.searchParams.get('tf') || '', tf = RANGE_TF[tfKey]
@@ -719,6 +750,7 @@ export default async function handler(req, res) {
   const path = '/' + (url.searchParams.get('route') || url.pathname.replace(/^\/api\/?/, '')).replace(/\/+$/, '')
   if (path === '/sim/stream' && req.method === 'POST') return streamSim(req, res, url)
   if (path === '/range/backtest' && req.method === 'POST') return streamRangeBacktest(req, res)
+  if (path === '/icc/backtest' && req.method === 'POST') return streamIccBacktest(req, res)
   res.setHeader('content-type', 'application/json; charset=utf-8')
   try {
     const out = await route(req, url)

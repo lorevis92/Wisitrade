@@ -201,3 +201,26 @@ alter table wt_range_trades add column if not exists valid_fut boolean;
 alter table wt_range_trades add column if not exists cost_pct_fut double precision;
 alter table wt_range_trades add column if not exists r_net_fut double precision;
 alter table wt_range_trades add column if not exists fees_r_fut double precision;
+
+-- ---------- ICC Scanner: segnali e paper tracking (non distruttivo) ----------
+create table if not exists wt_icc_signals (
+  id text primary key,               -- <titolo>:<setup>
+  symbol text not null,
+  category text not null,            -- crypto | stock | commodity
+  side smallint not null,            -- 1 long, -1 short
+  grade text,                        -- A | B | C
+  scenario text,                     -- a favore del trend | inversione | rottura di range | in range
+  deep boolean,                      -- correzione profonda
+  trend text,                        -- trend daily al momento dell'Indication
+  level_kind text,                   -- zona | swing
+  created_at bigint not null,        -- chiusura della candela 1H di segnale
+  entry double precision, stop double precision, tp1 double precision, tp2 double precision, rr double precision,
+  status text,                       -- aperto | TP1 | TP2 | TP1 poi pareggio | stop | scaduto (tempo)
+  final boolean not null default false,
+  filtered text,                     -- motivo se il segnale è stato filtrato (trend di BTC, limite nella stessa direzione)
+  r double precision, r_net double precision, exit_at bigint, tp1_at bigint,
+  data jsonb,
+  updated_at bigint
+);
+create index if not exists wt_icc_signals_created on wt_icc_signals (created_at desc);
+alter table wt_icc_signals enable row level security;
