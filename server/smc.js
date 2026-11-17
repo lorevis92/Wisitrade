@@ -82,7 +82,7 @@ export async function historyBars(perp, tf, from, now = Date.now(), onMonth = nu
     const key = `smc:m:${perp}:${tf}:${new Date(m).toISOString().slice(0, 7)}`
     let bars = complete ? (await D.getMeta(key).catch(() => null))?.bars?.map(unpack) : null
     if (!bars) {
-      bars = closedOnly(await fetchRange(perp, tf, m, end), tf, now)
+      bars = closedOnly(await fetchRange(perp, tf, m, Math.min(end, now)), tf, now)
       if (complete) await D.setMeta(key, { at: now, bars: bars.map(pack) }).catch(() => {})
     }
     onMonth?.()
