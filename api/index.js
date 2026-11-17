@@ -24,6 +24,7 @@ import { compareDay } from '../server/compare.js'
 import { getMacro } from '../server/macro.js'
 import { paperInfo, paperOpen, paperClose, paperPositions, paperReset } from '../server/manual-paper.js'
 import { getRangeAlerts, setRangeAlerts, getRegistry, getFollow, setFollow } from '../server/range-alerts.js'
+import { rangeBacktest } from '../server/range-backtest.js'
 import { manualInfo, manualOpen, manualClose, manualPositions, ManualError } from '../server/manual.js'
 import { levelsChat } from '../server/levels-chat.js'
 import { loadLiveSlip, slipValues, PSLIP_KINDS, PSLIP_DEFAULT, PSLIP_LAST, PSLIP_MIN_N } from '../server/pslip.js'
@@ -220,6 +221,25 @@ function simPayload(p, r) {
   // titoli scelti che hanno davvero dati nel periodo (senza decomprimere niente)
   const withData = p.s.symbols.filter(sym => p.inPeriod.some(d => sym in p.days[d]))
   return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: p.s0, symbolsUsed: p.s.symbols, apiExcluded: p.apiExcluded, symbolsWithData: withData, ms: { load: p.loadMs, run: Date.now() - p.t0 - p.loadMs } }
+}
+
+// Range · Simulazione (backtest indipendente dal registro dal vivo) in streaming NDJSON: avanzamento per titolo, poi il risultato
+async function streamRangeBacktest(req, res) {
+  res.setHeader('content-type', 'application/x-ndjson; charset=utf-8')
+  res.setHeader('cache-control', 'no-store')
+  res.setHeader('x-accel-buffering', 'no')
+  let closed = false
+  res.on('close', () => { if (!res.writableEnded) closed = true })
+  const send = obj => { if (!closed) res.write(`${JSON.stringify(obj)}\n`) }
+  try {
+    requireAdmin(req)
+    const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {})
+    const result = await rangeBacktest(body, send, () => closed)
+    if (result) send({ t: 'result', result })
+  } catch (e) {
+    send({ t: 'error', error: e.message, status: e.status || 500 })
+  }
+  res.end()
 }
 
 // Simulazione in streaming (NDJSON, una riga JSON per evento) per la sfera animata, mentre il calcolo gira:
@@ -698,6 +718,7 @@ export default async function handler(req, res) {
   const url = new URL(req.url, `https://${req.headers.host || 'localhost'}`)
   const path = '/' + (url.searchParams.get('route') || url.pathname.replace(/^\/api\/?/, '')).replace(/\/+$/, '')
   if (path === '/sim/stream' && req.method === 'POST') return streamSim(req, res, url)
+  if (path === '/range/backtest' && req.method === 'POST') return streamRangeBacktest(req, res)
   res.setHeader('content-type', 'application/json; charset=utf-8')
   try {
     const out = await route(req, url)

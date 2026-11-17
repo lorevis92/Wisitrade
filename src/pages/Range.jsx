@@ -5,7 +5,7 @@ import RangeChart, { TrendChart } from '../components/RangeChart.jsx'
 import StrategyTabs, { useStrategyMode, ComingSoon } from '../components/StrategyTabs.jsx'
 import { Sparkline } from '../components/ManualTrade.jsx'
 import { SymbolPicker, NAMES } from './Rsi.jsx'
-import { get, post, fmtPrice } from '../lib/api.js'
+import { get, post, postStream, fmtPrice } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
 import { currentSubscription } from '../lib/push.js'
 import { analyze, trend4h, weekProfiles, cleanRangeSettings, RANGE_DEFAULTS, LIMITS, FEES, GRADES, KIND_LABEL } from '@shared/range.js'
@@ -436,14 +436,18 @@ function useRegistry() {
   useEffect(() => { refresh(); const id = setInterval(refresh, 300000); return () => clearInterval(id) }, [])
   return [reg, refresh]
 }
-function FollowPicker({ reg, refresh }) {
+// value/onChange: scelta solo locale (Simulazione), non cambia i titoli seguiti dal vivo
+function FollowPicker({ reg, refresh, value = null, onChange = null, title = 'Titoli seguiti dal registro' }) {
+  const local = !!onChange
   const follow = reg?.follow?.symbols || []
-  const [draft, setDraft] = useState(null)
+  const [draft0, setDraft0] = useState(null)
+  const draft = local ? value : draft0
+  const setDraft = local ? (v => onChange(v || [])) : setDraft0
   const [pairs, setPairs] = useState(null)
   const [qq, setQ] = useState('')
   const [msg, setMsg] = useState(null)
-  const authed = !!load('adminCode', '')
-  const sel = draft || follow
+  const authed = local || !!load('adminCode', '')
+  const sel = local ? (value || []) : (draft || follow)
   useEffect(() => { get('/api/rsi/pairs').then(j => setPairs(new Set(j.symbols))).catch(() => {}) }, [])
   const avail = list => (pairs ? list.filter(x => pairs.has(x)) : list)
   const toggle = x => setDraft(sel.includes(x) ? sel.filter(y => y !== x) : [...sel, x])
@@ -452,11 +456,11 @@ function FollowPicker({ reg, refresh }) {
   const saveIt = async () => {
     try { await post('/api/range/follow', { symbols: sel }); setDraft(null); setMsg({ ok: true, text: `${sel.length} titoli seguiti` }); refresh() } catch (e) { setMsg({ ok: false, text: e.message }) }
   }
-  const changed = !!draft && (draft.length !== follow.length || draft.some(x => !follow.includes(x)))
+  const changed = !local && !!draft && (draft.length !== follow.length || draft.some(x => !follow.includes(x)))
   const other = sel.filter(x => !GROUPS.some(([, l]) => l.includes(x)))
   return (
-    <details className="card" style={{ padding: 12 }} open={reg && !follow.length}>
-      <summary className="row"><span className="lab">Titoli seguiti dal registro</span><span className="note mono">{follow.length} titoli{changed ? ' · modifiche da salvare' : ''}</span></summary>
+    <details className="card" style={{ padding: 12 }} open={local ? !sel.length : reg && !follow.length}>
+      <summary className="row"><span className="lab">{title}</span><span className="note mono">{local ? sel.length : follow.length} titoli{changed ? ' · modifiche da salvare' : ''}</span></summary>
       {!authed && <p className="note">Per cambiare i titoli seguiti serve il codice di controllo (lo stesso della pagina Strategia).</p>}
       {GROUPS.map(([name, list0]) => {
         const list = avail(list0), on = list.filter(x => sel.includes(x)).length
@@ -484,7 +488,8 @@ function FollowPicker({ reg, refresh }) {
           <div className="field" style={{ marginTop: 10 }}><input value={qq} onChange={e => setQ(e.target.value)} placeholder="Aggiungi un altro future di Bitunix (es. XAU, SOL)" autoCapitalize="characters" autoCorrect="off" spellCheck={false} /></div>
           {found.length > 0 && <div className="chips" style={{ marginTop: 4 }}>{found.map(x => <button key={x} className="chip" onClick={() => { setDraft([...sel, x]); setQ('') }}>+ {short(x)}</button>)}</div>}
           <div className="row" style={{ gap: 8, marginTop: 10 }}>
-            <button className="btn" style={{ width: 'auto' }} disabled={!changed || sel.length > 200} onClick={saveIt}>Salva ({sel.length})</button>
+            {!local && <button className="btn" style={{ width: 'auto' }} disabled={!changed || sel.length > 200} onClick={saveIt}>Salva ({sel.length})</button>}
+            {local && follow.length > 0 && <button className="chip" onClick={() => setDraft(follow)}>Come i titoli seguiti ({follow.length})</button>}
             {reg?.defaults?.length > 0 && <button className="chip" onClick={() => setDraft(reg.defaults)} title="BTC, ETH e le azioni di Apertura USA operabili via API">Selezione di default ({reg.defaults.length})</button>}
             {changed && <button className="chip" onClick={() => setDraft(null)}>Annulla</button>}
           </div>
@@ -492,8 +497,125 @@ function FollowPicker({ reg, refresh }) {
       )}
       {sel.length > 200 && <div className="note down">Al massimo 200 titoli.</div>}
       {msg && <div className={`note ${msg.ok ? 'up' : 'down'}`} style={{ marginTop: 6 }}>{msg.text}</div>}
-      <p className="note" style={{ marginTop: 6 }}>Il server controlla i titoli seguiti ogni 15 minuti, a rotazione (prima quelli controllati da più tempo, circa 12–15 per giro): con molti titoli ognuno viene ripassato più di rado, ma i setup si registrano lo stesso perché a ogni controllo il server rilegge gli ultimi 6 giorni di candele. Un titolo aggiunto conta da quando lo aggiungi.</p>
+      {local ? <p className="note" style={{ marginTop: 6 }}>Scelta solo per la Simulazione: non cambia i titoli seguiti dal registro dal vivo.</p> : <p className="note" style={{ marginTop: 6 }}>Il server controlla i titoli seguiti ogni 15 minuti, a rotazione (prima quelli controllati da più tempo, circa 12–15 per giro): con molti titoli ognuno viene ripassato più di rado, ma i setup si registrano lo stesso perché a ogni controllo il server rilegge gli ultimi 6 giorni di candele. Un titolo aggiunto conta da quando lo aggiungi.</p>}
     </details>
+  )
+}
+
+// ---------- Cronologia dei trade (dal più recente): registro dal vivo (Prova) o Simulazione, mai insieme ----------
+const recognizedOf = rows => rows.filter(r => r.rr === null || r.rr === undefined || r.rr >= RANGE_DEFAULTS.minRR)
+function Timeline({ title, rows, onOpen, note = null }) {
+  const [sc, setSc] = useState(() => load('rangeRegScen', 'bx'))
+  const [all, setAll] = useState(false)
+  const S = SCEN[sc], net = S.net
+  const list = recognizedOf(rows).slice().sort((a, b) => b.created_at - a.created_at)
+  const shown = all ? list : list.slice(0, 50)
+  const outcome = r => (!r.final || r[net] === null || r[net] === undefined ? (r.fill_at ? 'aperto' : 'non eseguito') : r[net] > 0 ? 'vinto' : 'perso')
+  return (
+    <div className="card" style={{ padding: 12 }}>
+      <div className="row"><span className="lab">{title}</span><span className="note mono">{list.length} setup</span></div>
+      <div className="chips" style={{ marginTop: 6 }}>{Object.entries(SCEN).map(([k, v]) => <button key={k} className={`chip ${sc === k ? 'active' : ''}`} onClick={() => { setSc(k); save('rangeRegScen', k) }}>R netto {v.label}</button>)}</div>
+      {list.length ? (
+        <div className="table-wrap" style={{ marginTop: 8 }}>
+          <table className="tbl clickable">
+            <thead><tr><th>Quando</th><th>Titolo</th><th>Lato</th><th>Tipo</th><th>Voto</th><th>Valido con</th><th>Esito</th><th>R netto</th><th>Risultato</th></tr></thead>
+            <tbody>
+              {shown.map(r => {
+                const o = outcome(r)
+                return (
+                  <tr key={r.id} onClick={() => onOpen?.(r.symbol, r.id.slice(r.symbol.length + 1))} style={!S.valid(r) ? { opacity: 0.55 } : undefined}>
+                    <td>{when(r.created_at)}</td><td><b>{short(r.symbol)}</b></td>
+                    <td className={r.side > 0 ? 'up' : 'down'}>{r.side > 0 ? 'long' : 'short'}</td>
+                    <td>{KIND_LABEL[r.kind]}{r.variant ? ` (${r.variant})` : ''} · {r.range_type}</td>
+                    <td><span className={gradeCls(r.grade)}>{r.grade}</span></td>
+                    <td>{validWith(r.valid, r.valid_fut)}</td>
+                    <td>{statusText(r)}</td>
+                    <td className={r[net] > 0 ? 'up' : r[net] < 0 ? 'down' : ''}>{r[net] !== null && r[net] !== undefined ? fmtR(r[net]) : '—'}</td>
+                    <td className={o === 'vinto' ? 'up' : o === 'perso' ? 'down' : 'sec'}>{o}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : <p className="note">Nessun trade.</p>}
+      {list.length > 50 && <button className="chip" style={{ marginTop: 6 }} onClick={() => setAll(x => !x)}>{all ? 'Solo gli ultimi 50' : `Tutti (${list.length})`}</button>}
+      <p className="note" style={{ marginTop: 6 }}>Dal più recente. Righe chiare = non validi con i costi scelti (restano per vedere come sarebbero andati). Vinto o perso sul risultato netto con quei costi.{note ? ` ${note}` : ''}</p>
+    </div>
+  )
+}
+
+// ---------- Simulazione: backtest indipendente sullo storico (server/range-backtest.js) ----------
+function Backtest({ reg, onOpen }) {
+  const today = new Date().toISOString().slice(0, 10)
+  const [from, setFrom] = useState(() => load('rangeBtFrom', new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10)))
+  const [to, setTo] = useState(() => load('rangeBtTo', today))
+  const [syms, setSymsRaw] = useState(() => load('rangeBtSyms', null))
+  const setSyms = v => { setSymsRaw(v); save('rangeBtSyms', v) }
+  const sel = syms || reg?.follow?.symbols || []
+  const [busy, setBusy] = useState(false)
+  const [prog, setProg] = useState(null)
+  const [res, setRes] = useState(null)
+  const [err, setErr] = useState(null)
+  const [sc, setSc] = useState(() => load('rangeRegScen', 'bx'))
+  const ctl = useRef(null)
+  const run = async () => {
+    setBusy(true); setErr(null); setRes(null); setProg('avvio')
+    ctl.current = new AbortController()
+    try {
+      await postStream('/api/range/backtest', { symbols: sel, from, to }, {
+        signal: ctl.current.signal,
+        onEvent: ev => {
+          if (ev.t === 'phase') setProg(ev.msg)
+          if (ev.t === 'result') setRes(ev.result)
+          if (ev.t === 'error') setErr(ev.error)
+        },
+      })
+    } catch (e) { if (e.name !== 'AbortError') setErr(e.message) } finally { setBusy(false); setProg(null) }
+  }
+  const S = SCEN[sc], net = S.net
+  const rows = res ? recognizedOf(res.rows) : []
+  const valid = rows.filter(S.valid), done = doneOf(valid, sc), tot = done.reduce((x, r) => x + r[net], 0)
+  return (
+    <>
+      <FollowPicker reg={reg} value={sel} onChange={setSyms} title="Titoli della Simulazione" />
+      <div className="card" style={{ padding: 12 }}>
+        <div className="lab">Simulazione sullo storico · indipendente da Prova e dal registro dal vivo</div>
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+          <label className="field" style={{ flex: 1, minWidth: 130 }}><span className="lab" style={{ fontSize: 10 }}>Dal</span><input type="date" value={from} max={to} onChange={e => { setFrom(e.target.value); save('rangeBtFrom', e.target.value) }} /></label>
+          <label className="field" style={{ flex: 1, minWidth: 130 }}><span className="lab" style={{ fontSize: 10 }}>Al</span><input type="date" value={to} max={today} onChange={e => { setTo(e.target.value); save('rangeBtTo', e.target.value) }} /></label>
+        </div>
+        {busy
+          ? <button className="btn" style={{ marginTop: 8 }} onClick={() => ctl.current?.abort()}>Annulla</button>
+          : <button className="btn" style={{ marginTop: 8 }} disabled={!sel.length} onClick={run}>Avvia la simulazione ({sel.length} titoli)</button>}
+        {prog && <p className="note" style={{ marginTop: 6 }}>{prog}</p>}
+        {err && <div className="note down" style={{ marginTop: 6 }}>{err}</div>}
+        <p className="note" style={{ marginTop: 6 }}>Stessa logica del registro dal vivo, con le impostazioni di partenza: contesto 4h, profilo settimanale, range, tocchi, falso breakout, voto A/B/C, filtro costi ({RANGE_DEFAULTS.maxCost}% del rischio) e le stesse uscite. Il periodo si divide in blocchi come il controllo dal vivo (circa 6 giorni di candele a ogni giro). Candele di Bitunix archiviate a mesi; la prima volta vanno scaricate (fino a qualche minuto con molti titoli). Al massimo 120 titoli × mesi per volta. Nessun dato di Prova o del registro viene letto o cambiato.</p>
+      </div>
+      {res && (
+        <>
+          <div className="card" style={{ padding: 12 }}>
+            <div className="row"><span className="lab">Risultato della Simulazione</span><span className="note mono">{new Date(res.from).toLocaleDateString('it-CH')} → {new Date(res.to - 1).toLocaleDateString('it-CH')} · {res.symbols.length} titoli</span></div>
+            <div className="chips" style={{ marginTop: 6 }}>{Object.entries(SCEN).map(([k, v]) => <button key={k} className={`chip ${sc === k ? 'active' : ''}`} onClick={() => { setSc(k); save('rangeRegScen', k) }}>Costi {v.label}</button>)}</div>
+            <div className="rg-levels mono" style={{ marginTop: 8 }}>
+              <span>setup nel periodo <b>{rows.length}</b> <i>rischio/rendimento sufficiente</i></span>
+              <span>validi con {S.label} <b>{valid.length}</b> <i>{rows.length - valid.length} scartati per i costi</i></span>
+              <span>trade conclusi <b>{done.length}</b> <i>vinti {done.length ? Math.round(done.filter(r => r[net] > 0).length / done.length * 100) : 0}%</i></span>
+              <span>risultato netto <b className={tot > 0 ? 'up' : tot < 0 ? 'down' : ''}>{done.length ? fmtR(tot) : '—'}</b> <i>{done.length ? `${fmtR(tot / done.length)} medio` : 'multipli del rischio'}</i></span>
+              <span>serie di perdite più lunga <b className="down">{streak(done, net)}</b></span>
+            </div>
+            <Totals rows={rows} />
+            <div className="lab" style={{ marginTop: 14 }}>Per titolo · validi con {S.label}</div>
+            <StatsTable sc={sc} title="Titolo" rows={valid} keyOf={r => short(r.symbol)} />
+            <StatsTable sc={sc} title="Tipo di trade" rows={valid} keyOf={r => `${KIND_LABEL[r.kind]}${r.variant ? ` (${r.variant})` : ''}`} />
+            <StatsTable sc={sc} title="Voto" rows={valid} keyOf={r => r.grade || '—'} />
+            {res.errors?.length > 0 && <p className="note down">{res.errors.join(' · ')}</p>}
+            {Object.entries(res.perSym || {}).some(([, p]) => p.first > res.from) && <p className="note">Storico più corto del periodo: {Object.entries(res.perSym).filter(([, p]) => p.first > res.from).map(([k, p]) => `${short(k)} dal ${new Date(p.first).toLocaleDateString('it-CH')}`).join(', ')}.</p>}
+          </div>
+          <Timeline title="Cronologia dei trade · Simulazione" rows={res.rows} onOpen={sym => onOpen(sym)} note="Toccando un trade si apre il titolo (il grafico mostra solo gli ultimi 8 giorni)." />
+        </>
+      )}
+    </>
   )
 }
 
@@ -704,10 +826,11 @@ export default function Range() {
       </div>
       {view === 'all' ? (
         <>
-          <FollowPicker reg={reg} refresh={refreshReg} />
-          <Overview reg={reg} onOpen={openSymbol} />
+          {mode !== 'sim' && <FollowPicker reg={reg} refresh={refreshReg} />}
+          {mode !== 'sim' && <Overview reg={reg} onOpen={openSymbol} />}
+          {mode === 'paper' && reg && <Timeline title="Cronologia dei trade · registro dal vivo (Prova)" rows={reg.rows || []} onOpen={openTrade} />}
           {mode === 'paper' && reg && <Registry summary symbol={symbol} onOpen={openTrade} reg={reg} refresh={refreshReg} />}
-          {mode === 'sim' && <ComingSoon what="Simulazione della strategia Range sullo storico" />}
+          {mode === 'sim' && <Backtest reg={reg} onOpen={openSymbol} />}
           {mode === 'live' && <ComingSoon what="Ordini veri della strategia Range" />}
         </>
       ) : <>
@@ -791,7 +914,7 @@ export default function Range() {
       </div>
 
       {mode === 'paper' && (reg ? <Registry symbol={symbol} onOpen={openTrade} reg={reg} refresh={refreshReg} /> : <div className="card note" style={{ padding: 12 }}>Carico il registro…</div>)}
-      {mode === 'sim' && <ComingSoon what="Simulazione della strategia Range sullo storico" />}
+      {mode === 'sim' && <div className="card note" style={{ padding: 12 }}>La Simulazione sullo storico (periodo e titoli a scelta) è nella vista Riepilogo.</div>}
       {mode === 'live' && <ComingSoon what="Ordini veri della strategia Range" />}
       <Settings params={params} setParams={setParams} />
       <div className="card" style={{ padding: 12 }}><AlertToggle symbol={symbol} params={params} /></div>
