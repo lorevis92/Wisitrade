@@ -11,10 +11,11 @@ import { db, q, getMeta, setMeta } from './db.js'
 import { deliver } from './push.js'
 import { getMacro } from './macro.js'
 
-import { analyze, events, cleanRangeSettings, gradeAtLeast, isFinal, RANGE_DEFAULTS, GRADES } from '../shared/range.js'
+import { analyze, events, cleanRangeSettings, gradeAtLeast, isFinal, trend4h, RANGE_DEFAULTS, GRADES } from '../shared/range.js'
 
-const KEY = 'range:alerts', SENT = 'range:sent', FOLLOW = 'range:follow', REG_ERR = 'range:registry:error'
-const MAX_SYMBOLS = 8      // titoli diversi controllati a ogni giro (6 richieste a Bitunix ciascuno)
+const KEY = 'range:alerts', SENT = 'range:sent', FOLLOW = 'range:follow', REG_ERR = 'range:registry:error', STATUS = 'range:status'
+const MAX_SYMBOLS = 8      // titoli con avvisi push controllati a ogni giro (6 richieste a Bitunix ciascuno)
+export const MAX_FOLLOW = 200 // titoli seguiti dal registro: a rotazione, prima quelli controllati da più tempo (entro il tempo del giro)
 const FRESH = 20 * 60000   // si avvisa solo di eventi degli ultimi 20 minuti (niente avvisi vecchi alla prima iscrizione)
 const STALE = 6 * 864e5    // un trade non concluso dopo 6 giorni esce dai dati: si chiude nel registro come "dati finiti"
 export const FOLLOW_DEFAULT = ['BTCUSDT', 'ETHUSDT', 'XAUUSDT']
@@ -50,7 +51,7 @@ export async function getFollow() {
 }
 export async function setFollow(symbols, now = Date.now()) {
   const cur = await getFollow()
-  const list = [...new Set((Array.isArray(symbols) ? symbols : []).filter(isSym))].slice(0, MAX_SYMBOLS)
+  const list = [...new Set((Array.isArray(symbols) ? symbols : []).filter(isSym))].slice(0, MAX_FOLLOW)
   const since = {}
   for (const s of list) since[s] = cur.since?.[s] || now
   const next = { symbols: list, since }
@@ -63,9 +64,9 @@ export async function getRegistry() {
   const follow = await getFollow()
   try {
     const rows = await q(db().from('wt_range_trades').select('*').order('created_at', { ascending: false }).limit(2000))
-    return { rows, follow, paper: await getMeta('range:paper').catch(() => null), error: null, lastError: await getMeta(REG_ERR).catch(() => null) }
+    return { rows, follow, status: (await getMeta(STATUS).catch(() => null)) || {}, paper: await getMeta('range:paper').catch(() => null), error: null, lastError: await getMeta(REG_ERR).catch(() => null) }
   } catch (e) {
-    return { rows: [], follow, error: /wt_range_trades/.test(e.message) ? TABLE_HINT : e.message }
+    return { rows: [], follow, status: (await getMeta(STATUS).catch(() => null)) || {}, error: /wt_range_trades/.test(e.message) ? TABLE_HINT : e.message }
   }
 }
 
@@ -91,19 +92,34 @@ export async function runRangeAlerts({ budgetMs = 15000, now = Date.now() } = {}
   // prima volta: i titoli di partenza si seguono da adesso
   if (follow.symbols.some(s => !follow.since?.[s])) follow = await setFollow(follow.symbols, now)
   const alertSyms = ids.flatMap(id => (byId[id] ? all[id].symbols : []))
-  const symbols = [...new Set([...follow.symbols, ...alertSyms])].slice(0, MAX_SYMBOLS)
+  // prima i titoli con avvisi (servono subito), poi i titoli seguiti a rotazione: quelli controllati da più tempo
+  const status = (await getMeta(STATUS).catch(() => null)) || {}
+  const rot = follow.symbols.slice().sort((a, b) => (status[a]?.at || 0) - (status[b]?.at || 0))
+  const symbols = [...new Set([...alertSyms.slice(0, MAX_SYMBOLS), ...rot])]
   const sent = (await getMeta(SENT)) || {}
   const items = [], done = [], reg = { saved: 0, error: null }
   let finalIds = null
   for (const sym of symbols) {
     if (Date.now() - t0 > budgetMs) break
     let b15, b1h, b4h
-    try { [b15, b1h, b4h] = await Promise.all([klinesBack(sym, '15m', 600), klinesBack(sym, '1h', 400), klinesBack(sym, '4h', 200)]) } catch { continue }
+    try { [b15, b1h, b4h] = await Promise.all([klinesBack(sym, '15m', 600), klinesBack(sym, '1h', 400), klinesBack(sym, '4h', 200)]) } catch (e) { if (follow.symbols.includes(sym)) status[sym] = { ...status[sym], at: now, error: `candele non disponibili: ${e.message}` }; continue }
     const closed = b15.filter(b => b.t + 15 * 60000 <= now), closed4 = b4h.filter(b => b.t + 4 * 3600000 <= now)
     const cache = new Map()
     const run = settings => { const k = JSON.stringify(settings); if (!cache.has(k)) cache.set(k, analyze(closed, settings, { bars1h: b1h, bars4h: closed4 })); return cache.get(k) }
 
     // registro (impostazioni di partenza, sempre le stesse: così le statistiche sono confrontabili)
+    if (follow.symbols.includes(sym)) {
+      // stato attuale del titolo per il riepilogo della pagina (range attivi, setup pronto, trend a 4 ore)
+      try {
+        const res = run(RANGE_DEFAULTS), act = res.ranges.filter(r => r.active)
+        const ready = act.map(r => r.lastSetup).find(x => x && x.valid && ['pronto', 'in corso'].includes(x.status))
+        status[sym] = {
+          at: now, price: closed.at(-1)?.c ?? null, trend: closed4.length ? trend4h(closed4)?.trend ?? null : null,
+          ranges: act.map(r => ({ type: r.type, valid: r.validIdx !== null, top: r.top, bottom: r.bottom })),
+          setup: ready ? { side: ready.side, grade: ready.grade, kind: ready.kind, status: ready.status, entry: ready.entry } : null,
+        }
+      } catch (e) { status[sym] = { at: now, error: e.message } }
+    }
     if (follow.symbols.includes(sym) && !reg.error) {
       try {
         const res = run(RANGE_DEFAULTS), since = follow.since?.[sym] || now
@@ -144,8 +160,10 @@ export async function runRangeAlerts({ budgetMs = 15000, now = Date.now() } = {}
     }
   }
   if (reg.error) await setMeta(REG_ERR, { at: now, error: reg.error }).catch(() => {})
+  for (const k of Object.keys(status)) if (!follow.symbols.includes(k)) delete status[k]
+  await setMeta(STATUS, status).catch(() => {})
   for (const [k, at] of Object.entries(sent)) if (now - at > 7 * 864e5) delete sent[k]
   if (items.length) await setMeta(SENT, sent)
   const r = items.length ? await deliver(items) : { sent: 0 }
-  return { subs: ids.length, symbols: symbols.length, registry: reg, events: done, sent: r.sent, ms: Date.now() - t0 }
+  return { subs: ids.length, symbols: Object.values(status).filter(x => x.at === now).length, follow: follow.symbols.length, registry: reg, events: done, sent: r.sent, ms: Date.now() - t0 }
 }

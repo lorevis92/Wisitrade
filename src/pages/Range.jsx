@@ -9,6 +9,8 @@ import { get, post, fmtPrice } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
 import { currentSubscription } from '../lib/push.js'
 import { analyze, trend4h, weekProfiles, cleanRangeSettings, RANGE_DEFAULTS, LIMITS, FEES, GRADES, KIND_LABEL } from '@shared/range.js'
+import { CRYPTO, ASSET_MAP } from '@shared/assets.js'
+import { STRATEGY_SYMBOLS } from '@shared/opening.js'
 
 const FEATURED = ['BTCUSDT', 'ETHUSDT', 'XAUUSDT']
 const REFRESH = { '15m': 60000, '1h': 600000, '4h': 600000 }
@@ -422,15 +424,149 @@ function PaperRange({ reg, onSaved }) {
   )
 }
 
-function Registry({ symbol, onOpen }) {
+// ---------- Titoli seguiti (scelta multipla, come l'universo di Apertura USA) ----------
+const PERP = sym => ASSET_MAP[sym]?.perp || `${sym}USDT`
+const GROUPS = [
+  ['Crypto dello scanner', CRYPTO.map(a => a.perp)],
+  ['Azioni di Apertura USA', STRATEGY_SYMBOLS.filter(x => ASSET_MAP[x]).map(PERP)],
+]
+function useRegistry() {
   const [reg, setReg] = useState(null)
+  const refresh = () => get('/api/range/registry').then(setReg).catch(e => setReg({ rows: [], follow: { symbols: [] }, status: {}, error: e.message }))
+  useEffect(() => { refresh(); const id = setInterval(refresh, 300000); return () => clearInterval(id) }, [])
+  return [reg, refresh]
+}
+function FollowPicker({ reg, refresh }) {
+  const follow = reg?.follow?.symbols || []
+  const [draft, setDraft] = useState(null)
+  const [pairs, setPairs] = useState(null)
+  const [qq, setQ] = useState('')
+  const [msg, setMsg] = useState(null)
+  const authed = !!load('adminCode', '')
+  const sel = draft || follow
+  useEffect(() => { get('/api/rsi/pairs').then(j => setPairs(new Set(j.symbols))).catch(() => {}) }, [])
+  const avail = list => (pairs ? list.filter(x => pairs.has(x)) : list)
+  const toggle = x => setDraft(sel.includes(x) ? sel.filter(y => y !== x) : [...sel, x])
+  const q2 = qq.trim().toUpperCase()
+  const found = q2 && pairs ? [...pairs].filter(x => x.includes(q2) && !sel.includes(x)).slice(0, 10) : []
+  const saveIt = async () => {
+    try { await post('/api/range/follow', { symbols: sel }); setDraft(null); setMsg({ ok: true, text: `${sel.length} titoli seguiti` }); refresh() } catch (e) { setMsg({ ok: false, text: e.message }) }
+  }
+  const changed = !!draft && (draft.length !== follow.length || draft.some(x => !follow.includes(x)))
+  const other = sel.filter(x => !GROUPS.some(([, l]) => l.includes(x)))
+  return (
+    <details className="card" style={{ padding: 12 }} open={reg && !follow.length}>
+      <summary className="row"><span className="lab">Titoli seguiti dal registro</span><span className="note mono">{follow.length} titoli{changed ? ' · modifiche da salvare' : ''}</span></summary>
+      {!authed && <p className="note">Per cambiare i titoli seguiti serve il codice di controllo (lo stesso della pagina Strategia).</p>}
+      {GROUPS.map(([name, list0]) => {
+        const list = avail(list0), on = list.filter(x => sel.includes(x)).length
+        return (
+          <div key={name} style={{ marginTop: 10 }}>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+              <span className="lab" style={{ fontSize: 10 }}>{name} · {on}/{list.length}</span>
+              <span className="chips">
+                <button className="chip" disabled={!authed} onClick={() => setDraft([...new Set([...sel, ...list])])}>Tutti</button>
+                <button className="chip" disabled={!authed} onClick={() => setDraft(sel.filter(x => !list.includes(x)))}>Nessuno</button>
+              </span>
+            </div>
+            <div className="chips" style={{ marginTop: 4 }}>{list.map(x => <button key={x} className={`chip ${sel.includes(x) ? 'active' : ''}`} disabled={!authed} onClick={() => toggle(x)}>{short(x)}</button>)}</div>
+          </div>
+        )
+      })}
+      {other.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <span className="lab" style={{ fontSize: 10 }}>Altri futures</span>
+          <div className="chips" style={{ marginTop: 4 }}>{other.map(x => <button key={x} className="chip active" disabled={!authed} onClick={() => toggle(x)}>{short(x)} ×</button>)}</div>
+        </div>
+      )}
+      {authed && (
+        <>
+          <div className="field" style={{ marginTop: 10 }}><input value={qq} onChange={e => setQ(e.target.value)} placeholder="Aggiungi un altro future di Bitunix (es. XAU, SOL)" autoCapitalize="characters" autoCorrect="off" spellCheck={false} /></div>
+          {found.length > 0 && <div className="chips" style={{ marginTop: 4 }}>{found.map(x => <button key={x} className="chip" onClick={() => { setDraft([...sel, x]); setQ('') }}>+ {short(x)}</button>)}</div>}
+          <div className="row" style={{ gap: 8, marginTop: 10 }}>
+            <button className="btn" style={{ width: 'auto' }} disabled={!changed || sel.length > 200} onClick={saveIt}>Salva ({sel.length})</button>
+            {changed && <button className="chip" onClick={() => setDraft(null)}>Annulla</button>}
+          </div>
+        </>
+      )}
+      {sel.length > 200 && <div className="note down">Al massimo 200 titoli.</div>}
+      {msg && <div className={`note ${msg.ok ? 'up' : 'down'}`} style={{ marginTop: 6 }}>{msg.text}</div>}
+      <p className="note" style={{ marginTop: 6 }}>Il server controlla i titoli seguiti ogni 15 minuti, a rotazione (prima quelli controllati da più tempo, circa 12–15 per giro): con molti titoli ognuno viene ripassato più di rado, ma i setup si registrano lo stesso perché a ogni controllo il server rilegge gli ultimi 6 giorni di candele. Un titolo aggiunto conta da quando lo aggiungi.</p>
+    </details>
+  )
+}
+
+// ---------- Riepilogo su tutti i titoli seguiti ----------
+function Overview({ reg, onOpen }) {
+  const [sc, setSc] = useState(() => load('rangeRegScen', 'bx'))
+  const [sort, setSort] = useState(() => load('rangeOvSort', 'setup'))
+  if (!reg) return <div className="card note" style={{ padding: 12 }}>Carico il riepilogo…</div>
+  const S = SCEN[sc], net = S.net
+  const follow = reg.follow?.symbols || [], status = reg.status || {}
+  const rows = (reg.rows || []).filter(r => r.rr === null || r.rr >= RANGE_DEFAULTS.minRR)
+  const syms = [...new Set([...follow, ...rows.map(r => r.symbol)])]
+  const per = syms.map(sym => {
+    const mine = rows.filter(r => r.symbol === sym), valid = mine.filter(S.valid), done = doneOf(valid, sc)
+    const tot = done.reduce((x, r) => x + r[net], 0)
+    return { sym, st: status[sym], followed: follow.includes(sym), n: mine.length, valid: valid.length, done: done.length, win: done.filter(r => r[net] > 0).length, tot }
+  })
+  const rank = x => (x.st?.setup ? 3 : x.st?.ranges?.some(r => r.valid) ? 2 : x.st?.ranges?.length ? 1 : 0)
+  const SORTS = { setup: (a, b) => rank(b) - rank(a) || b.n - a.n, r: (a, b) => b.tot - a.tot, n: (a, b) => b.n - a.n, name: (a, b) => a.sym.localeCompare(b.sym) }
+  per.sort(SORTS[sort] || SORTS.setup)
+  const allValid = rows.filter(S.valid), allDone = doneOf(allValid, sc), allTot = allDone.reduce((x, r) => x + r[net], 0)
+  const checked = Object.values(status).map(x => x.at).filter(Boolean)
+  return (
+    <div className="card" style={{ padding: 12 }}>
+      <div className="row"><span className="lab">Riepilogo · tutti i titoli seguiti</span><span className="note mono">{follow.length} titoli</span></div>
+      {reg.error && <div className="warn">{reg.error}</div>}
+      <div className="chips" style={{ marginTop: 6 }}>{Object.entries(SCEN).map(([k, v]) => <button key={k} className={`chip ${sc === k ? 'active' : ''}`} onClick={() => { setSc(k); save('rangeRegScen', k) }}>Costi {v.label}</button>)}</div>
+      <div className="rg-levels mono" style={{ marginTop: 8 }}>
+        <span>adesso <b>{per.filter(x => x.st?.setup).length}</b> <i>titoli con un setup valido pronto o in corso</i></span>
+        <span>range attivi <b>{per.filter(x => x.st?.ranges?.length).length}</b> <i>titoli con almeno un range</i></span>
+        <span>setup registrati <b>{rows.length}</b> <i>validi con {S.label}: {allValid.length}</i></span>
+        <span>trade conclusi <b>{allDone.length}</b> <i>vinti {allDone.length ? Math.round(allDone.filter(r => r[net] > 0).length / allDone.length * 100) : 0}%</i></span>
+        <span>risultato netto <b className={allTot > 0 ? 'up' : allTot < 0 ? 'down' : ''}>{allDone.length ? fmtR(allTot) : '—'}</b> <i>somma in multipli del rischio</i></span>
+      </div>
+      <div className="row" style={{ marginTop: 10, flexWrap: 'wrap', gap: 6 }}>
+        <span className="lab" style={{ fontSize: 10 }}>Ordina</span>
+        <div className="chips">{[['setup', 'Situazione adesso'], ['r', 'Risultato'], ['n', 'Setup'], ['name', 'Nome']].map(([k, l]) => <button key={k} className={`chip ${sort === k ? 'active' : ''}`} onClick={() => { setSort(k); save('rangeOvSort', k) }}>{l}</button>)}</div>
+      </div>
+      {per.length ? (
+        <div className="table-wrap" style={{ marginTop: 8 }}>
+          <table className="tbl clickable">
+            <thead><tr><th>Titolo</th><th>Adesso</th><th>Trend 4h</th><th>Setup</th><th>Validi</th><th>Conclusi</th><th>Vinti</th><th>R netto</th><th>Controllato</th></tr></thead>
+            <tbody>
+              {per.map(x => {
+                const st = x.st, su = st?.setup
+                const nowTxt = su ? `${su.side > 0 ? 'long' : 'short'} ${su.grade} · ${su.status}` : st?.ranges?.length ? st.ranges.map(r => `range ${r.type}${r.valid ? ' valido' : ''}`).join(', ') : st?.error ? 'errore' : st ? '—' : 'in attesa'
+                return (
+                  <tr key={x.sym} onClick={() => onOpen(x.sym)} style={!x.followed ? { opacity: 0.55 } : undefined}>
+                    <td><b>{short(x.sym)}</b></td>
+                    <td className={su ? (su.side > 0 ? 'up' : 'down') : ''}>{nowTxt}</td>
+                    <td className={st?.trend === 'up' ? 'up' : st?.trend === 'down' ? 'down' : 'sec'}>{st?.trend ? TREND[st.trend] : '—'}</td>
+                    <td>{x.n}</td><td>{x.valid}</td><td>{x.done}</td>
+                    <td>{x.done ? `${Math.round(x.win / x.done * 100)}%` : '—'}</td>
+                    <td className={x.tot > 0 ? 'up' : x.tot < 0 ? 'down' : ''}>{x.done ? fmtR(x.tot) : '—'}</td>
+                    <td className="sec">{st?.at ? when(st.at) : '—'}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : <p className="note">Nessun titolo seguito: sceglili qui sopra.</p>}
+      <p className="note" style={{ marginTop: 6 }}>Tocca un titolo per aprire il suo dettaglio (contesto, range, zone, setup sul grafico). "Adesso" = ultimo controllo del server con le impostazioni di partenza{checked.length ? `, l'ultimo ${when(Math.max(...checked))}` : ''}; "in attesa" = non ancora controllato. Righe chiare = titoli non più seguiti con setup ancora nel registro. Numeri del registro automatico, stesse regole e stessi costi.</p>
+    </div>
+  )
+}
+
+function Registry({ symbol, onOpen, reg, refresh, summary = false }) {
   const [msg, setMsg] = useState(null)
   const [sc, setSc] = useState(() => load('rangeRegScen', 'bx'))
-  const [scope, setScope] = useState(() => load('rangeRegScope', 'all'))
+  const [scope0, setScope] = useState(() => load('rangeRegScope', 'all'))
+  const scope = summary ? 'all' : scope0
   const [showAll, setShowAll] = useState(false)
   const authed = !!load('adminCode', '')
-  const refresh = () => get('/api/range/registry').then(setReg).catch(e => setReg({ rows: [], error: e.message }))
-  useEffect(() => { refresh(); const id = setInterval(refresh, 300000); return () => clearInterval(id) }, [])
   if (!reg) return <div className="card note" style={{ padding: 12 }}>Carico il registro…</div>
   const follow = reg.follow?.symbols || []
   const paperCard = <PaperRange reg={reg} onSaved={refresh} />
@@ -456,11 +592,11 @@ function Registry({ symbol, onOpen }) {
         Il server salva ogni setup riconosciuto sui titoli seguiti ({follow.length ? follow.map(short).join(', ') : 'nessuno'}), anche a pagina chiusa, ogni 15 minuti,
         con le impostazioni di partenza, e ne segue l'esito con due scenari di costo: Bitunix (limite {FEES.maker}%, a mercato e stop {FEES.taker}%) e future tipo IBKR ({RANGE_DEFAULTS.futFee}% per lato).
       </p>
-      {authed
-        ? <label className="toggle"><span style={{ fontSize: 13 }}>Segui {short(symbol)} nel registro <span className="note">(al massimo 8 titoli)</span></span><input type="checkbox" checked={on} onChange={toggle} /></label>
+      {summary ? null : authed
+        ? <label className="toggle"><span style={{ fontSize: 13 }}>Segui {short(symbol)} nel registro <span className="note">(al massimo 200 titoli)</span></span><input type="checkbox" checked={on} onChange={toggle} /></label>
         : <p className="note">Per scegliere i titoli seguiti serve il codice di controllo (lo stesso della pagina Strategia).</p>}
       <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
-        <div className="chips">{[['this', `Solo ${short(symbol)}`], ['all', 'Tutti i titoli']].map(([k, l]) => <button key={k} className={`chip ${scope === k ? 'active' : ''}`} onClick={() => { setScope(k); save('rangeRegScope', k) }}>{l}</button>)}</div>
+        {!summary && <div className="chips">{[['this', `Solo ${short(symbol)}`], ['all', 'Tutti i titoli']].map(([k, l]) => <button key={k} className={`chip ${scope === k ? 'active' : ''}`} onClick={() => { setScope(k); save('rangeRegScope', k) }}>{l}</button>)}</div>}
         <div className="chips">{Object.entries(SCEN).map(([k, v]) => <button key={k} className={`chip ${sc === k ? 'active' : ''}`} onClick={() => { setSc(k); save('rangeRegScen', k) }}>{v.label}</button>)}</div>
       </div>
       {msg && <div className="note down">{msg}</div>}
@@ -543,7 +679,11 @@ export default function Range() {
   const past = res ? res.trades.filter(t => t.rrOk).slice().reverse() : []
   const invalidN = res ? res.setups.filter(s => !s.rrOk).length : 0
   const chartRef = useRef(null)
-  const openTrade = (sym, id) => { setSymbolRaw(sym); save('rangeSymbol', sym); setFocusId(id); setTimeout(() => chartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }
+  const [reg, refreshReg] = useRegistry()
+  const [view, setViewRaw] = useState(() => load('rangeView', 'all'))
+  const setView = v => { setViewRaw(v); save('rangeView', v) }
+  const openTrade = (sym, id) => { setSymbolRaw(sym); save('rangeSymbol', sym); setFocusId(id); setView('detail'); setTimeout(() => chartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80) }
+  const openSymbol = sym => { setSymbol(sym); setView('detail'); window.scrollTo({ top: 0, behavior: 'smooth' }) }
   const focus = (res && focusId && res.trades.find(s => s.id === focusId)) || active.map(r => r.lastSetup).find(s => s && s.valid && ['pronto', 'in corso'].includes(s.status)) || null
   const err = data['15m']?.error || data['4h']?.error
 
@@ -552,11 +692,24 @@ export default function Range() {
       <div className="row" style={{ marginBottom: 10 }}>
         <div>
           <div className="lab">Strategia · Range P e B (metodo di Patrick Nill)</div>
-          <div style={{ fontSize: 20, fontWeight: 800, marginTop: 2 }}>{short(symbol)}{NAMES[symbol] ? <span className="sec" style={{ fontSize: 14, fontWeight: 600 }}> · {NAMES[symbol]}</span> : null}</div>
+          <div style={{ fontSize: 20, fontWeight: 800, marginTop: 2 }}>{view === 'all' ? 'Tutti i titoli seguiti' : <>{short(symbol)}{NAMES[symbol] ? <span className="sec" style={{ fontSize: 14, fontWeight: 600 }}> · {NAMES[symbol]}</span> : null}</>}</div>
         </div>
-        <span className="note mono">{b15?.length ? fmtPrice(b15.at(-1).c) : ''}</span>
+        <span className="note mono">{view === 'detail' && b15?.length ? fmtPrice(b15.at(-1).c) : ''}</span>
       </div>
       <StrategyTabs mode={mode} setMode={setMode} />
+      <div className="seg" style={{ marginBottom: 12 }}>
+        <button className={view === 'all' ? 'on' : ''} onClick={() => setView('all')}>Riepilogo</button>
+        <button className={view === 'detail' ? 'on' : ''} onClick={() => setView('detail')}>Dettaglio · {short(symbol)}</button>
+      </div>
+      {view === 'all' ? (
+        <>
+          <FollowPicker reg={reg} refresh={refreshReg} />
+          <Overview reg={reg} onOpen={openSymbol} />
+          {mode === 'paper' && reg && <Registry summary symbol={symbol} onOpen={openTrade} reg={reg} refresh={refreshReg} />}
+          {mode === 'sim' && <ComingSoon what="Simulazione della strategia Range sullo storico" />}
+          {mode === 'live' && <ComingSoon what="Ordini veri della strategia Range" />}
+        </>
+      ) : <>
       <SymbolPicker symbol={symbol} setSymbol={setSymbol} custom={custom} setCustom={setCustom} featured={FEATURED} />
       {err && <div className="warn">Dati non disponibili: {err}</div>}
 
@@ -636,11 +789,12 @@ export default function Range() {
         </p>
       </div>
 
-      {mode === 'paper' && <Registry symbol={symbol} onOpen={openTrade} />}
+      {mode === 'paper' && (reg ? <Registry symbol={symbol} onOpen={openTrade} reg={reg} refresh={refreshReg} /> : <div className="card note" style={{ padding: 12 }}>Carico il registro…</div>)}
       {mode === 'sim' && <ComingSoon what="Simulazione della strategia Range sullo storico" />}
       {mode === 'live' && <ComingSoon what="Ordini veri della strategia Range" />}
       <Settings params={params} setParams={setParams} />
       <div className="card" style={{ padding: 12 }}><AlertToggle symbol={symbol} params={params} /></div>
+      </>}
       <p className="note">
         Candele di Bitunix: 15 minuti degli ultimi 8 giorni (aggiornate ogni minuto), 1 ora per il profilo settimanale, 4 ore per il contesto. Si usano solo candele chiuse.
         Falso breakout verso il basso con rientro = long, verso l'alto = short, nelle P e nelle B, con qualunque trend. Entrata limite sul bordo o a mercato alla chiusura della candela di rientro;
