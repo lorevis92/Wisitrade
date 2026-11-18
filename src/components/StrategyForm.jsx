@@ -34,7 +34,8 @@ const ALL_SYMBOLS = GROUPS.flatMap(g => g.list)
 const nameOf = x => ASSET_MAP[x]?.name || x
 const norm = t => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
 
-export function SymbolPicker({ symbols, onChange }) {
+// off = titoli non operabili sull'exchange della sezione ({ SIMBOLO: motivo }), X = nome dell'exchange (solo Prova e Reale)
+export function SymbolPicker({ symbols, onChange, off = null, X = null }) {
   const [query, setQuery] = useState('')
   const sel = useMemo(() => new Set(symbols), [symbols])
   const q = norm(query.trim())
@@ -43,13 +44,14 @@ export function SymbolPicker({ symbols, onChange }) {
   const shown = ALL_SYMBOLS.filter(match)
   const count = list => list.filter(x => sel.has(x)).length
   const chip = x => (
-    <button key={x} title={nameOf(x)} className={`chip ${sel.has(x) ? 'active' : ''} ${LOW_LIQ_SYMBOLS.includes(x) || LEV_SYMBOLS.includes(x) ? 'low' : ''}`} onClick={() => toggle(x)}>{x}</button>
+    <button key={x} title={off?.[x] ? `${nameOf(x)} · non operabile su ${X}: ${off[x]}` : nameOf(x)} className={`chip ${sel.has(x) ? 'active' : ''} ${LOW_LIQ_SYMBOLS.includes(x) || LEV_SYMBOLS.includes(x) ? 'low' : ''}`} style={off?.[x] ? { opacity: 0.45, textDecoration: 'line-through' } : undefined} onClick={() => toggle(x)}>{x}</button>
   )
   return (
     <>
-      <div className="lab" style={{ marginTop: 14 }}>Titoli · {count(ALL_SYMBOLS)} scelti su {ALL_SYMBOLS.length}</div>
+      <div className="lab" style={{ marginTop: 14 }}>Titoli · {count(ALL_SYMBOLS)} scelti su {ALL_SYMBOLS.length}{off ? ` · operabili su ${X}: ${ALL_SYMBOLS.filter(x => !off[x]).length} (${count(ALL_SYMBOLS.filter(x => !off[x]))} scelti)` : ''}</div>
       <div className="chips" style={{ marginTop: 6 }}>
         <button className="chip" onClick={() => onChange(ALL_SYMBOLS)}>tutti</button>
+        {off && <button className="chip" onClick={() => onChange(ALL_SYMBOLS.filter(x => !off[x]))}>tutti gli operabili su {X}</button>}
         <button className="chip" onClick={() => onChange([])}>nessuno</button>
         <button className="chip" onClick={() => onChange(ORIGINAL_SYMBOLS)}>i {ORIGINAL_SYMBOLS.length} originali</button>
         <button className="chip" onClick={() => onChange(NEW_SYMBOLS)}>solo i nuovi</button>
@@ -82,7 +84,7 @@ export function SymbolPicker({ symbols, onChange }) {
 }
 
 // Regole della strategia (sezione richiudibile)
-export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (Prova)', sim = false }) {
+export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (Prova)', sim = false, X = 'Bitunix', off = null }) {
   return (
     <details className="card">
       <summary className="lab" style={{ cursor: 'pointer' }}>Regole della strategia · tocca per modificare</summary>
@@ -138,11 +140,11 @@ export function RulesCard({ s, set, showFee, feeLabel = 'Commissione per lato (P
         <Select label="Stop oltre la liquidazione" value={s.liqGuard ? 'on' : 'off'} options={['on', 'off']} fmt={v => (v === 'on' ? 'non aprire il trade' : 'apri comunque')}
           onChange={v => set('liqGuard', v === 'on')} hint="nel Reale non si apre mai, qualunque sia la scelta" />
         <Select label="Margine di mantenimento" value={s.mmr} options={OPTIONS.mmr} fmt={v => `${num(v)}%`} onChange={v => set('mmr', v)}
-          hint="usato solo se Bitunix non lo fornisce per quel titolo" />
+          hint={`usato solo se ${X} non lo fornisce per quel titolo`} />
         <Select label="Commissione di liquidazione" value={s.liqFee} options={OPTIONS.liqFee} fmt={v => `${num(v)}%`} onChange={v => set('liqFee', v)}
           hint="del valore della posizione" />
       </div>
-      <SymbolPicker symbols={s.symbols} onChange={v => set('symbols', v)} />
+      <SymbolPicker symbols={s.symbols} onChange={v => set('symbols', v)} off={off} X={X} />
       <p className="note" style={{ marginTop: 10 }}>Unità di volatilità = la più grande tra l'ATR delle candele da 15 minuti e l'escursione media della prima candela dei giorni precedenti. Finché il guadagno non supera mezza unità resta solo lo stop loss.</p>
     </details>
   )
@@ -236,9 +238,9 @@ export function PositionsField({ s, set }) {
   return <Select label="Posizioni al giorno" value={s.maxPos} options={OPTIONS.maxPos} fmt={v => lab('maxPos', v) || `massimo ${v}`} onChange={v => set('maxPos', v)} />
 }
 
-// Riepilogo: margine a trade, valore della posizione, esposizione massima e avviso sul minimo di Bitunix.
+// Riepilogo: margine a trade, valore della posizione, esposizione massima e avviso sul minimo dell'exchange (X).
 // mins = { SIMBOLO: valore minimo di un ordine in USDT (quantità minima × prezzo) }
-export function ExposureInfo({ s, sz, mins }) {
+export function ExposureInfo({ s, sz, mins, X = 'Bitunix' }) {
   const pos = s.maxPos > 0 ? s.maxPos : null
   const expo = pos ? sz.notional * pos : null
   const marginTot = pos ? sz.margin * pos : null
@@ -251,16 +253,19 @@ export function ExposureInfo({ s, sz, mins }) {
       <div className="kv"><span className="sec">Esposizione massima (margine × leva × posizioni)</span><span className="mono">{expo !== null ? `${fmtUsdLocal(expo, 0)} USDT · ${cap > 0 ? Math.round(expo / cap * 100) : '—'}% del capitale` : 'senza limite di posizioni'}</span></div>
       <div className="kv"><span className="sec">Margine impegnato con tutte le posizioni aperte</span><span className="mono">{marginTot !== null ? `${fmtUsdLocal(marginTot, 0)} USDT · ${cap > 0 ? Math.round(marginTot / cap * 100) : '—'}% del capitale` : '—'}</span></div>
       {marginTot !== null && cap > 0 && marginTot > cap * 1.0001 && <div className="note" style={{ color: 'var(--warn)' }}>Con tutte le posizioni aperte insieme il margine supererebbe il capitale: nel Reale le ultime si salterebbero per saldo insufficiente (la Simulazione non lo considera).</div>}
-      {under.length > 0 && <div className="warn">Con {fmtUsdLocal(sz.notional)} USDT a posizione, {under.length} titoli su {s.symbols.length} sono sotto o vicini al minimo di Bitunix e nel Reale verrebbero saltati: {under.slice(0, 12).join(', ')}{under.length > 12 ? '…' : ''}.</div>}
+      {under.length > 0 && <div className="warn">Con {fmtUsdLocal(sz.notional)} USDT a posizione, {under.length} titoli su {s.symbols.length} sono sotto o vicini al minimo di {X} e nel Reale verrebbero saltati: {under.slice(0, 12).join(', ')}{under.length > 12 ? '…' : ''}.</div>}
     </div>
   )
 }
 const fmtUsdLocal = (v, d = 2) => (v === null || v === undefined || !Number.isFinite(v) ? '—' : v.toLocaleString('it-CH', { minimumFractionDigits: d, maximumFractionDigits: d }))
 
-// Valore minimo di un ordine per titolo (dal server, una volta per pagina)
-let minsCache = null
-export function useMins() {
-  const [mins, setMins] = useState(minsCache)
-  useEffect(() => { if (!minsCache) get('/api/minnotional').then(r => { minsCache = r.mins; setMins(r.mins) }).catch(() => {}) }, [])
+// Valore minimo di un ordine per titolo sull'exchange ex (dal server, una volta per pagina ed exchange)
+const minsCache = {}
+export function useMins(ex = 'bitunix') {
+  const [mins, setMins] = useState(minsCache[ex] || null)
+  useEffect(() => {
+    setMins(minsCache[ex] || null)
+    if (!minsCache[ex]) get(`/api/minnotional?ex=${ex}`).then(r => { minsCache[ex] = r.mins; setMins(r.mins) }).catch(() => {})
+  }, [ex])
   return mins
 }

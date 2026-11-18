@@ -29,7 +29,7 @@ export function prepFromBars(bars, today) {
   for (const b of rth) (byDate[b.date] ||= []).push(b)
   const dates = Object.keys(byDate).sort().filter(d => byDate[d].length >= 8)
   const prev = dates.slice(-LOOKBACK)
-  if (prev.length < MIN_HISTORY) return { ok: false, why: `solo ${prev.length} giorni di storico su Bitunix` }
+  if (prev.length < MIN_HISTORY) return { ok: false, why: `solo ${prev.length} giorni di storico sull'exchange` }
   // ATR (Wilder 14) sulle candele da 15 min in orario di borsa
   const seq = dates.flatMap(d => byDate[d])
   let atr = NaN

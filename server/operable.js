@@ -9,6 +9,7 @@
 import { getMeta, setMeta } from './db.js'
 import { adapter } from './exchanges/index.js'
 import { exSuffix, exName, DEFAULT_EX } from '../shared/venues.js'
+import { STRATEGY_SYMBOLS } from '../shared/opening.js'
 
 export const RECHECK_DAYS = 7
 const KEY = ex => `api:marks${exSuffix(ex)}`
@@ -57,9 +58,17 @@ export async function clearMarks(sym, ex = DEFAULT_EX) {
   await setMeta(KEY(ex), marks)
 }
 
-// Vista per la pagina: titoli della strategia non operabili, con motivo e date
+// Vista per la pagina. La lista di ogni exchange parte da tutto l'universo della strategia (STRATEGY_SYMBOLS), indipendente
+// dagli altri exchange: universe/uniOk = titoli dell'universo e quanti sono operabili su questo exchange, all = esclusi
+// dell'universo con motivo e date. total/ok/list = gli stessi conti sui titoli scelti nelle impostazioni (che non cambiano).
 export async function operableView(symbols, ex = DEFAULT_EX) {
   const op = await operable(Date.now(), ex)
-  const list = symbols.map(sym => ({ symbol: sym, ...(op.check(sym) || {}) })).filter(x => x.kind)
-  return { ex, pairsAt: op.pairsAt, recheckDays: RECHECK_DAYS, total: symbols.length, ok: symbols.length - list.length, list }
+  const row = sym => ({ symbol: sym, ...(op.check(sym) || {}) })
+  const all = STRATEGY_SYMBOLS.map(row).filter(x => x.kind)
+  const list = symbols.map(row).filter(x => x.kind)
+  return {
+    ex, pairsAt: op.pairsAt, recheckDays: RECHECK_DAYS,
+    universe: STRATEGY_SYMBOLS.length, uniOk: STRATEGY_SYMBOLS.length - all.length, all,
+    total: symbols.length, ok: symbols.length - list.length, list,
+  }
 }

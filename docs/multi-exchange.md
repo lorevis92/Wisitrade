@@ -111,6 +111,23 @@ Altri limiti:
 - la verifica a posteriori dello storico degli stop (`auditStops`, docs/stop-bitunix.md) c'è solo per Bitunix;
 - nel confronto serale di Bitget, la Simulazione usa le candele di Bitunix: le differenze comprendono anche quelle tra i due contratti.
 
+## Titoli operabili per exchange
+
+Ogni exchange ha la sua lista, che parte da tutti i titoli dell'universo della strategia (`STRATEGY_SYMBOLS`) e non dipende dagli altri exchange.
+
+- **Bitunix:** si tolgono le coppie con `isApiSupported = false`.
+- **Bitget:** si tolgono i titoli senza perpetuo USDT sul titolo (`symbolType` "stock", stato online). Con i dati del 18/11/2026 sono operabili 172 titoli su 181. Sono esclusi gli 8 senza perpetuo e MA, che su Bitget non è classificato come titolo.
+- **Per tutti:** si tolgono anche i titoli rifiutati nel Reale di quell'exchange, che si riprovano dopo 7 giorni.
+
+La strategia usa i titoli scelti nelle impostazioni che sono operabili su quell'exchange. La selezione salvata non cambia.
+
+Nella pagina usano la lista dell'exchange della sezione:
+
+- il riquadro dei titoli operabili, con il conto sull'universo e sui titoli scelti;
+- il conteggio dei titoli pronti;
+- l'avviso sui titoli sotto il minimo per ordine, con la quantità minima e i 5 USDT di Bitget;
+- la scelta dei titoli: i non operabili sono barrati e c'è il pulsante "tutti gli operabili su …".
+
 ## Prova
 
 C'è una Prova per ogni exchange, con lo slittamento misurato sul Reale dello stesso exchange (`liveslip:bitget`). Finché il Reale Bitget ha meno di 5 trade di un tipo, vale lo 0,05%.

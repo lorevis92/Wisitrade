@@ -113,6 +113,28 @@ await test('titoli operabili per exchange: su Bitget esclusi quelli senza perpet
   assert.ok(D.tables.wt_meta.some(r => r.key === 'api:marks:bitget') && !D.tables.wt_meta.some(r => r.key === 'api:marks'))
 })
 
+await test('lista di Bitget indipendente da Bitunix: parte da tutto l\'universo, toglie solo i titoli senza perpetuo e i rifiutati', async () => {
+  const { STRATEGY_SYMBOLS } = await import('../shared/opening.js')
+  const { perpOf } = await import('../server/exchanges/bitget.js')
+  // Bitget: perpetuo per tutti i titoli dell'universo tranne DIS; Bitunix: AAPL non operabile via API (non deve contare per Bitget)
+  __setDb(fakeDb({ wt_meta: [] }).client); await (await import('../server/exchanges/bitget.js')).bitget.resetPairs() // via l'elenco in memoria
+  const list = STRATEGY_SYMBOLS.filter(s => s !== 'DIS').map(s => ({ ...PAIR, symbol: perpOf(s) }))
+  const D = fakeDb({ wt_meta: [
+    { key: 'bitget:pairs', value: { at: Date.now(), list } },
+    { key: 'pairs', value: { at: Date.now(), list: [{ symbol: 'AAPLUSDT', api: false }] } },
+    { key: 'api:marks', value: { NVDA: { kind: 'ordini', why: 'x', at: Date.now() } } },
+    { key: 'api:marks:bitget', value: { TSLA: { kind: 'stop', why: 'y', at: Date.now() } } },
+  ] }); __setDb(D.client)
+  const { operableView } = await import('../server/operable.js')
+  const v = await operableView(['AAPL', 'NVDA', 'TSLA', 'DIS'], 'bitget') // scelti nelle impostazioni (non cambiano)
+  assert.equal(v.universe, STRATEGY_SYMBOLS.length)
+  assert.equal(v.uniOk, STRATEGY_SYMBOLS.length - 2) // solo DIS (senza perpetuo) e TSLA (rifiutato nel Reale Bitget)
+  assert.deepEqual(v.all.map(x => x.symbol).sort(), ['DIS', 'TSLA'])
+  assert.equal(v.total, 4); assert.equal(v.ok, 2) // AAPL e NVDA restano operabili su Bitget
+  const bx = await operableView(['AAPL', 'NVDA', 'TSLA'], 'bitunix')
+  assert.deepEqual(bx.list.map(x => x.symbol).sort(), ['AAPL', 'NVDA']) // Bitunix ha la sua lista
+})
+
 // ---------- Controllo veloce con due exchange ----------
 await test('controllo veloce: ogni conto usa prezzi, aperture e preparazione del suo exchange', async () => {
   let clock = T(569, 50)

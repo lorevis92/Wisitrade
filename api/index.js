@@ -669,20 +669,22 @@ async function route(req, url) {
   }
 
   // ---- Valore minimo di un ordine per titolo (quantità minima di Bitunix × prezzo attuale), in cache per un'ora ----
+  // Per exchange (?ex=bitunix|bitget): quantità minima × prezzo dell'exchange, e il valore minimo dell'ordine se l'exchange ne ha uno
   if (path === '/minnotional' && m === 'GET') {
-    const c = await getMeta('mins')
-    if (c && Date.now() - c.at < 3600000) return { mins: c.mins, at: c.at }
-    const pairs = await getPairs()
+    const ex = exParam(url.searchParams.get('ex')), a = adapter(ex), key = `mins${exSuffix(ex)}`
+    const c = await getMeta(key)
+    if (c && Date.now() - c.at < 3600000) return { ex, mins: c.mins, at: c.at }
+    const pairs = await a.pairs()
     const byPerp = Object.fromEntries(pairs.map(p => [p.symbol, p]))
-    const perps = STRATEGY_SYMBOLS.map(x => ASSET_MAP[x]?.perp).filter(x => x && byPerp[x])
-    const tk = await tickers(perps)
+    const perps = STRATEGY_SYMBOLS.map(x => a.perpOf(x)).filter(x => x && byPerp[x])
+    const tk = await a.tickers(perps)
     const mins = {}
     for (const sym of STRATEGY_SYMBOLS) {
-      const perp = ASSET_MAP[sym]?.perp, pair = byPerp[perp], px = tk[perp]?.last
-      if (pair && px) mins[sym] = +(Math.max(pair.minQty || 0, 10 ** -(pair.basePrecision ?? 3)) * px).toFixed(4)
+      const perp = a.perpOf(sym), pair = byPerp[perp], px = tk[perp]?.last
+      if (pair && px) mins[sym] = +Math.max(Math.max(pair.minQty || 0, 10 ** -(pair.basePrecision ?? 3)) * px, pair.minNotional || 0).toFixed(4)
     }
-    await setMeta('mins', { at: Date.now(), mins }).catch(() => {})
-    return { mins, at: Date.now() }
+    await setMeta(key, { at: Date.now(), mins }).catch(() => {})
+    return { ex, mins, at: Date.now() }
   }
 
   // ---- Spread e profondità registrati alle 9:30–9:35 (mediana per titolo degli ultimi giorni di borsa) ----

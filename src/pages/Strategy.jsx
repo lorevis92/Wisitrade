@@ -151,16 +151,16 @@ function Operable({ op, busy, onRecheck, X = 'Bitunix' }) {
   if (!op || op.error) return op?.error ? <div className="note">Titoli operabili via API: {op.error}</div> : null
   return (
     <details className="card">
-      <summary className="lab" style={{ cursor: 'pointer' }}>Titoli operabili via API · {op.ok} su {op.total}{op.list.length ? ` · ${op.list.length} esclusi` : ''}</summary>
+      <summary className="lab" style={{ cursor: 'pointer' }}>Titoli operabili su {X} · {op.uniOk ?? op.ok} su {op.universe ?? op.total} · dei tuoi scelti {op.ok} su {op.total}</summary>
       <div className="note" style={{ marginTop: 8 }}>
-        Si usano solo i titoli che {X} accetta via API (Prova e Reale di {X}, stessa lista). Coppie di {X} rilette ogni giorno: ultimo controllo {dmy(op.pairsAt)}.
+        La lista di {X} parte da tutti i {op.universe ?? op.total} titoli dell'universo, indipendente dagli altri exchange: si usano i titoli scelti che {X} accetta via API (Prova e Reale di {X}, stessa lista). Coppie di {X} rilette ogni giorno: ultimo controllo {dmy(op.pairsAt)}.
         Un titolo rifiutato nel Reale (ordine o stop loss) si ritenta da solo dopo {op.recheckDays} giorni.
       </div>
-      {op.list.length > 0 && (
+      {(op.all || op.list).length > 0 && (
         <div className="table-wrap" style={{ marginTop: 8 }}>
           <table className="tbl"><thead><tr><th>Titolo</th><th>Motivo</th><th>Dal</th><th>Si riprova</th></tr></thead>
-            <tbody>{op.list.map(x => (
-              <tr key={x.symbol}><td className="mono">{x.symbol}</td><td title={x.why}>{KIND[x.kind] || x.kind}</td><td className="mono">{dmy(x.at)}</td><td className="mono">{x.until ? dmy(x.until) : `quando ${X} lo abilita`}</td></tr>
+            <tbody>{(op.all || op.list).map(x => (
+              <tr key={x.symbol}><td className="mono">{x.symbol}{op.list.some(y => y.symbol === x.symbol) ? ' · scelto' : ''}</td><td title={x.why}>{KIND[x.kind] || x.kind}</td><td className="mono">{dmy(x.at)}</td><td className="mono">{x.until ? dmy(x.until) : `quando ${X} lo abilita`}</td></tr>
             ))}</tbody></table>
         </div>
       )}
@@ -208,7 +208,7 @@ export default function Strategy() {
   const [armStart, setArmStart] = useState(false)
   const [selDay, setSelDay] = useState(null)
   const [chartId, setChartId] = useState(null) // posizione di cui si mostra il grafico della giornata
-  const mins = useMins() // giorno scelto nella panoramica: filtra le operazioni chiuse
+  const mins = useMins(EX_LIST.includes(ex) ? ex : 'bitunix') // valore minimo di un ordine sull'exchange della sezione
   const [draftFrom, setDraftFrom] = useState(null) // { name, presetId, settings }: impostazione salvata caricata nella bozza
 
   const refresh = useCallback(() => mode === 'sim' || ex === 'total' ? Promise.resolve() : get(`/api/strategy?mode=${mode}&ex=${ex}`)
@@ -371,7 +371,7 @@ export default function Strategy() {
         {tickAge !== null && tickAge > 5 * 60000 && <div className="warn">L'ultimo controllo è di {ago(st.lastTick.at)}: il controllo ogni minuto non sta girando. Verifica cron-job.org.</div>}
         {tickAge === null && <div className="warn">Il controllo ogni minuto non è ancora partito: configura cron-job.org (vedi README).</div>}
         <div className="grid2" style={{ marginTop: 10 }}>
-          <div className="tile"><div className="lab">Oggi</div><div className="mono" style={{ marginTop: 4 }}>{t.tradingDay ? `${t.prepared}/${s.symbols.length} titoli pronti` : 'borsa chiusa'}</div></div>
+          <div className="tile"><div className="lab">Oggi</div><div className="mono" style={{ marginTop: 4 }}>{t.tradingDay ? `${t.prepared}/${view.operable?.ok ?? s.symbols.length} titoli pronti` : 'borsa chiusa'}</div></div>
           <div className="tile"><div className="lab">Ultimo controllo</div><div className="mono" style={{ marginTop: 4 }}>{st.lastTick?.at ? ago(st.lastTick.at) : '—'}</div></div>
           <div className="tile">
             <div className="lab">Indice di attività</div>
@@ -419,7 +419,7 @@ export default function Strategy() {
             hint={<>posizione da <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.notional)} USDT</b></>} />
           <PositionsField s={s} set={set} />
         </div>
-        <ExposureInfo s={s} sz={sz} mins={mins} />
+        <ExposureInfo s={s} sz={sz} mins={mins} X={X} />
         {s.capitalMode === 'dedicated' && <DedicatedCapital c={view.capital} s={s} set={set} mode={mode} X={X} />}
         {mode === 'paper' && (
           <div style={{ marginTop: 12, borderTop: '1px solid var(--border-soft)', paddingTop: 10 }}>
@@ -439,7 +439,7 @@ export default function Strategy() {
       <Operable op={view.operable} busy={busy} X={X} onRecheck={() => act(() => post('/api/strategy/operable/recheck', { mode, ex }), 'Lista ricontrollata.')} />
 
       {/* Regole */}
-      <RulesCard s={s} set={set} showFee={mode === 'paper'} />
+      <RulesCard s={s} set={set} showFee={mode === 'paper'} X={X} off={view.operable?.all ? Object.fromEntries(view.operable.all.map(x => [x.symbol, x.why])) : null} />
       <PresetsCard current={normalizeSettings(s)} onLoad={(st, name, id) => {
         const ns = normalizeSettings(st)
         setDraft(ns); setDraftFrom(name && name !== 'default' ? { name, presetId: id ?? null, settings: ns } : { name: 'default dell\'app', presetId: null, settings: ns })
