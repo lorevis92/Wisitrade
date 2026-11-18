@@ -146,7 +146,8 @@ export function normalizeSettings(s = {}) {
 
 // Capitale da usare e dimensione di ogni trade a partire dal saldo della piattaforma
 // Impostazioni di un conto: nel Reale, se non è mai stato scelto, il capitale è "dedicato" (default)
-export const settingsFor = (mode, raw = {}) => normalizeSettings(mode === 'live' && !raw?.capitalMode ? { ...raw, capitalMode: 'dedicated' } : raw)
+// mode = chiave del conto (paper, live, paper:bitget, live:bitget…): il Reale di ogni exchange parte con il capitale dedicato
+export const settingsFor = (mode, raw = {}) => normalizeSettings(String(mode).split(':')[0] === 'live' && !raw?.capitalMode ? { ...raw, capitalMode: 'dedicated' } : raw)
 
 // Capitale da usare. platformBalance = saldo (nel Reale quello disponibile su Bitunix).
 // dedicatedNow = capitale dedicato attuale; senza (Simulazione) il capitale dedicato è il saldo della simulazione.

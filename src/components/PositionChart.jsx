@@ -1,8 +1,9 @@
 // Grafico della giornata di una posizione di Prova o Reale (aperta o chiusa): candele da 1 minuto, entrata e uscita,
 // apertura delle 9:30 e soglia del segnale, stop (iniziale, come si è spostato, finale), livello più vicino, liquidazione.
-// Nel Reale anche prezzo del segnale e prezzo eseguito su Bitunix, con slittamento e ritardo. Le posizioni aperte si
+// Nel Reale anche prezzo del segnale e prezzo eseguito sull'exchange del conto, con slittamento e ritardo. Le posizioni aperte si
 // aggiornano da sole. Solo lettura: non cambia niente nella logica della strategia.
 import { useEffect, useRef, useState } from 'react'
+import { EXCHANGES } from '@shared/venues.js'
 import { createChart, CandlestickSeries, HistogramSeries, LineSeries, createSeriesMarkers, LineStyle, CrosshairMode } from 'lightweight-charts'
 import { get, fmtPrice, fmtSigned } from '../lib/api.js'
 import { exitLevel } from '@shared/opening.js'
@@ -51,7 +52,10 @@ export default function PositionChart({ id, mode, onClose }) {
   const px = open ? (data.price ?? bars?.at(-1)?.c ?? null) : null
   const thr = p ? p.open_price * (1 + (p.move_pct || 0) / 100) : null
   const ex = p?.exchange || {}, slip = ex.slip || {}, tm = ex.timing || {}
-  const live = mode === 'live' && p?.mode === 'live'
+  // conto della posizione: paper/live (Bitunix) o paper:<exchange>/live:<exchange>
+  const [pKind, pEx] = String(p?.mode || '').split(':')
+  const exName = EXCHANGES[pEx || 'bitunix']?.name || 'Bitunix'
+  const live = mode === 'live' && pKind === 'live'
   const half = p?.half_done && p.half_qty > 0 ? p.half_qty : 0
   const upnl = open && px ? p.side * (px - p.entry) * (p.qty - half) + (half ? p.side * (p.half_px - p.entry) * half : 0) : null
   const pnl = open ? upnl : p?.pnl
@@ -87,7 +91,7 @@ export default function PositionChart({ id, mode, onClose }) {
     if (!open) pl(p.exit, p.pnl >= 0 ? C.up : C.down, 'uscita')
     if (sp) pl(sp.init, C.down, 'stop iniziale', LineStyle.Dotted)
     if (sp && Math.abs(p.init_stop - sp.init) > p.unit * 0.01) pl(p.init_stop, C.warn, 'stop finale', LineStyle.Dotted)
-    if (live && ex.sl && sp && Math.abs(ex.sl - sp.init) > p.unit * 0.01) pl(ex.sl, C.down, 'stop Bitunix', LineStyle.SparseDotted)
+    if (live && ex.sl && sp && Math.abs(ex.sl - sp.init) > p.unit * 0.01) pl(ex.sl, C.down, `stop ${exName}`, LineStyle.SparseDotted)
     if (p.level?.p) pl(p.level.p, C.line, p.level.t, LineStyle.Dotted)
     if (p.liq_price > 0) pl(p.liq_price, C.down, 'liquidazione', LineStyle.LargeDashed)
     if (p.half_done && p.half_px) pl(p.half_px, C.warn, 'metà chiusa', LineStyle.Dashed)
@@ -128,7 +132,7 @@ export default function PositionChart({ id, mode, onClose }) {
         <div className="row">
           <div>
             <b>{p?.symbol || '…'}</b> {p && <span className={`pill ${p.side > 0 ? 'long' : 'short'}`}>{p.side > 0 ? 'Long' : 'Short'}</span>}
-            {p && <span className="note"> {dayFmt(p.day, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })} · {mode === 'live' ? 'Reale' : 'Prova'}{open ? ' · aperta' : ''}</span>}
+            {p && <span className="note"> {dayFmt(p.day, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })} · {mode === 'live' ? 'Reale' : 'Prova'} {exName}{open ? ' · aperta' : ''}</span>}
           </div>
           <button className="icon-btn" onClick={onClose} aria-label="Chiudi">✕</button>
         </div>
@@ -148,12 +152,12 @@ export default function PositionChart({ id, mode, onClose }) {
             {live && (
               <div className="pos-grid mono" style={{ marginTop: 8 }}>
                 <span>segnale {tm.src ? `(${tm.src})` : ''}<br /><b>{hms(tm.signalAt)}</b><br />{fmtPrice(slip.sigIn)}{slip.sigPx && Math.abs(slip.sigPx - slip.sigIn) > 1e-9 ? ` · letto ${fmtPrice(slip.sigPx)}` : ''}</span>
-                <span>eseguito su Bitunix<br /><b>{hms(tm.fillAt)}</b><br />{fmtPrice(slip.fillIn)}</span>
+                <span>eseguito su {exName}<br /><b>{hms(tm.fillAt)}</b><br />{fmtPrice(slip.fillIn)}</span>
                 <span>slittamento entrata<br /><b className={slIn === null ? '' : slIn < 0 ? 'down' : 'up'}>{slIn === null ? '—' : `${fmtSigned(slIn, 3)}%`}</b><br />ritardo {delay === null ? '—' : `${delay.toFixed(1)} s`}</span>
-                <span>uscita: livello → eseguito<br /><b>{open ? '—' : `${fmtPrice(slip.sigOut)} → ${slip.fillOut ? fmtPrice(slip.fillOut) : 'n.d.'}`}</b><br />{open ? `stop Bitunix ${fmtPrice(ex.sl)}` : slOut === null ? '' : <span className={slOut < 0 ? 'down' : 'up'}>{fmtSigned(slOut, 3)}%{slip.byExchange ? ' (stop di Bitunix)' : ''}</span>}</span>
+                <span>uscita: livello → eseguito<br /><b>{open ? '—' : `${fmtPrice(slip.sigOut)} → ${slip.fillOut ? fmtPrice(slip.fillOut) : 'n.d.'}`}</b><br />{open ? `stop ${exName} ${fmtPrice(ex.sl)}` : slOut === null ? '' : <span className={slOut < 0 ? 'down' : 'up'}>{fmtSigned(slOut, 3)}%{slip.byExchange ? ` (stop di ${exName})` : ''}</span>}</span>
               </div>
             )}
-            {live && (slip.fee !== null && slip.fee !== undefined) && <div className="note">commissioni vere di Bitunix {Math.abs(slip.fee).toFixed(4)} USDT{slip.funding ? ` · funding ${slip.funding.toFixed(4)}` : ''} · slittamento: negativo = peggio per te</div>}
+            {live && (slip.fee !== null && slip.fee !== undefined) && <div className="note">commissioni vere di {exName} {Math.abs(slip.fee).toFixed(4)} USDT{slip.funding ? ` · funding ${slip.funding.toFixed(4)}` : ''} · slittamento: negativo = peggio per te</div>}
           </>
         )}
         <div className="chart-box" ref={box} style={{ height: 340 }}>
@@ -162,7 +166,7 @@ export default function PositionChart({ id, mode, onClose }) {
           {data && !bars?.length && <div className="empty">Nessuna candela per questo giorno.</div>}
         </div>
         <p className="note">
-          Candele da 1 minuto del perpetual Bitunix ({data?.source === 'Bitunix' ? 'da Bitunix' : 'dall\'archivio'}), dalle 9:00 alle 16:30 di New York, orari in ora locale.
+          Candele da 1 minuto del perpetual {exName} ({data?.source && data.source !== 'archivio' ? `da ${data.source}` : 'dall\'archivio'}), dalle 9:00 alle 16:30 di New York, orari in ora locale.
           La linea arancione è lo stop che segue il prezzo, ricostruito dalle candele con le regole attuali della {mode === 'live' ? 'pagina Reale' : 'Prova'}.
         </p>
       </div>

@@ -2,7 +2,7 @@
 // Simulazione (server/compare.js). Solo registrazione: niente qui cambia quando o come si apre o si chiude un trade.
 // Cosa si salva e dove: docs/dati-dal-vivo.md.
 //  - per ogni trade: exchange.rec nella riga di wt_positions (entrata, stato del conto, massimo e minimo toccati, uscite)
-//  - segnali (aperti e scartati): wt_meta `sig:<giorno>:<modalità>:<titolo>` (lista di eventi)
+//  - segnali (aperti e scartati): wt_meta `sig:<giorno>:<conto>:<titolo>` (lista di eventi; conto = paper, live, paper:bitget…)
 //  - impostazioni e capitale del giorno: wt_meta `dayset:<modalità>:<giorno>` (scritta una volta, alle 9:25)
 import { db, q } from './db.js'
 
@@ -96,8 +96,10 @@ export async function saveEvents(day, events) {
 const clean = e => Object.fromEntries(Object.entries(e).filter(([k, v]) => k !== 'mode' && k !== 'sym' && v !== undefined && v !== null))
 export async function dayEvents(day) {
   const rows = await q(db().from('wt_meta').select('key, value').like('key', `sig:${day}:%`))
+  // chiave sig:<giorno>:<conto>:<titolo>; il conto può contenere ':' (es. live:bitget)
   const out = { paper: {}, live: {} }
-  for (const r of rows) { const [, , mode, sym] = r.key.split(':'); (out[mode] ||= {})[sym] = r.value }
+  const pre = `sig:${day}:`
+  for (const r of rows) { const rest = r.key.slice(pre.length), i = rest.lastIndexOf(':'); (out[rest.slice(0, i)] ||= {})[rest.slice(i + 1)] = r.value }
   return out
 }
 // Dati del segnale per gli eventi: ora, prezzo letto, soglia, lato, origine, candela

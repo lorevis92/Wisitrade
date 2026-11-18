@@ -2,6 +2,8 @@
 // Bitunix accetta ~10 richieste al secondo: bitunix.js ne fa al massimo 8. Per restare sotto il minuto anche con
 // molti titoli nella strategia si scaricano prima solo le candele da 1 minuto che servono alla strategia
 // (posizioni aperte e titoli ancora in gioco nella finestra d'entrata), poi quelle dello scanner.
+// Strategia su più exchange: ogni exchange ha le sue candele (adattatori in server/exchanges/), scaricate in parallelo e solo
+// per i titoli che servono a lui; quelle di Bitunix si riusano anche per lo scanner.
 import { ASSETS, ASSET_MAP } from '../shared/assets.js'
 import { runRangeAlerts, runRangeFast } from './range-alerts.js'
 import { runIccScan } from './icc.js'
@@ -17,6 +19,8 @@ import { presetLive } from './strategy.js'
 import { recordSpreads } from './spreads.js'
 import { isTradingDay } from '../shared/opening.js'
 import { eveningCompare } from './compare.js'
+import { adapter } from './exchanges/index.js'
+import { EX_LIST, DEFAULT_EX } from '../shared/venues.js'
 
 const SCAN_DEADLINE = 40000 // oltre questo tempo dall'inizio lo scanner salta il giro (la strategia ha la precedenza)
 
@@ -38,40 +42,58 @@ export async function tick() {
       }
     }
     const job1m = sym => ({ key: sym, tf: '1m', symbol: ASSET_MAP[sym].perp, interval: '1m', limit: 120 })
+    // candele della strategia per exchange: Bitunix in `series` (condivise con lo scanner), gli altri a parte
+    const sx = { [DEFAULT_EX]: series }
+    const loadEx = async (ex, syms) => {
+      if (ex === DEFAULT_EX) return load(syms.map(job1m))
+      const a = adapter(ex), dst = (sx[ex] ||= {})
+      for (const r of await a.many(syms.map(sym => ({ key: sym, tf: '1m', symbol: a.perpOf(sym), interval: '1m', limit: 120 })).filter(j => j.symbol))) {
+        if (!r.bars) { errors.push(`${ex} ${r.key} 1m: ${r.error}`); continue }
+        ;(dst[r.key] ||= {})['1m'] = r.bars
+      }
+    }
+    const loadAll = byEx => Promise.all(EX_LIST.filter(ex => byEx[ex]?.length).map(ex => loadEx(ex, byEx[ex])))
     const out = { ny: `${info.date} ${Math.floor(info.minutes / 60)}:${String(info.minutes % 60).padStart(2, '0')}` }
 
-    // limiti di Bitunix (leva massima, margine di mantenimento) aggiornati prima dell'apertura, non durante le entrate
-    if (info.isWeekday && info.minutes >= 480 && info.minutes < 565) await getLimits().catch(() => null)
-    // Reale: margine isolato e leva impostati prima dell'apertura (9:05–9:28), sui titoli dove non hai posizioni
+    // limiti degli exchange (leva massima, margine di mantenimento) aggiornati prima dell'apertura, non durante le entrate
+    if (info.isWeekday && info.minutes >= 480 && info.minutes < 565) { await getLimits().catch(() => null); for (const ex of EX_LIST) if (ex !== DEFAULT_EX) await adapter(ex).limits().catch(() => null) }
+    // Reale (ogni exchange acceso): margine isolato e leva impostati prima dell'apertura (9:05–9:28), sui titoli dove non hai posizioni
     if (info.isWeekday && info.minutes >= 545 && info.minutes <= 568) { try { out.preset = await presetLive(info, 15000) } catch (e) { errors.push(`preparazione Reale: ${e.message}`) } }
 
     // 1. strategia: prima le uscite (candele delle sole posizioni aperte), poi le entrate con i titoli che servono in questo minuto
-    const ok = s => ASSET_MAP[s] && perps.has(ASSET_MAP[s].perp)
+    // titoli con il perpetual su Bitunix (gli altri exchange: l'adattatore dà il perpetual, se manca la serie resta vuota)
+    const okBx = s => ASSET_MAP[s] && perps.has(ASSET_MAP[s].perp)
+    const okFor = ex => (ex === DEFAULT_EX ? okBx : s => !!ASSET_MAP[s])
+    const filt = byEx => Object.fromEntries(Object.entries(byEx || {}).map(([ex, l]) => [ex, (l || []).filter(okFor(ex))]))
+    const count = byEx => Object.values(byEx).reduce((a, l) => a + l.length, 0)
     const tm = { start: t0 - Math.floor(t0 / 60000) * 60000 } // ms dall'inizio del minuto (ritardo di cron-job.org e avvio)
-    let openSyms = []
-    try { openSyms = (await strategyOpenSymbols()).filter(ok) } catch (e) { errors.push(`posizioni aperte: ${e.message}`) }
-    if (openSyms.length) {
-      await load(openSyms.map(job1m))
+    let openBy = {}
+    try { openBy = filt(await strategyOpenSymbols()) } catch (e) { errors.push(`posizioni aperte: ${e.message}`) }
+    const openN = count(openBy)
+    if (openN) {
+      await loadAll(openBy)
       tm.exitKl = Date.now() - t0
-      try { out.exits = await runStrategy(series, info, { only: 'exits' }) } catch (e) { out.exits = { error: e.message } }
+      try { out.exits = await runStrategy(sx, info, { only: 'exits' }) } catch (e) { out.exits = { error: e.message } }
       tm.exits = Date.now() - t0
     }
-    let need = []
-    try { need = (await strategyNeeds(info)).filter(ok) } catch (e) { errors.push(`titoli strategia: ${e.message}`) }
-    await load(need.filter(s => !series[s]?.['1m']).map(job1m))
+    let needBy = {}
+    try { needBy = filt(await strategyNeeds(info)) } catch (e) { errors.push(`titoli strategia: ${e.message}`) }
+    await loadAll(Object.fromEntries(Object.entries(needBy).map(([ex, l]) => [ex, l.filter(s => !sx[ex]?.[s]?.['1m'])])))
     tm.entryKl = Date.now() - t0
-    out.strategySymbols = need.length
-    try { out.strategy = await runStrategy(series, info, { skipManage: openSyms.length > 0 }) } catch (e) { out.strategy = { error: e.message } }
+    const need = needBy[DEFAULT_EX] || []
+    out.strategySymbols = count(needBy)
+    if (count(needBy) !== need.length) out.strategyByEx = Object.fromEntries(Object.entries(needBy).map(([ex, l]) => [ex, l.length]))
+    try { out.strategy = await runStrategy(sx, info, { skipManage: openN > 0 }) } catch (e) { out.strategy = { error: e.message } }
     out.strategyMs = tm.strategy = Date.now() - t0
     // registro dei tempi del controllo ogni minuto all'apertura (9:25–10:30 New York), per capire i ritardi
     if (info.isWeekday && info.minutes >= 565 && info.minutes <= 630) {
       const k = `ticklog:${info.date}`
-      await setMeta(k, [...((await getMeta(k)) || []), { min: info.minutes, ...tm, need: need.length, open: openSyms.length }].slice(-80)).catch(() => {})
+      await setMeta(k, [...((await getMeta(k)) || []), { min: info.minutes, ...tm, need: count(needBy), open: openN }].slice(-80)).catch(() => {})
     }
-    // Reale: trade chiusi senza i dati veri di Bitunix → si riprovano (fuori dall'apertura)
-    if (info.minutes > 610 && info.minutes % 5 === 0) await repairLiveClosed().catch(e => errors.push(`dati Bitunix: ${e.message}`))
+    // Reale: trade chiusi senza i dati veri dell'exchange → si riprovano (fuori dall'apertura)
+    if (info.minutes > 610 && info.minutes % 5 === 0) await repairLiveClosed().catch(e => errors.push(`dati exchange: ${e.message}`))
     // Reale: storico degli stop di Bitunix dei trade chiusi (solo lettura, docs/stop-bitunix.md), senza posizioni aperte
-    if (info.minutes > 615 && info.minutes % 5 === 2 && !openSyms.length) out.stopAudit = await auditStops({ max: 8 }).catch(e => ({ error: e.message }))
+    if (info.minutes > 615 && info.minutes % 5 === 2 && !openN) out.stopAudit = await auditStops({ max: 8 }).catch(e => ({ error: e.message }))
 
     // 2. scanner: titoli dalle 9:25 alla chiusura (New York), crypto sempre; le candele da 1 minuto già scaricate si riusano
     const stocksOn = info.isWeekday && info.minutes >= 565 && info.minutes < 965

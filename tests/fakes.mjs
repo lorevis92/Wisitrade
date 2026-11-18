@@ -23,6 +23,7 @@ export function fakeDb(seed = {}) {
       lte(k, v) { st.filters.push(r => r[k] <= v); return b },
       gt(k, v) { st.filters.push(r => r[k] > v); return b },
       lt(k, v) { st.filters.push(r => r[k] < v); return b },
+      like(k, pat) { const re = new RegExp('^' + pat.split('%').map(x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$'); st.filters.push(r => re.test(String(r[k]))); return b },
       not() { return b },
       order(k, o = {}) { st.order = { k, asc: o.ascending !== false }; return b },
       limit(n) { st.limit = n; return b },

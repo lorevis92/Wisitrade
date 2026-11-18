@@ -1,8 +1,10 @@
 // Prova più vicina al Reale (docs/be-e-prova-realistica.md): slittamento misurato dal vivo, per tipo d'entrata e d'uscita.
 // Ogni sera il confronto serale (server/compare.js) lo ricalcola sugli ultimi 30 trade del Reale di ogni tipo e lo salva in
-// wt_meta `liveslip`; con meno di 5 trade di un tipo vale lo 0,05%. Solo la Prova lo usa: il Reale ha i prezzi veri di Bitunix.
+// wt_meta `liveslip` (Bitunix) o `liveslip:<exchange>`: ogni Prova usa lo slittamento misurato sul Reale del suo exchange.
+// Con meno di 5 trade di un tipo vale lo 0,05%. Solo la Prova lo usa: il Reale ha i prezzi veri dell'exchange.
 // Costo in % del prezzo letto, positivo = peggio per te (mai negativo: la Prova non diventa più ottimista del prezzo letto).
 import { db, q, getMeta, setMeta } from './db.js'
+import { acctKey, exSuffix, DEFAULT_EX } from '../shared/venues.js'
 
 export const PSLIP_KEY = 'liveslip'
 export const PSLIP_DEFAULT = 0.05
@@ -95,13 +97,14 @@ export function measureSlip(rows) {
   return out
 }
 
-export async function updateLiveSlip(now = Date.now()) {
-  const rows = await q(db().from('wt_positions').select('day, side, reason, closed_at, exchange').eq('mode', 'live').eq('status', 'closed').order('closed_at', { ascending: false }).limit(400))
+export const pslipKey = (ex = DEFAULT_EX) => PSLIP_KEY + exSuffix(ex)
+export async function updateLiveSlip(now = Date.now(), ex = DEFAULT_EX) {
+  const rows = await q(db().from('wt_positions').select('day, side, reason, closed_at, exchange').eq('mode', acctKey('live', ex)).eq('status', 'closed').order('closed_at', { ascending: false }).limit(400))
   const value = { at: now, values: measureSlip(rows), last: PSLIP_LAST, minN: PSLIP_MIN_N, dflt: PSLIP_DEFAULT }
-  await setMeta(PSLIP_KEY, value)
+  await setMeta(pslipKey(ex), value)
   return value
 }
-export const loadLiveSlip = () => getMeta(PSLIP_KEY).catch(() => null)
+export const loadLiveSlip = (ex = DEFAULT_EX) => getMeta(pslipKey(ex)).catch(() => null)
 
 // ---------- Prezzi della Prova ----------
 // entrata: prezzo letto + slittamento d'entrata (contro di te)

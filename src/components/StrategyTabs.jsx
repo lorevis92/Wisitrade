@@ -13,10 +13,11 @@ export function useStrategyMode(key, fallback = 'paper') {
   return [mode, setMode]
 }
 
-export default function StrategyTabs({ mode, setMode, style }) {
+// liveLabel: nome della scheda Reale (Apertura USA opera su più exchange: l'exchange si sceglie sotto)
+export default function StrategyTabs({ mode, setMode, style, liveLabel }) {
   return (
     <div className="seg" style={{ marginBottom: 12, ...style }}>
-      {MODES.map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} onClick={() => setMode(k)}>{l}</button>)}
+      {MODES.map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} onClick={() => setMode(k)}>{k === 'live' && liveLabel ? liveLabel : l}</button>)}
     </div>
   )
 }

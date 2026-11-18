@@ -13,6 +13,8 @@
 //     Finché la posizione è aperta lo stop si ricontrolla ogni minuto (checkStop, da server/strategy.js): se manca si rimette,
 //     se non si riesce si applica la stessa regola (chiusura, titolo escluso, notifica).
 // Le funzioni di Bitunix arrivano da fuori (api), così questo modulo si può provare con un Bitunix finto (scratchpad).
+// Lo stesso modulo vale per tutti gli exchange (adattatori in server/exchanges/): api.name è il nome dell'exchange nei messaggi,
+// api.needOneWay chiede anche la modalità one-way (una posizione per titolo) verificata prima dell'ordine (Bitget).
 import { roundQty } from './bitunix.js'
 
 const wait = ms => new Promise(r => setTimeout(r, ms))
@@ -28,30 +30,43 @@ export class LiveSkip extends Error {
 
 const round = (x, prec) => (prec !== null && prec !== undefined ? Number(x.toFixed(prec)) : Number(x.toPrecision(6)))
 
-// Controllo della quantità minima, prima di qualunque chiamata a Bitunix
+const nameOf = api => api?.name || 'Bitunix'
+
+// Controllo della quantità minima (e del valore minimo dell'ordine, se l'exchange ne ha uno), prima di qualunque chiamata
 export function orderQty(pair, notional, price) {
   const qty = roundQty(notional / price, pair.basePrecision)
   if (!(qty > 0) || qty < (pair.minQty || 0)) return { qty, tooSmall: true }
+  if (pair.minNotional > 0 && qty * price < pair.minNotional) return { qty, tooSmall: true, minNotional: pair.minNotional }
   return { qty, tooSmall: false }
 }
 
 // Margine isolato e leva: si impostano solo se servono, poi si rileggono. Qui si arriva solo se sul titolo non ci sono
 // posizioni od ordini (quindi non si cambia niente di una posizione manuale).
+// Con api.needOneWay prima si imposta e si verifica la modalità one-way (Bitget la accetta solo senza posizioni né ordini).
 export async function ensureIsolated(api, perp, leverage) {
+  const X = nameOf(api)
   let cur
-  try { cur = await api.leverageMarginMode(perp) } catch (e) { throw new LiveSkip(`margine non verificabile su Bitunix (${e.message})`, { notify: true }) }
+  const read = async what => { try { return await api.leverageMarginMode(perp) } catch (e) { throw new LiveSkip(`${what} non verificabile su ${X} (${e.message})`, { notify: true }) } }
+  cur = await read('margine')
+  if (api.needOneWay && cur.posMode !== 'ONE_WAY') {
+    let setErr = null
+    await api.setOneWay().catch(e => { setErr = e })
+    cur = await read('modalità delle posizioni')
+    if (cur.posMode !== 'ONE_WAY') throw new LiveSkip(`modalità one-way non impostabile su ${X} (risulta ${cur.posMode || 'sconosciuta'}${setErr ? `: ${setErr.message}` : ''})`, { notify: true })
+  }
   if (cur.marginMode !== 'ISOLATION') {
     let setErr = null
     await api.setIsolated(perp).catch(e => { setErr = e })
-    try { cur = await api.leverageMarginMode(perp) } catch (e) { throw new LiveSkip(`margine non verificabile su Bitunix (${e.message})`, { notify: true }) }
-    if (cur.marginMode !== 'ISOLATION') throw new LiveSkip(`margine isolato non impostabile su Bitunix (risulta ${cur.marginMode || 'sconosciuto'}${setErr ? `: ${setErr.message}` : ''})`, { notify: true })
+    cur = await read('margine')
+    if (cur.marginMode !== 'ISOLATION') throw new LiveSkip(`margine isolato non impostabile su ${X} (risulta ${cur.marginMode || 'sconosciuto'}${setErr ? `: ${setErr.message}` : ''})`, { notify: true })
   }
   if (cur.leverage !== leverage) {
     await api.setLeverage(perp, leverage).catch(() => {})
-    try { cur = await api.leverageMarginMode(perp) } catch (e) { throw new LiveSkip(`leva non verificabile su Bitunix (${e.message})`, { notify: true }) }
-    if (cur.leverage !== leverage) throw new LiveSkip(`leva ${leverage}x non impostabile su Bitunix (risulta ${cur.leverage}x)`, { notify: true })
+    cur = await read('leva')
+    if (cur.leverage !== leverage) throw new LiveSkip(`leva ${leverage}x non impostabile su ${X} (risulta ${cur.leverage}x)`, { notify: true })
     if (cur.marginMode !== 'ISOLATION') throw new LiveSkip('margine non più isolato dopo il cambio di leva', { notify: true })
   }
+  if (api.needOneWay && cur.posMode !== 'ONE_WAY') throw new LiveSkip(`modalità one-way non più attiva su ${X}`, { notify: true })
   return cur
 }
 
@@ -59,8 +74,9 @@ export async function ensureIsolated(api, perp, leverage) {
 // Restituisce i dati della posizione oppure lancia LiveSkip (trade saltato, con il motivo).
 export async function openLive(api, { perp, pair, side, notional, price, leverage, stopDist, ourIds, clientId, now = Date.now }) {
   // 1. quantità minima (nessuna chiamata a Bitunix se è troppo piccola)
-  const { qty, tooSmall } = orderQty(pair, notional, price)
-  if (tooSmall) throw new LiveSkip(`ordine troppo piccolo: ${qty} sotto il minimo di Bitunix (${pair.minQty})`)
+  const X = nameOf(api)
+  const { qty, tooSmall, minNotional } = orderQty(pair, notional, price)
+  if (tooSmall) throw new LiveSkip(minNotional ? `ordine troppo piccolo: ${(qty * price).toFixed(2)} USDT sotto il minimo di ${X} (${minNotional} USDT)` : `ordine troppo piccolo: ${qty} sotto il minimo di ${X} (${pair.minQty})`)
 
   // 2. sul titolo non ci devono essere posizioni né ordini in attesa che non sono della strategia
   // (due letture in parallelo: si guadagna circa un terzo di secondo prima dell'ordine)
@@ -70,7 +86,7 @@ export async function openLive(api, { perp, pair, side, notional, price, leverag
   if (before.length) throw new LiveSkip('la strategia ha già una posizione aperta su questo titolo')
   if (orders.some(o => !isOurOrder(o))) throw new LiveSkip('hai un ordine in attesa su questo titolo: la strategia non lo tocca')
 
-  // 3. margine isolato e leva, verificati su Bitunix
+  // 3. margine isolato e leva (e one-way dove serve), verificati sull'exchange
   await ensureIsolated(api, perp, leverage)
 
   // 4. ordine a mercato con lo stop loss dentro l'ordine (dal prezzo attuale; dopo l'esecuzione si sposta su quello eseguito)
@@ -108,7 +124,7 @@ export async function openLive(api, { perp, pair, side, notional, price, leverag
   const sl = await secureStop(api, { perp, positionId, slPrice, qty: ourQty, tick: 10 ** -(pair.quotePrecision ?? 6) })
   if (!sl.ok) {
     await closeOurs(api, { perp, positionId, side, qty: ourQty, step: pair.step }).catch(() => {})
-    throw new LiveSkip(`stop loss non impostabile su Bitunix (${sl.why}): posizione chiusa subito`, { notify: true, noSl: true, closed: { positionId, qty: ourQty, entry: pos.entry || price, side } })
+    throw new LiveSkip(`stop loss non impostabile su ${X} (${sl.why}): posizione chiusa subito`, { notify: true, noSl: true, closed: { positionId, qty: ourQty, entry: pos.entry || price, side } })
   }
   const slOrderId = sl.id
   return {
@@ -132,7 +148,7 @@ export async function secureStop(api, { perp, positionId, slPrice, qty, tick }) 
   if (found) {
     let price = found.slPrice
     if (Math.abs(price - slPrice) > tick / 2 && api.modifyStopLoss) {
-      try { await api.modifyStopLoss({ orderId: found.id, slPrice, qty }); price = slPrice } catch { /* resta lo stop dell'ordine */ }
+      try { await api.modifyStopLoss({ orderId: found.id, slPrice, qty, symbol: perp }); price = slPrice } catch { /* resta lo stop dell'ordine */ }
     }
     return { ok: true, id: found.id, price, via: 'ordine' }
   }
@@ -196,5 +212,5 @@ export async function closePart(api, { perp, positionId, side, qty, pos }) {
     if (!cur) return { closed: start.qty }
     if (cur.qty < start.qty - qty / 2) return { closed: start.qty - cur.qty, left: cur.qty }
   }
-  throw new Error('chiusura parziale rifiutata da Bitunix')
+  throw new Error(`chiusura parziale rifiutata da ${nameOf(api)}`)
 }

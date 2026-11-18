@@ -224,3 +224,12 @@ create table if not exists wt_icc_signals (
 );
 create index if not exists wt_icc_signals_created on wt_icc_signals (created_at desc);
 alter table wt_icc_signals enable row level security;
+
+-- ---------- Più exchange per Apertura USA (non distruttivo; server/exchanges/, shared/venues.js) ----------
+-- Ogni exchange ha i suoi conti di Prova e Reale. Bitunix resta 'paper' e 'live' (dati di prima invariati);
+-- gli altri hanno la chiave '<tipo>:<exchange>'. Il vincolo accetta anche exchange futuri senza rifare lo SQL.
+-- Bitget parte spento (enabled = false) sia in Prova sia in Reale.
+alter table wt_accounts drop constraint if exists wt_accounts_mode_check;
+alter table wt_accounts add constraint wt_accounts_mode_check check (mode ~ '^(paper|live)(:[a-z0-9]+)?$');
+insert into wt_accounts (mode, enabled, balance, start_balance) values ('paper:bitget', false, 300, 300) on conflict (mode) do nothing;
+insert into wt_accounts (mode, enabled, balance, start_balance) values ('live:bitget', false, 0, 0) on conflict (mode) do nothing;

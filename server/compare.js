@@ -1,10 +1,12 @@
-// Confronto serale: Reale, Prova e Simulazione dello stesso giorno, trade per trade, salvato in wt_meta `cmp:<giorno>`.
+// Confronto serale: Reale, Prova e Simulazione dello stesso giorno, trade per trade, per ogni exchange: salvato in wt_meta
+// `cmp:<giorno>` (Bitunix) o `cmp:<exchange>:<giorno>`. La Simulazione usa sempre l'archivio di Bitunix (come la scheda
+// Simulazione): per gli altri exchange il confronto con la Simulazione comprende anche la differenza tra i due contratti.
 // Gira nel controllo ogni minuto fuori orario (dopo le 16:35 di New York, quando l'archivio ha le candele del giorno),
 // un giorno per volta, a partire dal primo giorno del Reale; i giorni già confrontati non si rifanno.
 // Prima del confronto completa la registrazione dei trade del giorno (docs/dati-dal-vivo.md):
-//  - Reale: esecuzioni vere dallo storico di Bitunix (ordini, prezzi, ore, commissioni) in exchange.rec.bx
+//  - Reale: esecuzioni vere dallo storico dell'exchange (ordini, prezzi, ore, commissioni) in exchange.rec.bx
 //  - trade senza registrazione (giorni prima di questa versione): exchange.rec ricostruito da preparazione, archivio e registri
-// Solo lettura su Bitunix e solo registrazione nel database: risultati, capitale e regole non cambiano.
+// Solo lettura sull'exchange e solo registrazione nel database: risultati, capitale e regole non cambiano.
 import { db, q, getMeta, setMeta } from './db.js'
 import { loadDays } from './archive.js'
 import { runSimulation, MIN, OPEN_MIN, thresholds, entryUntil } from '../shared/engine.js'
@@ -14,52 +16,72 @@ import { getLimits } from './limits.js'
 import { getIndexRaw, indexOf } from './mindex.js'
 import { operable, keepOperable } from './operable.js'
 import { ASSET_MAP } from '../shared/assets.js'
-import { hasKeys, positionHistory, historyTrades } from './bitunix.js'
+import { adapter } from './exchanges/index.js'
+import { EX_LIST, DEFAULT_EX, acctKey, kindOf, isLive, exSuffix, prepDay } from '../shared/venues.js'
+import { brakeKey, skipKey, closecostKey } from './strategy.js'
 import { REC_V, prepSnap, exitRec, histSnap, dayEvents } from './record.js'
-import { updateLiveSlip } from './pslip.js'
+import { updateLiveSlip, pslipKey } from './pslip.js'
 
 export const CMP_V = 1
 export const FIRST_DAY = '2026-11-09' // primo giorno del Reale
-const MODES = ['live', 'paper']
+const modesOf = ex => [acctKey('live', ex), acctKey('paper', ex)]
+export const cmpKey = (ex, day) => `cmp${exSuffix(ex)}:${day}`
 const num = x => (Number.isFinite(x) ? +(+x).toPrecision(8) : null)
 const avg = a => (a.length ? num(a.reduce((x, y) => x + y, 0) / a.length) : null)
 const tradingDays = (from, to) => { const out = []; for (let d = from; d <= to; d = addDays(d, 1)) if (isTradingDay(d, weekdayOf(d))) out.push(d); return out }
 
-// Punto d'ingresso dal controllo ogni minuto. info = nyInfo(); day = giorno da rifare (pagina/API), write = false per provare
-export async function eveningCompare(info, { budgetMs = 30000, day: forced = null, write = true } = {}) {
+// Punto d'ingresso dal controllo ogni minuto: un exchange dopo l'altro (prima Bitunix), un giorno per giro.
+// info = nyInfo(); day = giorno da rifare (pagina/API), write = false per provare
+export async function eveningCompare(info, { budgetMs = 30000, day: forced = null, write = true, ex: only = null } = {}) {
   const t0 = Date.now()
+  let last = null
+  for (const ex of only ? [only] : EX_LIST) {
+    const left = budgetMs - (Date.now() - t0)
+    if (left < 5000) break
+    const r = await eveningVenue(ex, info, { t0, budgetMs: left, day: forced, write })
+    if (!r?.done) return ex === DEFAULT_EX ? r : { ex, ...r }
+    last = r
+  }
+  return last || { done: true }
+}
+async function eveningVenue(ex, info, { t0, budgetMs, day: forced, write }) {
   const last = info.minutes >= 990 || !isTradingDay(info.date, info.isWeekday) ? info.date : addDays(info.date, -1)
   const cand = forced ? [forced] : tradingDays(FIRST_DAY, last).slice(-15)
   if (!cand.length) return { done: true }
   let todo = cand
   if (!forced) {
-    const have = await q(db().from('wt_meta').select('key, v:value->v').in('key', cand.map(d => `cmp:${d}`)))
-    const done = new Set(have.filter(r => r.v === CMP_V).map(r => r.key.slice(4)))
+    const have = await q(db().from('wt_meta').select('key, v:value->v').in('key', cand.map(d => cmpKey(ex, d))))
+    const done = new Set(have.filter(r => r.v === CMP_V).map(r => r.key.slice(-10)))
     todo = cand.filter(d => !done.has(d))
   }
-  // slittamento misurato nel Reale per la Prova (wt_meta liveslip): dopo ogni giorno confrontato, e almeno una volta al giorno
+  // slittamento misurato nel Reale per la Prova dello stesso exchange (wt_meta liveslip, liveslip:<exchange>): dopo ogni
+  // giorno confrontato, e almeno una volta al giorno
   if (!todo.length) {
-    const ls = await getMeta('liveslip')
-    if (write && (!ls?.at || Date.now() - ls.at > 20 * 3600000)) return { done: true, liveslip: (await updateLiveSlip()).values }
+    const ls = await getMeta(pslipKey(ex))
+    if (write && (!ls?.at || Date.now() - ls.at > 20 * 3600000)) return { done: true, liveslip: (await updateLiveSlip(Date.now(), ex)).values }
     return { done: true }
   }
-  const r = await compareDay(todo[0], { t0, budgetMs, write, today: info.date })
-  if (write && r?.modes) await updateLiveSlip().catch(() => null)
+  const r = await compareDay(todo[0], { t0, budgetMs, write, today: info.date, ex })
+  if (write && r?.modes) await updateLiveSlip(Date.now(), ex).catch(() => null)
   return r
 }
 
-export async function compareDay(day, { t0 = Date.now(), budgetMs = 30000, write = true, today = day } = {}) {
-  const [positions, accRows, snaps, brake, mindexDay, opensFast, firstsFast, skips, events, closecost, prepRows] = await Promise.all([
+export async function compareDay(day, { t0 = Date.now(), budgetMs = 30000, write = true, today = day, ex = DEFAULT_EX } = {}) {
+  const MODES = modesOf(ex)
+  const [positions0, accRows, snaps, brake, mindexDay, opensFast, firstsFast, skips, events0, closecost, prepRows] = await Promise.all([
     q(db().from('wt_positions').select('*').eq('day', day).order('opened_at')),
     q(db().from('wt_accounts').select('*')),
     Promise.all(MODES.map(m => getMeta(`dayset:${m}:${day}`))).then(a => Object.fromEntries(MODES.map((m, i) => [m, a[i]]))),
-    getMeta(`brake:${day}`), getMeta(`mindex:${day}`), getMeta(`fast:opens:${day}`), getMeta(`fast:first:${day}`), getMeta(`orbskip:${day}`),
-    dayEvents(day), getMeta(`closecost:${day}`),
-    q(db().from('wt_prep').select('symbol, data').eq('day', day)),
+    getMeta(brakeKey(ex, day)), getMeta(`mindex:${day}`), getMeta(`fast:opens${exSuffix(ex)}:${day}`), getMeta(`fast:first:${day}`), getMeta(skipKey(ex, day)),
+    dayEvents(day), getMeta(closecostKey(ex, day)),
+    q(db().from('wt_prep').select('symbol, data').eq('day', prepDay(ex, day))),
   ])
+  // solo i conti di questo exchange (dati e risultati non si mescolano)
+  const positions = positions0.filter(p => MODES.includes(p.mode))
+  const events = Object.fromEntries(MODES.map(m => [m, events0[m] || {}]))
   const accounts = Object.fromEntries(accRows.map(a => [a.mode, a]))
   const preps = Object.fromEntries(prepRows.map(r => [r.symbol, r.data]))
-  const op = await operable()
+  const op = await operable(Date.now(), ex)
   // impostazioni del giorno (registrate alle 9:25), altrimenti quelle di adesso
   const setup = {}
   for (const mode of MODES) {
@@ -69,11 +91,11 @@ export async function compareDay(day, { t0 = Date.now(), budgetMs = 30000, write
     let s, from
     if (snap?.settings) { s = snap.settings; from = 'giorno' } else { const s0 = settingsFor(mode, accounts[mode]?.settings); s = { ...s0, symbols: keepOperable(s0.symbols, op) }; from = 'attuali' }
     // il Reale non apre mai con lo stop oltre la liquidazione e paga la commissione vera (come closePos)
-    if (mode === 'live') s = { ...s, liqGuard: true, fee: 0.06 }
+    if (isLive(mode)) s = { ...s, liqGuard: true, fee: adapter(ex).takerFee }
     setup[mode] = { s, from, mine, snap }
   }
   const modes = Object.keys(setup)
-  if (!modes.length) return save(day, { v: CMP_V, day, at: Date.now(), empty: true }, write)
+  if (!modes.length) return save(ex, day, { v: CMP_V, day, ex, at: Date.now(), empty: true }, write)
   const symbols = [...new Set(modes.flatMap(m => [...setup[m].s.symbols, ...setup[m].mine.map(p => p.symbol)]))].filter(x => ASSET_MAP[x])
 
   // archivio del giorno pronto per tutti i titoli? (aspetta fino a 2 giorni, poi confronta con quello che c'è)
@@ -95,8 +117,8 @@ export async function compareDay(day, { t0 = Date.now(), budgetMs = 30000, write
     rebuilt++
   }
 
-  // 3. Reale: esecuzioni vere dallo storico di Bitunix (solo lettura; se il tempo non basta si continua al giro dopo)
-  const bxDone = await bitunixFills(positions.filter(p => p.mode === 'live' && p.status === 'closed'), { t0, budgetMs: budgetMs * 0.6, write })
+  // 3. Reale: esecuzioni vere dallo storico dell'exchange (solo lettura; se il tempo non basta si continua al giro dopo)
+  const bxDone = await exchangeFills(adapter(ex), positions.filter(p => isLive(p.mode) && p.status === 'closed'), { t0, budgetMs: budgetMs * 0.6, write })
   if (bxDone.left) return { day, rebuilt, bitunix: bxDone, more: true }
 
   // 4. Simulazione del giorno per ogni modalità, con le sue impostazioni e il suo capitale di inizio giornata
@@ -104,25 +126,27 @@ export async function compareDay(day, { t0 = Date.now(), budgetMs = 30000, write
   const raw = await getIndexRaw()
   const mindex = {}
   for (const d of Object.keys(days)) { const x = indexOf(raw, d); if (x) mindex[d] = x }
-  const out = { v: CMP_V, day, at: Date.now(), modes: {}, rebuilt, bitunix: bxDone }
+  // risultati per tipo ('live' e 'paper'), come per Bitunix: la pagina li legge allo stesso modo per ogni exchange
+  const out = { v: CMP_V, day, ex, at: Date.now(), modes: {}, rebuilt, bitunix: bxDone }
   for (const mode of modes) {
     const { s, from, mine, snap } = setup[mode]
     const cap = capitalFor(mode, s, snap, mine, accounts[mode])
     const r = runSimulation(days, s, { from: day, to: day, capital: cap.capital, limits, mindex, analysis: false, story: true })
-    out.modes[mode] = modeCompare({ mode, s, from, cap, r, mine, ev: events[mode] || {}, skips: skips?.[mode] || {} })
+    out.modes[kindOf(mode)] = modeCompare({ mode, s, from, cap, r, mine, ev: events[mode] || {}, skips: skips?.[mode] || {} })
   }
   // Reale: posizioni aperte e chiuse subito (stop non accettato, margine non isolato): costo vero, fuori dai trade
   if (closecost?.length) out.immediate = closecost
   // 5. Reale e Prova a confronto sugli stessi titoli
-  if (out.modes.live && out.modes.paper) out.livePaper = livePaper(positions)
+  if (out.modes.live && out.modes.paper) out.livePaper = livePaper(positions, MODES)
   // 6. primo prezzo oltre la soglia: dal controllo veloce (al secondo) o, per i giorni prima, dalle candele (al minuto)
-  out.firsts = firstsFast ? { src: 'veloce', ...compactFirsts(firstsFast) } : { src: 'candele', ...firstsFromBars(setup, todayBars, opensFast, day) }
+  const mine = f => Object.fromEntries(Object.entries(f || {}).filter(([m]) => MODES.includes(m)).map(([m, v]) => [kindOf(m), v]))
+  out.firsts = firstsFast ? { src: 'veloce', ...compactFirsts(mine(firstsFast)) } : { src: 'candele', ...mine(firstsFromBars(setup, todayBars, opensFast, day)) }
   out.ms = Date.now() - t0
-  return save(day, out, write)
+  return save(ex, day, out, write)
 }
 
-async function save(day, value, write) {
-  if (write) await setMeta(`cmp:${day}`, value)
+async function save(ex, day, value, write) {
+  if (write) await setMeta(cmpKey(ex, day), value)
   return value
 }
 
@@ -136,7 +160,7 @@ function capitalFor(mode, s, snap, mine, acc) {
   }
   if (snap?.capital > 0) return { capital: snap.capital, from: 'giorno' }
   if (snap?.balance > 0) return { capital: snap.balance, from: 'giorno' }
-  return { capital: mode === 'paper' ? acc?.balance || 300 : s.capitalDedicated || 300, from: 'attuale' }
+  return { capital: !isLive(mode) ? acc?.balance || 300 : s.capitalDedicated || 300, from: 'attuale' }
 }
 
 // ---------- Confronto di una modalità ----------
@@ -214,8 +238,8 @@ function whyReal(e, k) {
   return last ? `vivo: ${last.why || last.kind}` : 'vivo: nessun segnale'
 }
 
-function livePaper(positions) {
-  const live = positions.filter(p => p.mode === 'live' && p.status === 'closed'), paper = positions.filter(p => p.mode === 'paper' && p.status === 'closed')
+function livePaper(positions, [liveKey, paperKey] = ['live', 'paper']) {
+  const live = positions.filter(p => p.mode === liveKey && p.status === 'closed'), paper = positions.filter(p => p.mode === paperKey && p.status === 'closed')
   const syms = [...new Set([...live, ...paper].map(p => p.symbol))]
   return syms.map(sym => {
     const a = live.find(p => p.symbol === sym), b = paper.find(p => p.symbol === sym)
@@ -264,8 +288,8 @@ export function rebuildRec(p, { s, prep, bars, dayPos, brake, mindex }) {
     if (b.l < mx.lo) { mx.lo = b.l; mx.loAt = b.t }
   }
   const exits = []
-  if (p.half_done) exits.push(exitRec(p, { kind: 'metà', reason: 'metà subito', level: p.mode === 'live' ? null : p.half_px, fillPx: p.half_px, qty: p.half_qty }))
-  exits.push({ ...exitRec(p, { reason: p.reason, level: slip.sigOut ?? p.exit, fillPx: slip.fillOut ?? (p.mode === 'live' ? null : p.exit), byExchange: !!slip.byExchange, qty: p.qty - (p.half_done && p.half_qty > 0 ? p.half_qty : 0) }), closedAt: p.closed_at })
+  if (p.half_done) exits.push(exitRec(p, { kind: 'metà', reason: 'metà subito', level: isLive(p.mode) ? null : p.half_px, fillPx: p.half_px, qty: p.half_qty }))
+  exits.push({ ...exitRec(p, { reason: p.reason, level: slip.sigOut ?? p.exit, fillPx: slip.fillOut ?? (isLive(p.mode) ? null : p.exit), byExchange: !!slip.byExchange, qty: p.qty - (p.half_done && p.half_qty > 0 ? p.half_qty : 0) }), closedAt: p.closed_at })
   const brakeAt = brake?.[p.mode]?.at ?? null
   return {
     v: REC_V, backfill: true,
@@ -288,17 +312,17 @@ export function rebuildRec(p, { s, prep, bars, dayPos, brake, mindex }) {
   }
 }
 
-// ---------- Reale: esecuzioni vere dallo storico di Bitunix ----------
-async function bitunixFills(rows, { t0, budgetMs, write }) {
+// ---------- Reale: esecuzioni vere dallo storico dell'exchange (campo rec.bx, come per Bitunix) ----------
+async function exchangeFills(a, rows, { t0, budgetMs, write }) {
   const todo = rows.filter(p => p.exchange?.positionId && p.exchange?.rec && !p.exchange.rec.bx)
-  if (!todo.length || !hasKeys()) return { done: 0, left: 0, keys: hasKeys() }
+  if (!todo.length || !a.hasKeys()) return { done: 0, left: 0, keys: a.hasKeys() }
   let done = 0
   for (const p of todo) {
     if (Date.now() - t0 > budgetMs) break
-    const perp = ASSET_MAP[p.symbol]?.perp
+    const perp = a.perpOf(p.symbol)
     const [h, fills] = await Promise.all([
-      positionHistory(perp, p.exchange.positionId).catch(() => null),
-      historyTrades(perp, { positionId: p.exchange.positionId, startTime: p.opened_at - 5 * MIN, endTime: (p.closed_at || Date.now()) + 10 * MIN }).catch(e => ({ error: e.message })),
+      a.positionHistory(perp, p.exchange.positionId).catch(() => null),
+      a.historyTrades(perp, { positionId: p.exchange.positionId, startTime: p.opened_at - 5 * MIN, endTime: (p.closed_at || Date.now()) + 10 * MIN }).catch(e => ({ error: e.message })),
     ])
     const list = Array.isArray(fills) ? fills : []
     const entryId = p.exchange.orderId ? String(p.exchange.orderId) : null

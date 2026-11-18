@@ -29,6 +29,10 @@ import { iccState, iccChart, iccBacktest, saveSettings as iccSave, universe as i
 import { manualInfo, manualOpen, manualClose, manualPositions, ManualError } from '../server/manual.js'
 import { levelsChat } from '../server/levels-chat.js'
 import { loadLiveSlip, slipValues, PSLIP_KINDS, PSLIP_DEFAULT, PSLIP_LAST, PSLIP_MIN_N } from '../server/pslip.js'
+import { adapter, adapterOf } from '../server/exchanges/index.js'
+import { EXCHANGES, EX_LIST, DEFAULT_EX, ACCOUNT_KEYS, isEx, acctKey, kindOf, exOf, isLive, acctName, exName, exSuffix, prepDay } from '../shared/venues.js'
+import { skipKey, brakeKey } from '../server/strategy.js'
+import { cmpKey } from '../server/compare.js'
 
 const TF = {
   '1m': { bx: '1m', n: 400, ttl: 20 },
@@ -77,48 +81,57 @@ function dailySummary(closed) {
   return [...days.values()].map(d => ({ ...d, pct: d.capital ? d.pnl / d.capital * 100 : null })).sort((a, b) => (a.day < b.day ? 1 : -1))
 }
 
+// Exchange e tipo dai parametri (?mode=paper|live&ex=bitunix|bitget): chiave del conto (paper, live, paper:bitget…)
+const exParam = v => (isEx(v) ? v : DEFAULT_EX)
+const keyParam = (kind, ex) => acctKey(kind === 'live' ? 'live' : 'paper', exParam(ex))
+// SQL da eseguire su Supabase se i conti di un exchange non ci sono ancora (supabase/schema.sql, in fondo)
+const missingAccount = mode => new HttpError(409, `Il conto ${acctName(mode)} non c'è ancora nel database: esegui su Supabase lo SQL "Più exchange" in fondo a supabase/schema.sql.`)
+
 async function strategyView(mode) {
-  const acc = await q(db().from('wt_accounts').select('*').eq('mode', mode).single())
+  const ex = exOf(mode), a = adapter(ex), X = a.name, live = isLive(mode)
+  const acc = await q(db().from('wt_accounts').select('*').eq('mode', mode).maybeSingle())
+  if (!acc) return { mode, kind: kindOf(mode), exchange: { id: ex, name: X }, missing: true, why: missingAccount(mode).message }
   const s = settingsFor(mode, acc.settings)
   let platform
-  if (mode === 'paper') platform = { balance: acc.balance, start: acc.start_balance }
-  else if (!hasKeys()) platform = { balance: null, error: 'Chiavi API Bitunix non configurate su Vercel' }
+  if (!live) platform = { balance: acc.balance, start: acc.start_balance }
+  else if (!a.hasKeys()) platform = { balance: null, error: `Chiavi API ${X} non configurate su Vercel` }
   else {
-    try { const a = await account(); platform = { balance: a.equity, available: a.available, margin: a.margin, upnl: a.upnl } }
+    try { const b = await a.account(); platform = { balance: b.equity, available: b.available, margin: b.margin, upnl: b.upnl } }
     catch (e) { platform = { balance: null, error: e.message } }
   }
   const [open, closed] = await Promise.all([
     q(db().from('wt_positions').select('*').eq('mode', mode).eq('status', 'open').order('opened_at')),
     q(db().from('wt_positions').select('*').eq('mode', mode).eq('status', 'closed').order('closed_at', { ascending: false }).limit(1500)),
   ])
-  const prices = open.length ? await tickers(open.map(p => ASSET_MAP[p.symbol].perp)) : {}
+  const prices = open.length ? await a.tickers(open.map(p => a.perpOf(p.symbol))).catch(() => ({})) : {}
   const n = nyInfo()
   const [skips, mindex, last, prepRows, brake, daystop, active, apiList] = await Promise.all([
-    getMeta(`orbskip:${n.date}`),
+    getMeta(skipKey(ex, n.date)),
     getMeta(`mindex:${n.date}`),
     getMeta('last:tick'),
-    q(db().from('wt_prep').select('symbol, data').eq('day', n.date)),
-    getMeta(`brake:${n.date}`),
+    q(db().from('wt_prep').select('symbol, data').eq('day', prepDay(ex, n.date))),
+    getMeta(brakeKey(ex, n.date)),
     getMeta(`daystop:${mode}:${n.date}`),
     getMeta(`active:${mode}`),
-    operableView(s.symbols).catch(e => ({ error: e.message })),
+    operableView(s.symbols, ex).catch(e => ({ error: e.message })),
   ])
-  // Prova: differenze dalle impostazioni del Reale (capitale escluso), così il confronto Reale–Prova è sugli stessi segnali
+  // Prova: differenze dalle impostazioni del Reale dello stesso exchange (capitale escluso), così il confronto Reale–Prova è sugli stessi segnali
   let vsLive = null
-  if (mode === 'paper') {
-    const liveAcc = await q(db().from('wt_accounts').select('settings').eq('mode', 'live').maybeSingle())
+  const liveKey = acctKey('live', ex), paperKey = acctKey('paper', ex)
+  if (!live) {
+    const liveAcc = await q(db().from('wt_accounts').select('settings').eq('mode', liveKey).maybeSingle())
     if (liveAcc) {
-      const ls = settingsFor('live', liveAcc.settings)
+      const ls = settingsFor(liveKey, liveAcc.settings)
       const CAP = new Set(['capitalMode', 'capitalFixed', 'capitalPct', 'capitalDedicated', 'slip', 'funding', 'onlyBitunix'])
       const diff = Object.keys(ls).filter(k => !CAP.has(k) && JSON.stringify(ls[k]) !== JSON.stringify(s[k]))
         .map(k => k === 'symbols' ? { key: k, paper: `${s.symbols.length} titoli`, live: `${ls.symbols.length} titoli`, onlyPaper: s.symbols.filter(x => !ls.symbols.includes(x)).length, onlyLive: ls.symbols.filter(x => !s.symbols.includes(x)).length } : { key: k, paper: s[k], live: ls[k] })
       vsLive = { diff, liveSettings: ls }
     }
   }
-  // Prova: slittamento misurato nel Reale usato per i suoi prezzi (server/pslip.js)
+  // Prova: slittamento misurato nel Reale dello stesso exchange usato per i suoi prezzi (server/pslip.js)
   let pslip = null
-  if (mode === 'paper') {
-    const saved = await loadLiveSlip()
+  if (!live) {
+    const saved = await loadLiveSlip(ex)
     const v = slipValues(saved)
     pslip = { at: saved?.at ?? null, last: PSLIP_LAST, minN: PSLIP_MIN_N, dflt: PSLIP_DEFAULT, list: Object.entries(PSLIP_KINDS).map(([k, label]) => ({ key: k, label, ...v[k] })) }
   }
@@ -132,14 +145,14 @@ async function strategyView(mode) {
     net: cap.current - cap.start, pct: cap.start > 0 ? (cap.current / cap.start - 1) * 100 : null,
     halted: cap.halted || null, dayStop: cap.dayStop?.day === n.date ? cap.dayStop : null, dayPnl, history: (cap.history || []).slice().reverse(),
   } : null
-  const sizeBase = mode === 'live' && s.capitalMode === 'dedicated' ? (platform.available ?? 0) : (platform.balance ?? 0)
-  // slittamento nel Reale: prezzo del segnale e prezzo eseguito su Bitunix, in entrata e in uscita (in % per lato).
+  const sizeBase = live && s.capitalMode === 'dedicated' ? (platform.available ?? 0) : (platform.balance ?? 0)
+  // slittamento nel Reale: prezzo del segnale e prezzo eseguito sull'exchange, in entrata e in uscita (in % per lato).
   // Segnale = soglia d'entrata (apertura ± 1,25 × movimento) e livello d'uscita (stop, livello che segue, chiusura della candela).
   // Convenzione: negativo = peggio per te. rilevazione = soglia → prezzo letto al segnale (entrata veloce), esecuzione = prezzo letto → eseguito.
   let slippage = null
-  if (mode === 'live') {
+  if (live) {
     const rows = closed.filter(p => p.exchange?.slip?.fillIn && p.exchange.slip.sigIn).slice(0, 300)
-    const paper = rows.length ? await q(db().from('wt_positions').select('day, symbol, side, entry, exit, pnl, qty, status').eq('mode', 'paper').in('day', [...new Set(rows.map(r => r.day))])) : []
+    const paper = rows.length ? await q(db().from('wt_positions').select('day, symbol, side, entry, exit, pnl, qty, status').eq('mode', paperKey).in('day', [...new Set(rows.map(r => r.day))])) : []
     const list = rows.map(p => {
       const x = p.exchange.slip
       const inPct = p.side * (x.sigIn - x.fillIn) / x.sigIn * 100
@@ -164,14 +177,14 @@ async function strategyView(mode) {
       vsPaper: both.length ? { n: both.length, live: avg(both.map(r => r.pct)), paper: avg(both.map(r => r.paper.pct)) } : null }
   }
   return {
-    mode, enabled: acc.enabled, settings: s, platform, capital, slippage,
-    // titoli scelti non operabili via API su Bitunix (non si tentano: stessa lista per Prova e Reale)
+    mode, kind: kindOf(mode), exchange: { id: ex, name: X }, enabled: acc.enabled, settings: s, platform, capital, slippage,
+    // titoli scelti non operabili via API sull'exchange (non si tentano: stessa lista per la sua Prova e il suo Reale)
     operable: apiList, vsLive, pslip,
     // configurazione attiva: nome (impostazione salvata da cui viene, o "personalizzata") e data dell'ultima modifica
     active: { name: active?.name || (Object.keys(acc.settings || {}).length ? 'personalizzata' : 'default dell\'app'), presetId: active?.presetId ?? null, edited: !!active?.edited, at: active?.at || acc.updated_at || null },
     sizing: sizing(s, sizeBase, s.capitalMode === 'dedicated' ? (cap?.current ?? 0) : undefined),
     open: open.map(p => {
-      const px = prices[ASSET_MAP[p.symbol].perp]?.last ?? null
+      const px = prices[a.perpOf(p.symbol)]?.last ?? null
       const hq = p.half_done && p.half_qty > 0 ? p.half_qty : 0 // con "Metà subito" una metà è già chiusa
       return { ...p, price: px, upnl: px ? p.side * (px - p.entry) * (p.qty - hq) + (hq ? p.side * (p.half_px - p.entry) * hq : 0) : null }
     }),
@@ -179,8 +192,42 @@ async function strategyView(mode) {
     days: dailySummary(closed),
     totals: { n: closed.length, wins, net: gp - gl, pf: gl > 0 ? gp / gl : null },
     today: { date: n.date, tradingDay: isTradingDay(n.date, n.isWeekday), minutes: n.minutes, skips: skips?.[mode] || {}, mindex: mindex || null, brake: brake?.[mode] || null, dayStop: !!daystop, prepared: prepRows.filter(r => r.data?.ok).length, prepTotal: prepRows.length },
-    status: { liveTrading: process.env.LIVE_TRADING === 'on', keys: hasKeys(), liveAllowed: liveAllowed(), lastTick: last },
+    status: { liveTrading: process.env.LIVE_TRADING === 'on', keys: a.hasKeys(), liveAllowed: liveAllowed(ex), lastTick: last },
   }
+}
+
+// Vista Totale di Prova o Reale: solo il bilancio economico di ogni exchange (risultato, capitale, trade, vincenti, costi) e la somma
+async function totalView(kind) {
+  const keys = EX_LIST.map(ex => acctKey(kind, ex))
+  const [accRows, closed, open] = await Promise.all([
+    q(db().from('wt_accounts').select('mode, enabled, balance, start_balance, settings').in('mode', keys)),
+    q(db().from('wt_positions').select('mode, pnl, fees, funding, day').in('mode', keys).eq('status', 'closed')),
+    q(db().from('wt_positions').select('mode').in('mode', keys).eq('status', 'open')),
+  ])
+  const n = nyInfo()
+  const rows = []
+  for (const ex of EX_LIST) {
+    const mode = acctKey(kind, ex), acc = accRows.find(r => r.mode === mode)
+    const mine = closed.filter(p => p.mode === mode)
+    const cap = acc ? await getCapital(mode) : null
+    const s = acc ? settingsFor(mode, acc.settings) : null
+    const net = mine.reduce((x, p) => x + (p.pnl || 0), 0)
+    const fees = mine.reduce((x, p) => x + Math.abs(p.fees || 0), 0)
+    const funding = mine.reduce((x, p) => x + (p.funding || 0), 0)
+    const wins = mine.filter(p => p.pnl > 0).length
+    const today = mine.filter(p => p.day === n.date).reduce((x, p) => x + (p.pnl || 0), 0)
+    // capitale: dedicato (se usato) o saldo di prova
+    const capital = s?.capitalMode === 'dedicated' && cap ? { current: cap.current, start: cap.start } : kind === 'paper' && acc ? { current: acc.balance, start: acc.start_balance } : null
+    rows.push({ ex, name: exName(ex), missing: !acc, enabled: !!acc?.enabled, n: mine.length, wins, winPct: mine.length ? wins / mine.length * 100 : null, net, today, fees, funding, costs: fees - Math.min(0, funding), open: open.filter(p => p.mode === mode).length, capital })
+  }
+  const sum = k => rows.reduce((x, r) => x + (r[k] || 0), 0)
+  const caps = rows.filter(r => r.capital)
+  const total = {
+    n: sum('n'), wins: sum('wins'), net: sum('net'), today: sum('today'), fees: sum('fees'), funding: sum('funding'), costs: sum('costs'), open: sum('open'),
+    capital: caps.length ? { current: caps.reduce((x, r) => x + (r.capital.current || 0), 0), start: caps.reduce((x, r) => x + (r.capital.start || 0), 0) } : null,
+  }
+  total.winPct = total.n ? total.wins / total.n * 100 : null
+  return { kind, rows, total, at: Date.now() }
 }
 
 // ---------- Simulazione ----------
@@ -542,20 +589,25 @@ async function route(req, url) {
 
   if (path === '/strategy' && m === 'GET') {
     requireAdmin(req)
-    const mode = url.searchParams.get('mode') === 'live' ? 'live' : 'paper'
-    return strategyView(mode)
+    return strategyView(keyParam(url.searchParams.get('mode'), url.searchParams.get('ex')))
+  }
+  // Totale di Prova o Reale: bilancio economico per exchange e sommato (senza elenco dei trade)
+  if (path === '/strategy/total' && m === 'GET') {
+    requireAdmin(req)
+    return totalView(url.searchParams.get('mode') === 'live' ? 'live' : 'paper')
   }
 
   if (path === '/strategy/settings' && m === 'POST') {
     requireAdmin(req)
-    const mode = body.mode === 'live' ? 'live' : 'paper'
+    const mode = keyParam(body.mode, body.ex), ex = exOf(mode)
+    if (!(await q(db().from('wt_accounts').select('mode').eq('mode', mode).maybeSingle()))) throw missingAccount(mode)
     const patch = { updated_at: Date.now() }
     if (body.settings) patch.settings = settingsFor(mode, body.settings)
-    // Reale: niente leva più alta della leva massima di Bitunix per i titoli scelti
-    if (mode === 'live' && patch.settings) {
-      const lim = await getLimits().catch(() => ({}))
+    // Reale: niente leva più alta della leva massima dell'exchange per i titoli scelti
+    if (isLive(mode) && patch.settings) {
+      const lim = await adapter(ex).limits().catch(() => ({}))
       const over = patch.settings.symbols.filter(x => lim[x]?.maxLev && patch.settings.leverage > lim[x].maxLev)
-      if (over.length) throw new HttpError(400, `Leva ${patch.settings.leverage}x oltre il massimo di Bitunix per ${over.map(x => `${x} (${lim[x].maxLev}x)`).join(', ')}`)
+      if (over.length) throw new HttpError(400, `Leva ${patch.settings.leverage}x oltre il massimo di ${exName(ex)} per ${over.map(x => `${x} (${lim[x].maxLev}x)`).join(', ')}`)
     }
     if (typeof body.enabled === 'boolean') patch.enabled = body.enabled
     await q(db().from('wt_accounts').update(patch).eq('mode', mode))
@@ -572,29 +624,30 @@ async function route(req, url) {
 
   if (path === '/strategy/reset' && m === 'POST') {
     requireAdmin(req)
+    const mode = keyParam('paper', body.ex) // solo la Prova di quell'exchange
     const bal = Number(body.balance)
     if (!(bal > 0 && bal < 1e9)) throw new HttpError(400, 'Saldo non valido')
-    const open = await q(db().from('wt_positions').select('id').eq('mode', 'paper').eq('status', 'open'))
+    const open = await q(db().from('wt_positions').select('id').eq('mode', mode).eq('status', 'open'))
     if (open.length) throw new HttpError(400, 'Chiudi prima le posizioni aperte di prova')
-    await q(db().from('wt_positions').delete().eq('mode', 'paper'))
-    await q(db().from('wt_accounts').update({ balance: bal, start_balance: bal, updated_at: Date.now() }).eq('mode', 'paper'))
-    return strategyView('paper')
+    await q(db().from('wt_positions').delete().eq('mode', mode))
+    await q(db().from('wt_accounts').update({ balance: bal, start_balance: bal, updated_at: Date.now() }).eq('mode', mode))
+    return strategyView(mode)
   }
 
   if (path === '/strategy/close' && m === 'POST') {
     requireAdmin(req)
-    const mode = body.mode === 'live' ? 'live' : 'paper'
+    const mode = keyParam(body.mode, body.ex)
     const r = await closeManual(mode, body.id ? Number(body.id) : null)
     return { ...r, view: await strategyView(mode) }
   }
 
-  // Ricontrollo dei titoli non operabili via API: rilegge le coppie di Bitunix e toglie i segni del Reale
+  // Ricontrollo dei titoli non operabili via API: rilegge le coppie dell'exchange e toglie i segni del suo Reale
   // (al prossimo segnale si riprova davvero)
   if (path === '/strategy/operable/recheck' && m === 'POST') {
     requireAdmin(req)
-    await setMeta('pairs', null)
-    await clearMarks(body.symbol ? String(body.symbol) : null)
-    const mode = body.mode === 'live' ? 'live' : 'paper'
+    const mode = keyParam(body.mode, body.ex), ex = exOf(mode)
+    await adapter(ex).resetPairs()
+    await clearMarks(body.symbol ? String(body.symbol) : null, ex)
     return strategyView(mode)
   }
 
@@ -645,22 +698,25 @@ async function route(req, url) {
   // con il riepilogo; con ?day=YYYY-MM-DD il confronto completo trade per trade. POST /strategy/compare/run { day } lo rifà.
   if (path === '/strategy/compare' && m === 'GET') {
     requireAdmin(req)
+    const ex = exParam(url.searchParams.get('ex'))
     const day = url.searchParams.get('day')
     if (day) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new HttpError(400, 'Giorno non valido')
-      return (await getMeta(`cmp:${day}`)) || { day, missing: true }
+      return (await getMeta(cmpKey(ex, day))) || { day, ex, missing: true }
     }
-    const rows = await q(db().from('wt_meta').select('key, day:value->day, at:value->at, live:value->modes->live->sim, liveReal:value->modes->live->real, paper:value->modes->paper->sim, paperReal:value->modes->paper->real').like('key', 'cmp:%'))
+    // cmp:<giorno> = Bitunix (il giorno comincia con una cifra), cmp:<exchange>:<giorno> = gli altri
+    const rows = await q(db().from('wt_meta').select('key, day:value->day, at:value->at, live:value->modes->live->sim, liveReal:value->modes->live->real, paper:value->modes->paper->sim, paperReal:value->modes->paper->real').like('key', ex === DEFAULT_EX ? 'cmp:2%' : `cmp:${ex}:%`))
     return { days: rows.map(r => ({ day: r.day, at: r.at, live: r.live ? { sim: r.live, real: r.liveReal } : null, paper: r.paper ? { sim: r.paper, real: r.paperReal } : null })).sort((a, b) => (a.day < b.day ? 1 : -1)) }
   }
   if (path === '/strategy/compare/run' && m === 'POST') {
     requireAdmin(req)
     if (!/^\d{4}-\d{2}-\d{2}$/.test(body.day || '')) throw new HttpError(400, 'Giorno non valido')
-    return compareDay(body.day, { budgetMs: 200000, today: nyInfo().date })
+    return compareDay(body.day, { budgetMs: 200000, today: nyInfo().date, ex: exParam(body.ex) })
   }
 
-  // Grafico della giornata di una posizione di Prova o Reale: la posizione, le impostazioni della modalità e le candele da 1 minuto
-  // (dall'archivio; per la giornata in corso o non ancora archiviata da Bitunix, dalle 9:00 alle 16:30 di New York). Solo lettura.
+  // Grafico della giornata di una posizione di Prova o Reale: la posizione, le impostazioni del conto e le candele da 1 minuto
+  // del suo exchange (Bitunix: dall'archivio, per la giornata in corso o non ancora archiviata da Bitunix; gli altri exchange:
+  // dalle loro API), dalle 9:00 alle 16:30 di New York. Solo lettura.
   if (path === '/strategy/day' && m === 'GET') {
     requireAdmin(req)
     const id = Number(url.searchParams.get('id'))
@@ -668,17 +724,19 @@ async function route(req, url) {
     const p = await q(db().from('wt_positions').select('*').eq('id', id).maybeSingle())
     if (!p) throw new HttpError(404, 'Posizione non trovata')
     const acc = await q(db().from('wt_accounts').select('settings').eq('mode', p.mode).maybeSingle())
-    const perp = ASSET_MAP[p.symbol]?.perp
-    let bars = p.status === 'closed' ? await dayBars(p.symbol, p.day).catch(() => []) : []
-    let source = 'archivio'
-    if (!bars.length && perp) {
-      const start = nyTs(p.day, 540), end = Math.min(Date.now(), nyTs(p.day, 990))
-      const n = Math.max(1, Math.ceil((end - start) / 60000) + 1)
-      bars = (await klinesBack(perp, '1m', Math.min(n, 460), { endTime: end }).catch(() => [])).filter(b => b.t >= start && b.t < nyTs(p.day, 990))
-      source = 'Bitunix'
-    }
+    const ad = adapterOf(p.mode), perp = ad.perpOf(p.symbol)
+    let bars = [], source = 'archivio'
+    if (ad.id === DEFAULT_EX) {
+      bars = p.status === 'closed' ? await dayBars(p.symbol, p.day).catch(() => []) : []
+      if (!bars.length && perp) {
+        const start = nyTs(p.day, 540), end = Math.min(Date.now(), nyTs(p.day, 990))
+        const n = Math.max(1, Math.ceil((end - start) / 60000) + 1)
+        bars = (await klinesBack(perp, '1m', Math.min(n, 460), { endTime: end }).catch(() => [])).filter(b => b.t >= start && b.t < nyTs(p.day, 990))
+        source = 'Bitunix'
+      }
+    } else if (perp) { bars = await ad.dayBars(p.symbol, p.day); source = ad.name }
     let price = null
-    if (p.status === 'open' && perp) price = (await tickers([perp]).catch(() => ({})))[perp]?.last ?? null
+    if (p.status === 'open' && perp) price = (await ad.tickers([perp]).catch(() => ({})))[perp]?.last ?? null
     return { position: p, settings: settingsFor(p.mode, acc?.settings), bars, source, price, at: Date.now() }
   }
 
@@ -694,8 +752,8 @@ async function route(req, url) {
     requireAdmin(req)
     const rows = await q(db().from('wt_presets').select('*').order('created_at', { ascending: false }))
     const def = rows.find(r => r.is_default)
-    const [aLive, aPaper] = await Promise.all([getMeta('active:live'), getMeta('active:paper')])
-    return { presets: rows, defaults: def ? normalizeSettings(def.settings) : normalizeSettings(STRATEGY_DEFAULTS), defaultId: def?.id ?? null, active: { live: aLive || null, paper: aPaper || null } }
+    const act = await Promise.all(ACCOUNT_KEYS.map(k => getMeta(`active:${k}`)))
+    return { presets: rows, defaults: def ? normalizeSettings(def.settings) : normalizeSettings(STRATEGY_DEFAULTS), defaultId: def?.id ?? null, active: Object.fromEntries(ACCOUNT_KEYS.map((k, i) => [k, act[i] || null])) }
   }
 
   if (path === '/presets' && m === 'POST') {
@@ -706,9 +764,9 @@ async function route(req, url) {
     // le loro impostazioni sono una copia, che cambia solo premendo Salva nella loro pagina.
     const same = await q(db().from('wt_presets').select('id').eq('name', name))
     if (same.length && body.overwrite !== true) {
-      const [aLive, aPaper] = await Promise.all([getMeta('active:live'), getMeta('active:paper')])
+      const act = await Promise.all(ACCOUNT_KEYS.map(k => getMeta(`active:${k}`)))
       const ids = same.map(x => x.id)
-      return { exists: true, id: ids[0], activeIn: [...(ids.includes(aLive?.presetId) || aLive?.name === name ? ['Reale'] : []), ...(ids.includes(aPaper?.presetId) || aPaper?.name === name ? ['Prova'] : [])] }
+      return { exists: true, id: ids[0], activeIn: ACCOUNT_KEYS.filter((k, i) => ids.includes(act[i]?.presetId) || act[i]?.name === name).map(acctName) }
     }
     if (same.length) await q(db().from('wt_presets').update({ settings: normalizeSettings(body.settings || {}), created_at: Date.now() }).eq('id', same[0].id))
     else await q(db().from('wt_presets').insert({ name, settings: normalizeSettings(body.settings || {}), created_at: Date.now() }))

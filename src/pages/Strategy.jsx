@@ -9,9 +9,67 @@ import Simulation from './Simulation.jsx'
 import CalendarOverview from '../components/CalendarOverview.jsx'
 import PositionChart from '../components/PositionChart.jsx'
 import { LiveSphere } from '../components/Sphere.jsx'
+import { EXCHANGES, EX_LIST } from '@shared/venues.js'
+
+// Chiavi API da mettere su Vercel per ogni exchange (solo permessi di trading, mai prelievi)
+const KEYS_HINT = { bitunix: 'BITUNIX_API_KEY e BITUNIX_SECRET_KEY', bitget: 'BITGET_API_KEY, BITGET_API_SECRET e BITGET_API_PASSPHRASE' }
+
+// Totale di Prova o Reale: solo il bilancio economico, diviso per exchange e sommato (niente elenco dei trade)
+function TotalView({ mode }) {
+  const [v, setV] = useState(null)
+  const [err, setErr] = useState(null)
+  useEffect(() => {
+    let on = true
+    const go = () => get(`/api/strategy/total?mode=${mode}`).then(x => { if (on) { setV(x); setErr(null) } }).catch(e => on && setErr(e.message))
+    go()
+    const id = setInterval(go, 30000)
+    return () => { on = false; clearInterval(id) }
+  }, [mode])
+  if (!v) return <div className="card empty">{err || 'Carico il totale…'}</div>
+  const cap = c => (c ? `${fmtUsd(c.current)} USDT` : '—')
+  const capNote = c => (c && c.start > 0 ? `${fmtSigned((c.current / c.start - 1) * 100)}% dalla partenza (${fmtUsd(c.start)})` : '')
+  const pct = x => (x === null || x === undefined ? '—' : `${Math.round(x)}%`)
+  const T = v.total
+  return (
+    <>
+      <div className="stat-grid">
+        <div className="tile"><div className="lab">Risultato</div><div className={`mono big ${T.net >= 0 ? 'up' : 'down'}`}>{fmtSigned(T.net)}</div><div className="note">USDT · oggi {fmtSigned(T.today)}</div></div>
+        <div className="tile"><div className="lab">Capitale</div><div className="mono big">{T.capital ? fmtUsd(T.capital.current) : '—'}</div><div className="note">{capNote(T.capital) || 'USDT'}</div></div>
+        <div className="tile"><div className="lab">Trade · vincenti</div><div className="mono big">{T.n} · {pct(T.winPct)}</div><div className="note">{T.open ? `${T.open} posizioni aperte` : 'nessuna posizione aperta'}</div></div>
+        <div className="tile"><div className="lab">Costi</div><div className="mono big">{fmtUsd(T.costs)}</div><div className="note">commissioni {fmtUsd(T.fees)} · funding {fmtSigned(T.funding)} USDT</div></div>
+      </div>
+      <div className="table-wrap">
+        <table className="tbl">
+          <thead><tr><th>Exchange</th><th>Stato</th><th>Trade</th><th>Vincenti</th><th>Risultato</th><th>Oggi</th><th>Costi</th><th>Capitale</th></tr></thead>
+          <tbody>
+            {v.rows.map(r => (
+              <tr key={r.ex}>
+                <td><b>{r.name}</b></td>
+                <td className="sec">{r.missing ? 'conto da creare' : r.enabled ? 'attiva' : 'ferma'}</td>
+                <td>{r.n}</td><td>{pct(r.winPct)}</td>
+                <td className={r.net >= 0 ? 'up' : 'down'}>{fmtSigned(r.net)}</td>
+                <td className={r.today >= 0 ? 'up' : 'down'}>{fmtSigned(r.today)}</td>
+                <td className="mono">{fmtUsd(r.costs)}</td>
+                <td className="mono" title={capNote(r.capital)}>{cap(r.capital)}</td>
+              </tr>
+            ))}
+            <tr>
+              <td><b>Totale</b></td><td></td><td><b>{T.n}</b></td><td><b>{pct(T.winPct)}</b></td>
+              <td className={T.net >= 0 ? 'up' : 'down'}><b>{fmtSigned(T.net)}</b></td>
+              <td className={T.today >= 0 ? 'up' : 'down'}><b>{fmtSigned(T.today)}</b></td>
+              <td className="mono"><b>{fmtUsd(T.costs)}</b></td>
+              <td className="mono"><b>{cap(T.capital)}</b></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="note">Risultato netto (commissioni e funding compresi) dei trade chiusi. Costi = commissioni + funding pagato. Capitale = capitale dedicato{mode === 'paper' ? ' o saldo di prova' : ''} di ogni exchange. Per i trade apri la sezione dell'exchange.</div>
+    </>
+  )
+}
 
 // Capitale dedicato: valore attuale, partenza, risultato, limiti di perdita e storico delle modifiche
-function DedicatedCapital({ c, s, set, mode }) {
+function DedicatedCapital({ c, s, set, mode, X = 'Bitunix' }) {
   const pending = !c || c.set !== s.capitalDedicated
   const dt = t => new Date(t).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
   return (
@@ -30,7 +88,7 @@ function DedicatedCapital({ c, s, set, mode }) {
         </div>
       )}
       <div className="note" style={{ marginTop: 4 }}>
-        Dopo ogni trade chiuso il capitale dedicato si aggiorna con il risultato vero{mode === 'live' ? ' (commissioni e funding di Bitunix compresi)' : ''}; il giorno dopo si lavora con il nuovo valore.{mode === 'live' ? ' Non si usa mai più del saldo disponibile su Bitunix.' : ''}
+        Dopo ogni trade chiuso il capitale dedicato si aggiorna con il risultato vero{mode === 'live' ? ` (commissioni e funding di ${X} compresi)` : ''}; il giorno dopo si lavora con il nuovo valore.{mode === 'live' ? ` Non si usa mai più del saldo disponibile su ${X}.` : ''}
       </div>
       <div className="note" style={{ marginTop: 4 }}>Limiti di perdita: giornaliera {s.maxDayLoss ? `${num(s.maxDayLoss)}%` : 'spenta'} · totale {s.maxTotalLoss ? `${num(s.maxTotalLoss)}%` : 'spenta'} · freno {s.brakePct ? `${num(s.brakePct)}%` : 'spento'} (si cambiano in Regole della strategia).</div>
       {c?.history?.length > 0 && (
@@ -48,16 +106,16 @@ function DedicatedCapital({ c, s, set, mode }) {
   )
 }
 
-// Slittamento nel Reale: prezzo del segnale contro prezzo eseguito su Bitunix (negativo = peggio per te), e confronto con la Prova
-function Slippage({ sl, onTrade }) {
+// Slittamento nel Reale: prezzo del segnale contro prezzo eseguito sull'exchange (negativo = peggio per te), e confronto con la Prova
+function Slippage({ sl, onTrade, X = 'Bitunix' }) {
   const pc = v => (v === null || v === undefined ? '—' : `${fmtSigned(v, 3)}%`)
   return (
     <>
       <div className="lab section-title">Slittamento nel Reale · {sl.n} trade</div>
       <div className="stat-grid">
         <div className="tile"><div className="lab">Medio in entrata</div><div className="mono big">{pc(sl.avgIn)}</div><div className="note">per lato, rispetto alla soglia del segnale · negativo = peggio per te</div></div>
-        <div className="tile"><div className="lab">Ritardo medio</div><div className="mono big">{sl.avgDelay !== null && sl.avgDelay !== undefined ? `${fmtUsd(sl.avgDelay, 1)} s` : '—'}</div><div className="note">dal segnale all'esecuzione su Bitunix{sl.nFast ? ` · entrata veloce ${fmtUsd(sl.avgDelayFast, 1)} s (${sl.nFast} trade)` : ''}</div></div>
-        <div className="tile"><div className="lab">Medio in uscita</div><div className="mono big">{pc(sl.avgOut)}</div><div className="note">{sl.nOut} uscite, rispetto al livello d'uscita (stop di Bitunix compresi)</div></div>
+        <div className="tile"><div className="lab">Ritardo medio</div><div className="mono big">{sl.avgDelay !== null && sl.avgDelay !== undefined ? `${fmtUsd(sl.avgDelay, 1)} s` : '—'}</div><div className="note">dal segnale all'esecuzione su {X}{sl.nFast ? ` · entrata veloce ${fmtUsd(sl.avgDelayFast, 1)} s (${sl.nFast} trade)` : ''}</div></div>
+        <div className="tile"><div className="lab">Medio in uscita</div><div className="mono big">{pc(sl.avgOut)}</div><div className="note">{sl.nOut} uscite, rispetto al livello d'uscita (stop di {X} compresi)</div></div>
         <div className="tile"><div className="lab">Reale · Prova</div><div className="mono big">{sl.vsPaper ? `${fmtSigned(sl.vsPaper.live, 2)}% · ${fmtSigned(sl.vsPaper.paper, 2)}%` : '—'}</div><div className="note">{sl.vsPaper ? `risultato medio per trade su ${sl.vsPaper.n} segnali uguali` : 'servono trade sugli stessi segnali in Prova'}</div></div>
       </div>
       {sl.list.length > 0 && (
@@ -72,7 +130,7 @@ function Slippage({ sl, onTrade }) {
                 <td className="mono" title={r.orderDelay !== null ? `ordine dopo ${fmtUsd(r.orderDelay, 1)} s` : ''}>{r.delay !== null ? `${fmtUsd(r.delay, 1)} s` : '—'}</td>
                 <td className="mono">{fmtPrice(r.sigIn)} → {fmtPrice(r.fillIn)}</td>
                 <td className={`mono ${r.inPct < 0 ? 'down' : 'up'}`} title={r.detPct !== null && r.detPct !== undefined ? `soglia → prezzo letto ${fmtSigned(r.detPct, 3)}%` : undefined}>{pc(r.inPct)}</td>
-                <td className="mono">{r.fillOut ? `${fmtPrice(r.sigOut)} → ${fmtPrice(r.fillOut)}${r.byExchange ? ' (stop Bitunix)' : ''}` : '—'}</td>
+                <td className="mono">{r.fillOut ? `${fmtPrice(r.sigOut)} → ${fmtPrice(r.fillOut)}${r.byExchange ? ` (stop ${X})` : ''}` : '—'}</td>
                 <td className={`mono ${r.outPct < 0 ? 'down' : 'up'}`}>{pc(r.outPct)}</td>
                 <td className="mono">{r.fee !== null && r.fee !== undefined ? fmtUsd(Math.abs(r.fee), 3) : '—'}</td>
                 <td className={r.pnl >= 0 ? 'up' : 'down'}>{fmtSigned(r.pct, 2)}%</td>
@@ -86,28 +144,28 @@ function Slippage({ sl, onTrade }) {
   )
 }
 
-// Titoli scelti che Bitunix non accetta via API: non si tentano (stessa lista per Prova e Reale)
-const KIND = { bitunix: 'Bitunix: non operabile via API', ordini: 'ordine rifiutato nel Reale', stop: 'stop loss non accettato nel Reale' }
+// Titoli scelti che l'exchange non accetta via API: non si tentano (stessa lista per la sua Prova e il suo Reale)
+const KIND = { bitunix: 'Bitunix: non operabile via API', bitget: 'Bitget: perpetuo non disponibile', ordini: 'ordine rifiutato nel Reale', stop: 'stop loss non accettato nel Reale' }
 const dmy = t => (t ? new Date(t).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—')
-function Operable({ op, busy, onRecheck }) {
+function Operable({ op, busy, onRecheck, X = 'Bitunix' }) {
   if (!op || op.error) return op?.error ? <div className="note">Titoli operabili via API: {op.error}</div> : null
   return (
     <details className="card">
       <summary className="lab" style={{ cursor: 'pointer' }}>Titoli operabili via API · {op.ok} su {op.total}{op.list.length ? ` · ${op.list.length} esclusi` : ''}</summary>
       <div className="note" style={{ marginTop: 8 }}>
-        Si usano solo i titoli che Bitunix accetta via API (Prova e Reale, stessa lista). Coppie di Bitunix rilette ogni giorno: ultimo controllo {dmy(op.pairsAt)}.
+        Si usano solo i titoli che {X} accetta via API (Prova e Reale di {X}, stessa lista). Coppie di {X} rilette ogni giorno: ultimo controllo {dmy(op.pairsAt)}.
         Un titolo rifiutato nel Reale (ordine o stop loss) si ritenta da solo dopo {op.recheckDays} giorni.
       </div>
       {op.list.length > 0 && (
         <div className="table-wrap" style={{ marginTop: 8 }}>
           <table className="tbl"><thead><tr><th>Titolo</th><th>Motivo</th><th>Dal</th><th>Si riprova</th></tr></thead>
             <tbody>{op.list.map(x => (
-              <tr key={x.symbol}><td className="mono">{x.symbol}</td><td title={x.why}>{KIND[x.kind] || x.kind}</td><td className="mono">{dmy(x.at)}</td><td className="mono">{x.until ? dmy(x.until) : 'quando Bitunix lo abilita'}</td></tr>
+              <tr key={x.symbol}><td className="mono">{x.symbol}</td><td title={x.why}>{KIND[x.kind] || x.kind}</td><td className="mono">{dmy(x.at)}</td><td className="mono">{x.until ? dmy(x.until) : `quando ${X} lo abilita`}</td></tr>
             ))}</tbody></table>
         </div>
       )}
       <button className="btn ghost small" style={{ marginTop: 8 }} disabled={busy} onClick={onRecheck}>Ricontrolla ora</button>
-      <div className="note">Rilegge le coppie di Bitunix e toglie i segni del Reale: al prossimo segnale quei titoli si ritentano davvero.</div>
+      <div className="note">Rilegge le coppie di {X} e toglie i segni del Reale: al prossimo segnale quei titoli si ritentano davvero.</div>
     </details>
   )
 }
@@ -135,6 +193,10 @@ function CodeGate({ onOk }) {
 export default function Strategy() {
   const [params, setParams] = useSearchParams()
   const mode = ['live', 'sim'].includes(params.get('mode')) ? params.get('mode') : 'paper'
+  // exchange scelto in Prova e Reale (?ex=bitunix|bitget|total), ricordato nel browser
+  const exQ = params.get('ex')
+  const ex = [...EX_LIST, 'total'].includes(exQ) ? exQ : load('strategy:ex', 'bitunix')
+  const setEx = e => { save('strategy:ex', e); setParams(p => { const n = new URLSearchParams(p); n.set('ex', e); return n }, { replace: true }) }
   const [authed, setAuthed] = useState(() => !!load('adminCode', ''))
   const [view, setView] = useState(null)
   const [draft, setDraft] = useState(null)
@@ -149,16 +211,16 @@ export default function Strategy() {
   const mins = useMins() // giorno scelto nella panoramica: filtra le operazioni chiuse
   const [draftFrom, setDraftFrom] = useState(null) // { name, presetId, settings }: impostazione salvata caricata nella bozza
 
-  const refresh = useCallback(() => mode === 'sim' ? Promise.resolve() : get(`/api/strategy?mode=${mode}`)
+  const refresh = useCallback(() => mode === 'sim' || ex === 'total' ? Promise.resolve() : get(`/api/strategy?mode=${mode}&ex=${ex}`)
     .then(v => { setView(v); setErr(null) })
-    .catch(e => { if (/codice/i.test(e.message)) { save('adminCode', ''); setAuthed(false) } setErr(e.message) }), [mode])
+    .catch(e => { if (/codice/i.test(e.message)) { save('adminCode', ''); setAuthed(false) } setErr(e.message) }), [mode, ex])
 
   const hasOpen = !!view?.open?.length
   // trade chiusi oggi (per la sfera)
   const todayClosed = useMemo(() => (view ? view.trades.filter(p => p.day === view.today.date) : []), [view])
-  useEffect(() => { setView(null); setDraft(null); setDraftFrom(null); setArmStart(false); setArmReset(false) }, [mode])
+  useEffect(() => { setView(null); setDraft(null); setDraftFrom(null); setArmStart(false); setArmReset(false); setSelDay(null); setChartId(null) }, [mode, ex])
   useEffect(() => {
-    if (!authed || mode === 'sim') return
+    if (!authed || mode === 'sim' || ex === 'total') return
     refresh()
     const id = setInterval(refresh, hasOpen ? 15000 : 30000) // con posizioni aperte più spesso (sfera e risultati aggiornati)
     return () => clearInterval(id)
@@ -183,13 +245,13 @@ export default function Strategy() {
     const edited = !baseSettings || JSON.stringify(normalizeSettings(draft)) !== JSON.stringify(normalizeSettings(baseSettings))
     const presetId = draftFrom ? draftFrom.presetId : view.active?.presetId ?? null
     const name = edited && baseName !== 'personalizzata' ? `${baseName} (modificata)` : baseName
-    const v = await post('/api/strategy/settings', { mode, settings: draft, name, presetId, edited })
+    const v = await post('/api/strategy/settings', { mode, ex, settings: draft, name, presetId, edited })
     setDraft(null); setDraftFrom(null); return v
   }, mode === 'live' ? 'Impostazioni del Reale salvate.' : 'Impostazioni salvate.')
   const toggleEnabled = () => {
     if (!view.enabled && mode === 'live' && !armStart) { setArmStart(true); return }
     setArmStart(false)
-    act(() => post('/api/strategy/settings', { mode, enabled: !view.enabled }), view.enabled ? 'Strategia fermata.' : 'Strategia avviata.')
+    act(() => post('/api/strategy/settings', { mode, ex, enabled: !view.enabled }), view.enabled ? 'Strategia fermata.' : 'Strategia avviata.')
   }
 
   if (!authed) return <CodeGate onOk={() => setAuthed(true)} />
@@ -197,11 +259,20 @@ export default function Strategy() {
   const tabs = (
     <>
       <div className="lab" style={{ marginBottom: 8 }}>Strategia · Apertura USA</div>
-      <StrategyTabs mode={mode} setMode={m => setParams({ mode: m })} />
+      <StrategyTabs mode={mode} setMode={m => setParams(p => { const n = new URLSearchParams(p); n.set('mode', m); return n })} liveLabel="Reale · soldi veri" />
+      {mode !== 'sim' && (
+        <div className="seg small" style={{ marginBottom: 12 }}>
+          {EX_LIST.map(e => <button key={e} className={ex === e ? 'on' : ''} onClick={() => setEx(e)}>{EXCHANGES[e].name}</button>)}
+          <button className={ex === 'total' ? 'on' : ''} onClick={() => setEx('total')}>Totale</button>
+        </div>
+      )}
     </>
   )
   if (mode === 'sim') return <>{tabs}<Simulation onAuthError={() => { save('adminCode', ''); setAuthed(false) }} /></>
+  if (ex === 'total') return <>{tabs}<TotalView mode={mode} /></>
   if (!view) return <>{tabs}<div className="card empty">{err || 'Carico la strategia…'}</div></>
+  if (view.missing) return <>{tabs}<div className="card warn">{view.why}</div></>
+  const X = view.exchange?.name || 'Bitunix'
 
   const st = view.status, t = view.today
   const tickAge = st.lastTick?.at ? Date.now() - st.lastTick.at : null
@@ -228,7 +299,7 @@ export default function Strategy() {
       {/* Prova diversa dal Reale: il confronto tra le due non è sugli stessi segnali */}
       {mode === 'paper' && view.vsLive?.diff?.length > 0 && (
         <div className="card" style={{ padding: '10px 14px', borderColor: 'var(--warn)' }}>
-          <div className="lab" style={{ color: 'var(--warn)' }}>La Prova ha regole diverse dal Reale</div>
+          <div className="lab" style={{ color: 'var(--warn)' }}>La Prova ha regole diverse dal Reale {X}</div>
           <div className="note" style={{ marginTop: 4 }}>
             {view.vsLive.diff.map(d => d.key === 'symbols' ? `titoli: ${d.paper} in Prova, ${d.live} nel Reale (${d.onlyPaper} solo in Prova, ${d.onlyLive} solo nel Reale)` : `${d.key}: ${JSON.stringify(d.paper)} in Prova, ${JSON.stringify(d.live)} nel Reale`).join(' · ')}
           </div>
@@ -250,8 +321,8 @@ export default function Strategy() {
             <span className="mono sec">{view.pslip.at ? `aggiornati il ${new Date(view.pslip.at).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : 'non ancora misurati'}</span>
           </div>
           <div className="note" style={{ marginTop: 4 }}>
-            Entrata: prezzo letto + slittamento. Uscite decise dall'app: prezzo letto in quel controllo − slittamento. Stop su Bitunix: al livello, come prima.
-            Valori dagli ultimi {view.pslip.last} trade del Reale di ogni tipo; con meno di {view.pslip.minN} trade {String(view.pslip.dflt).replace('.', ',')}%.
+            Entrata: prezzo letto + slittamento. Uscite decise dall'app: prezzo letto in quel controllo − slittamento. Stop su {X}: al livello, come prima.
+            Valori dagli ultimi {view.pslip.last} trade del Reale {X} di ogni tipo; con meno di {view.pslip.minN} trade {String(view.pslip.dflt).replace('.', ',')}%.
           </div>
           <div style={{ marginTop: 6 }}>
             {view.pslip.list.map(x => (
@@ -270,7 +341,7 @@ export default function Strategy() {
       {/* Configurazione attiva in questa scheda */}
       <div className="card" style={{ padding: '10px 14px' }}>
         <div className="row">
-          <span className="lab">Configurazione attiva {mode === 'live' ? 'nel Reale' : 'in Prova'}</span>
+          <span className="lab">Configurazione attiva {mode === 'live' ? 'nel Reale' : 'in Prova'} {X}</span>
           <span className="mono sec">{view.active?.at ? `modificata il ${new Date(view.active.at).toLocaleString('it-CH', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</span>
         </div>
         <div style={{ fontSize: 16, fontWeight: 800, marginTop: 2 }}>{view.active?.name || 'default dell\'app'}</div>
@@ -282,17 +353,17 @@ export default function Strategy() {
         <div className="row">
           <div>
             <div className="lab">Apertura USA · entrata in tempo reale</div>
-            <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>{mode === 'paper' ? 'Prova' : 'Reale'} · {view.enabled ? 'attiva' : 'ferma'}</div>
+            <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>{mode === 'paper' ? 'Prova' : 'Reale'} {X} · {view.enabled ? 'attiva' : 'ferma'}</div>
           </div>
           <span className={`pill ${view.enabled ? 'long' : 'closed'}`}>{view.enabled ? 'ON' : 'OFF'}</span>
         </div>
         <p className="body">
           {mode === 'paper'
-            ? `Tutto uguale al Reale, ma con capitale fittizio: entrate e uscite decise dall'app al prezzo letto con lo slittamento misurato nel Reale (valori qui sopra), stop su Bitunix al livello, commissione ${num(s.fee)}% per lato.`
-            : 'Apre e chiude ordini veri sul tuo conto futures Bitunix, a mercato, con margine isolato e uno stop loss di sicurezza già impostato su Bitunix.'}
+            ? `Tutto uguale al Reale ${X}, ma con capitale fittizio: prezzi e candele di ${X}, entrate e uscite decise dall'app al prezzo letto con lo slittamento misurato nel Reale ${X} (valori qui sopra), stop su ${X} al livello, commissione ${num(s.fee)}% per lato.`
+            : `Apre e chiude ordini veri sul tuo conto futures ${X}, a mercato, con margine isolato${view.exchange?.id === 'bitget' ? ', modalità one-way' : ''} e uno stop loss di sicurezza già impostato su ${X}.`}
           {' '}Entrate nei primi 30 minuti dopo l'apertura USA ({t.tradingDay ? `oggi alle ${openLocal}` : 'oggi la borsa è chiusa'}), chiusura di tutto prima della fine della seduta.
         </p>
-        {mode === 'live' && !st.keys && <div className="warn">Mancano le chiavi API di Bitunix: aggiungi BITUNIX_API_KEY e BITUNIX_SECRET_KEY su Vercel (solo permesso di trading, mai prelievi).</div>}
+        {mode === 'live' && !st.keys && <div className="warn">Mancano le chiavi API di {X}: aggiungi {KEYS_HINT[view.exchange?.id] || 'le chiavi'} su Vercel (solo permesso di trading, mai prelievi).</div>}
         {mode === 'live' && st.keys && !st.liveTrading && <div className="warn">Gli ordini veri sono bloccati dall'interruttore generale: quando hai finito i test in Prova imposta LIVE_TRADING=on su Vercel.</div>}
         {view.capital?.halted && <div className="warn">Strategia fermata per la perdita massima totale: {view.capital.halted.why}. Riavviandola il limite riparte dal capitale attuale.</div>}
         {(view.capital?.dayStop || t.dayStop) && <div className="warn">Oggi niente nuovi trade: perdita massima giornaliera superata. Si riparte domani.</div>}
@@ -318,7 +389,7 @@ export default function Strategy() {
       <div className="lab section-title">Capitale</div>
       <div className="card">
         <div className="kv" style={{ borderTop: 0 }}>
-          <span>{mode === 'paper' ? 'Saldo di prova' : 'Saldo futures su Bitunix'}</span>
+          <span>{mode === 'paper' ? 'Saldo di prova' : `Saldo futures su ${X}`}</span>
           <span className="mono">{view.platform.balance !== null ? `${fmtUsd(view.platform.balance)} USDT` : '—'}</span>
         </div>
         {mode === 'paper' && <div className="kv"><span className="sec">Partenza</span><span className="mono sec">{fmtUsd(view.platform.start)} USDT · {fmtSigned((view.platform.balance / view.platform.start - 1) * 100)}%</span></div>}
@@ -349,23 +420,23 @@ export default function Strategy() {
           <PositionsField s={s} set={set} />
         </div>
         <ExposureInfo s={s} sz={sz} mins={mins} />
-        {s.capitalMode === 'dedicated' && <DedicatedCapital c={view.capital} s={s} set={set} mode={mode} />}
+        {s.capitalMode === 'dedicated' && <DedicatedCapital c={view.capital} s={s} set={set} mode={mode} X={X} />}
         {mode === 'paper' && (
           <div style={{ marginTop: 12, borderTop: '1px solid var(--border-soft)', paddingTop: 10 }}>
             <div className="lab">Riparti da capo</div>
             <div className="row" style={{ marginTop: 6 }}>
               <div className="input-suffix" style={{ flex: 1 }}><input type="number" min="1" placeholder={String(view.platform.start)} value={resetBal} onChange={e => setResetBal(e.target.value)} /><span>USDT</span></div>
               <button className="btn ghost" style={{ width: 'auto' }} disabled={busy}
-                onClick={() => { if (!armReset) { setArmReset(true); return } setArmReset(false); act(() => post('/api/strategy/reset', { balance: +(resetBal || view.platform.start) }), 'Prova azzerata.') }}>
+                onClick={() => { if (!armReset) { setArmReset(true); return } setArmReset(false); act(() => post('/api/strategy/reset', { ex, balance: +(resetBal || view.platform.start) }), 'Prova azzerata.') }}>
                 {armReset ? 'Confermi?' : 'Azzera'}
               </button>
             </div>
-            <div className="note">Cancella lo storico di prova e riparte con il saldo scelto.</div>
+            <div className="note">Cancella lo storico della Prova {X} e riparte con il saldo scelto (gli altri exchange non cambiano).</div>
           </div>
         )}
       </div>
 
-      <Operable op={view.operable} busy={busy} onRecheck={() => act(() => post('/api/strategy/operable/recheck', { mode }), 'Lista ricontrollata.')} />
+      <Operable op={view.operable} busy={busy} X={X} onRecheck={() => act(() => post('/api/strategy/operable/recheck', { mode, ex }), 'Lista ricontrollata.')} />
 
       {/* Regole */}
       <RulesCard s={s} set={set} showFee={mode === 'paper'} />
@@ -409,11 +480,11 @@ export default function Strategy() {
               </div>
               {p.level && <div className="note">livello più vicino: {p.level.t} {fmtPrice(p.level.p)}{p.note ? ` · ${p.note}` : ''}</div>}
               {p.liq_price > 0 && <div className="note">liquidazione a <span className="mono">{fmtPrice(p.liq_price)}</span> (margine isolato)</div>}
-              <button className="btn ghost small" disabled={busy} onClick={e => { e.stopPropagation(); act(() => post('/api/strategy/close', { mode, id: p.id }), `${p.symbol} chiuso.`) }}>Chiudi ora</button>
+              <button className="btn ghost small" disabled={busy} onClick={e => { e.stopPropagation(); act(() => post('/api/strategy/close', { mode, ex, id: p.id }), `${p.symbol} chiuso.`) }}>Chiudi ora</button>
             </div>
           )
         })}
-        {view.open.length > 1 && <button className="btn ghost" style={{ marginTop: 8 }} disabled={busy} onClick={() => act(() => post('/api/strategy/close', { mode }), 'Posizioni chiuse.')}>Chiudi tutto</button>}
+        {view.open.length > 1 && <button className="btn ghost" style={{ marginTop: 8 }} disabled={busy} onClick={() => act(() => post('/api/strategy/close', { mode, ex }), 'Posizioni chiuse.')}>Chiudi tutto</button>}
       </div>
 
       {/* Giorno per giorno */}
@@ -444,7 +515,7 @@ export default function Strategy() {
         </>
       ) : <div className="card note">Ancora nessuna operazione chiusa. Il riepilogo compare dopo il primo giorno.</div>}
 
-      {mode === 'live' && view.slippage && <Slippage sl={view.slippage} onTrade={setChartId} />}
+      {mode === 'live' && view.slippage && <Slippage sl={view.slippage} onTrade={setChartId} X={X} />}
 
       {/* Operazioni */}
       <div className="lab section-title row" id="closed-trades">
