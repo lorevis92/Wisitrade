@@ -1,5 +1,6 @@
-// Scheda Simulazione della pagina Strategia: la strategia Apertura USA sulle candele da 1 minuto archiviate di Bitunix,
-// con lo stesso motore di Prova e Reale (shared/engine.js, eseguito sul server).
+// Scheda Simulazione della pagina Strategia: la strategia Apertura USA sulle candele da 1 minuto archiviate dell'exchange
+// scelto (Bitunix o Bitget, ognuno con il suo archivio, i suoi limiti e i suoi titoli operabili), con lo stesso motore di
+// Prova e Reale (shared/engine.js, eseguito sul server). Impostazioni e risultati separati per exchange; confronto affiancato.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { get, post, postStream, fmtPrice, fmtUsd, fmtSigned } from '../lib/api.js'
 import { load, save } from '../lib/store.js'
@@ -10,26 +11,61 @@ import CalendarOverview from '../components/CalendarOverview.jsx'
 import TradeChart from '../components/TradeChart.jsx'
 import Analysis from '../components/Analysis.jsx'
 import { SimSphere } from '../components/Sphere.jsx'
+import { EXCHANGES, EX_LIST } from '@shared/venues.js'
+
+// chiave del browser per exchange: Bitunix con le chiavi di prima (impostazioni già salvate invariate)
+const keyFor = (ex, name) => (ex === 'bitunix' ? name : `${name}:${ex}`)
+
+// Bitunix e Bitget affiancati: stesse impostazioni, stesso periodo
+function CompareCard({ c }) {
+  const pct = x => (x === null || x === undefined ? '—' : `${Math.round(x)}%`)
+  return (
+    <div className="card">
+      <div className="lab">Bitunix e Bitget affiancati · {dShort(c.from)} → {dShort(c.to)} · capitale {fmtUsd(c.capital)} USDT</div>
+      <div className="table-wrap" style={{ marginTop: 8 }}>
+        <table className="tbl">
+          <thead><tr><th>Exchange</th><th>Periodo con dati</th><th>Trade</th><th>Vinti</th><th>Risultato</th><th>%</th><th>Costi</th><th>Commissioni</th><th>Funding</th><th>Slittamento</th><th>Peggior calo</th><th>Titoli con dati</th></tr></thead>
+          <tbody>{c.list.map(r => r.error ? (
+            <tr key={r.ex}><td><b>{r.name}</b></td><td colSpan={11} className="sec">{r.error}</td></tr>
+          ) : (
+            <tr key={r.ex}>
+              <td><b>{r.name}</b></td>
+              <td className="mono">{r.firstDay ? `${dShort(r.firstDay)} → ${dShort(r.lastDay)}` : '—'} · {r.days} g</td>
+              <td>{r.n}</td><td>{pct(r.winPct)}</td>
+              <td className={r.net >= 0 ? 'up' : 'down'}>{fmtSigned(r.net)}</td>
+              <td className={r.net >= 0 ? 'up' : 'down'}>{fmtSigned(r.pct)}%</td>
+              <td className="mono">{fmtUsd(r.costs)}</td><td className="mono">{fmtUsd(r.fees)}</td><td className="mono">{fmtUsd(r.funding)}</td><td className="mono">{fmtUsd(r.slippage)}</td>
+              <td className="mono down">−{fmtUsd(r.maxDDPct)}%</td>
+              <td>{r.withData} su {r.symbols}{r.excluded ? ` (${r.excluded} esclusi)` : ''}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+      <div className="note">Stesse impostazioni (quelle di questa pagina) e stesso periodo; ogni exchange con i suoi dati, limiti, minimo per ordine e titoli operabili. Se un exchange non ha dati per tutto il periodo, i suoi numeri valgono solo sui giorni indicati.</div>
+    </div>
+  )
+}
 
 const PERIODS = [['1w', '1 settimana', 7], ['1m', '1 mese', 30], ['3m', '3 mesi', 91], ['6m', '6 mesi', 182], ['all', 'tutto'], ['custom', 'date a scelta']]
 const dShort = d => (d ? dayFmt(d, { day: '2-digit', month: 'short', year: '2-digit' }) : '—')
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-function ArchiveCard({ status, onStatus, onAuthError }) {
+function ArchiveCard({ status, onStatus, onAuthError, ex = 'bitunix' }) {
+  const X = EXCHANGES[ex]?.name || ex
   const [filling, setFilling] = useState(false)
   const [progress, setProgress] = useState(null)
   const stop = useRef(false)
 
   const fill = async () => {
-    setFilling(true); stop.current = false; setProgress('Inizio lo scaricamento da Bitunix…')
+    setFilling(true); stop.current = false; setProgress(`Inizio lo scaricamento da ${X}…`)
     let saved = 0
     try {
       for (let round = 0; round < 200 && !stop.current; round++) {
-        const r = await post('/api/sim/fill', {})
+        const r = await post('/api/sim/fill', { ex })
         if (r.busy) {
           setProgress('Lo scaricamento automatico è già in corso: aspetto che finisca il suo blocco…')
           await sleep(15000)
-          onStatus(await get('/api/sim/status'))
+          onStatus(await get(`/api/sim/status?ex=${ex}`))
           continue
         }
         saved += r.saved + r.empty
@@ -49,12 +85,13 @@ function ArchiveCard({ status, onStatus, onAuthError }) {
   const unavailable = status.symbols.filter(x => x.unavailable)
   return (
     <div className="card">
-      <div className="lab">Archivio dati Bitunix · candele da 1 minuto</div>
+      <div className="lab">Archivio dati {X} · candele da 1 minuto</div>
       {status.first
-        ? <div style={{ fontSize: 16, fontWeight: 800, marginTop: 4 }}>dal {dShort(status.first)} al {dShort(status.last)}</div>
+        ? <div style={{ fontSize: 16, fontWeight: 800, marginTop: 4 }}>Periodo disponibile su {X}: dal {dShort(status.first)} al {dShort(status.last)}</div>
         : <div style={{ fontSize: 16, fontWeight: 800, marginTop: 4 }}>Archivio vuoto</div>}
       <p className="body">
-        {avail.length} titoli su {status.symbols.length} con dati{unavailable.length ? ` (${unavailable.map(x => x.symbol).join(', ')}: perpetual non disponibile su Bitunix)` : ''}.
+        {avail.length} titoli su {status.symbols.length} con dati{unavailable.length ? ` (${unavailable.map(x => x.symbol).join(', ')}: perpetual non disponibile su ${X})` : ''}.
+        {status.half && status.half > status.first ? ` I titoli entrano man mano che ${X} li quota: metà dei titoli ha dati dal ${dShort(status.half)}.` : ''}
         {' '}Dalle 9:00 alle 16:30 di New York di ogni giorno di borsa. L'archivio si aggiorna da solo ogni sera, dopo la chiusura.
       </p>
       {status.missing > 0
@@ -71,10 +108,10 @@ function ArchiveCard({ status, onStatus, onAuthError }) {
         <summary className="lab" style={{ cursor: 'pointer' }}>Titolo per titolo</summary>
         <div className="table-wrap" style={{ marginTop: 8 }}>
           <table className="tbl">
-            <thead><tr><th>Titolo</th><th>Su Bitunix dal</th><th>Archivio</th><th>Giorni</th><th>Note</th></tr></thead>
+            <thead><tr><th>Titolo</th><th>Su {X} dal</th><th>Archivio</th><th>Giorni</th><th>Note</th></tr></thead>
             <tbody>{status.symbols.map(x => (
               <tr key={x.symbol}>
-                <td><b>{x.symbol}</b></td>
+                <td><b>{x.symbol}</b>{x.perp && x.perp !== `${x.symbol}USDT` ? <span className="note"> {x.perp}</span> : null}</td>
                 <td>{x.unavailable ? '—' : dShort(x.listed)}</td>
                 <td>{x.days ? `${dShort(x.first)} → ${dShort(x.last)}` : '—'}</td>
                 <td>{x.days || '—'}</td>
@@ -148,8 +185,8 @@ function SimSetup({ r }) {
       {groups.map(x => (
         <div key={x.g} className="kv"><span className="sec">{GROUP_NAME[x.g]}</span><span className="mono">{x.n}{x.data < x.n ? ` · ${x.data} con dati nel periodo` : ''}</span></div>
       ))}
-      {excl.length > 0 && <div className="note">Esclusi perché non operabili via API su Bitunix: {excl.length} su {(s.symbols || []).length} ({excl.map(x => x.symbol).join(', ')}).</div>}
-      {r.symbolsWithData && withData.size < syms.length && <div className="note">Titoli con dati nel periodo: {withData.size} su {syms.length} (gli altri sono quotati su Bitunix dopo l'inizio del periodo).</div>}
+      {excl.length > 0 && <div className="note">Esclusi perché non operabili via API su {r.exName || 'Bitunix'}: {excl.length} su {(s.symbols || []).length} ({excl.map(x => x.symbol).join(', ')}).</div>}
+      {r.symbolsWithData && withData.size < syms.length && <div className="note">Titoli con dati nel periodo: {withData.size} su {syms.length} (gli altri sono quotati su {r.exName || 'Bitunix'} dopo l'inizio del periodo).</div>}
       <div className="kv" style={{ marginTop: 6 }}><span className="sec">Dimensione dei trade</span>
         <span className="mono">{compound ? `${s.capitalMode === 'dedicated' ? 'capitale dedicato (100% del saldo)' : num(s.capitalPct) + '% del saldo'} · margine ${s.marginPct}% · ${s.leverage}x` : `${num(s.capitalFixed)} USDT fissi · margine ${s.marginPct}% · ${s.leverage}x`}</span></div>
       <div className="note">{compound ? 'Interesse composto: ogni trade si calcola sul saldo del momento, quindi i guadagni fanno crescere i trade successivi.' : 'Senza interesse composto: ogni trade ha la stessa dimensione, qualunque sia il saldo. Su periodi lunghi il risultato in % è più basso che con "% saldo".'}</div>
@@ -175,7 +212,7 @@ function Results({ r, onTrade }) {
 
   return (
     <>
-      <div className="lab section-title">Risultato · {dShort(r.firstDay)} → {dShort(r.lastDay)} · {r.days} giorni di borsa</div>
+      <div className="lab section-title">Risultato {r.exName || 'Bitunix'} · {dShort(r.firstDay)} → {dShort(r.lastDay)} · {r.days} giorni di borsa</div>
       <CalendarOverview days={calDays} selDay={selDay} onDay={pickDay} />
       <div className="stat-grid">
         <div className="tile"><div className="lab">Risultato</div><div className={`mono big ${r.net >= 0 ? 'up' : 'down'}`}>{fmtSigned(r.net)} USDT</div><div className={`note ${r.net >= 0 ? 'up' : 'down'}`}>{fmtSigned(r.pct)}% · saldo {fmtUsd(r.final)}</div></div>
@@ -192,7 +229,7 @@ function Results({ r, onTrade }) {
         <div className="kv"><span className="sec">Commissioni (entrata e uscita, sul valore della posizione)</span><span className="mono">{fmtUsd(r.fees)}</span></div>
         <div className="kv"><span className="sec">Funding stimato</span><span className="mono">{fmtUsd(r.funding ?? 0)}</span></div>
         <div className="kv"><span className="sec">Slittamento</span><span className="mono">{fmtUsd(r.slippage ?? 0)}</span></div>
-        {r.mmrFrom && Object.values(r.mmrFrom).includes('impostato') && <div className="note" style={{ color: 'var(--warn)' }}>Margine di mantenimento non disponibile da Bitunix per {Object.entries(r.mmrFrom).filter(([, v]) => v === 'impostato').map(([k]) => k).join(', ')}: usato quello impostato.</div>}
+        {r.mmrFrom && Object.values(r.mmrFrom).includes('impostato') && <div className="note" style={{ color: 'var(--warn)' }}>Margine di mantenimento non disponibile da {r.exName || 'Bitunix'} per {Object.entries(r.mmrFrom).filter(([, v]) => v === 'impostato').map(([k]) => k).join(', ')}: usato quello impostato.</div>}
       </div>
       <div className="card" style={{ padding: '10px 14px' }}>
         <div className="row"><span className="lab">Saldo nel tempo</span></div>
@@ -271,12 +308,18 @@ function Results({ r, onTrade }) {
 }
 
 export default function Simulation({ onAuthError }) {
+  // exchange simulato (ricordato nel browser); impostazioni, capitale, periodo e risultato separati per exchange
+  const [ex, setExRaw] = useState(() => { const e = load('simEx', 'bitunix'); return EX_LIST.includes(e) ? e : 'bitunix' })
+  const X = EXCHANGES[ex]?.name || ex
   const [status, setStatus] = useState(null)
-  const [s, setS] = useState(() => normalizeSettings(load('simSettings', STRATEGY_DEFAULTS)))
-  const [capital, setCapital] = useState(() => load('simCapital', 300))
-  const [period, setPeriod] = useState(() => load('simPeriod', '1m'))
-  const [custom, setCustom] = useState(() => load('simCustom', { from: '', to: '' }))
+  const [s, setS] = useState(() => normalizeSettings(load(keyFor(ex, 'simSettings'), STRATEGY_DEFAULTS)))
+  const [capital, setCapital] = useState(() => load(keyFor(ex, 'simCapital'), 300))
+  const [period, setPeriod] = useState(() => load(keyFor(ex, 'simPeriod'), '1m'))
+  const [custom, setCustom] = useState(() => load(keyFor(ex, 'simCustom'), { from: '', to: '' }))
   const [result, setResult] = useState(null)
+  const results = useRef({}) // ultimo risultato di ogni exchange (si rivede tornando sull'exchange)
+  const [cmp, setCmp] = useState(null)
+  const [cmpBusy, setCmpBusy] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [trade, setTrade] = useState(null)
@@ -285,17 +328,30 @@ export default function Simulation({ onAuthError }) {
   const authErr = useRef(onAuthError)
   authErr.current = onAuthError
 
-  useEffect(() => { save('simSettings', s) }, [s])
-  useEffect(() => { save('simCapital', capital) }, [capital])
-  useEffect(() => { save('simPeriod', period) }, [period])
-  useEffect(() => { save('simCustom', custom) }, [custom])
+  useEffect(() => { save(keyFor(ex, 'simSettings'), s) }, [s]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { save(keyFor(ex, 'simCapital'), capital) }, [capital]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { save(keyFor(ex, 'simPeriod'), period) }, [period]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { save(keyFor(ex, 'simCustom'), custom) }, [custom]) // eslint-disable-line react-hooks/exhaustive-deps
+  // cambio di exchange: si ricaricano le sue impostazioni e il suo ultimo risultato (le altre restano salvate)
+  const setEx = e => {
+    if (e === ex) return
+    abortRef.current?.abort()
+    results.current[ex] = result
+    save('simEx', e)
+    setExRaw(e)
+    setS(normalizeSettings(load(keyFor(e, 'simSettings'), STRATEGY_DEFAULTS)))
+    setCapital(load(keyFor(e, 'simCapital'), 300))
+    setPeriod(load(keyFor(e, 'simPeriod'), '1m'))
+    setCustom(load(keyFor(e, 'simCustom'), { from: '', to: '' }))
+    setResult(results.current[e] || null); setLive(null); setTrade(null); setErr(null); setStatus(null)
+  }
 
-  const refreshStatus = useCallback(() => get('/api/sim/status').then(setStatus).catch(e => { if (/codice/i.test(e.message)) authErr.current(); setErr(e.message) }), [])
+  const refreshStatus = useCallback(() => get(`/api/sim/status?ex=${ex}`).then(setStatus).catch(e => { if (/codice/i.test(e.message)) authErr.current(); setErr(e.message) }), [ex])
   useEffect(() => { refreshStatus() }, [refreshStatus])
 
   const set = (k, v) => setS(d => ({ ...d, [k]: v }))
   const sz = sizing(s, +capital || 0)
-  const mins = useMins()
+  const mins = useMins(ex)
   const range = useMemo(() => {
     if (!status?.first) return null
     const end = status.last
@@ -316,7 +372,7 @@ export default function Simulation({ onAuthError }) {
     setLive(lv); setBusy(true); setErr(null); setTrade(null)
     let final = null
     try {
-      await postStream('/api/sim/stream', { settings: normalizeSettings(s), capital: +capital, ...range }, {
+      await postStream('/api/sim/stream', { ex, settings: normalizeSettings(s), capital: +capital, ...range }, {
         signal: ctl.signal,
         onEvent: e => {
           if (e.t === 'phase') lv.phase = e.msg
@@ -339,11 +395,21 @@ export default function Simulation({ onAuthError }) {
     }
   }
   const cancel = () => abortRef.current?.abort()
+  // Bitunix e Bitget sullo stesso periodo e con le stesse impostazioni (solo i numeri principali)
+  const compare = async () => {
+    setCmpBusy(true); setErr(null)
+    try { setCmp(await post('/api/sim/compare', { settings: normalizeSettings(s), capital: +capital, ...range })) }
+    catch (e) { if (/codice/i.test(e.message)) onAuthError(); setErr(e.message) }
+    finally { setCmpBusy(false) }
+  }
   useEffect(() => () => abortRef.current?.abort(), []) // uscendo dalla pagina il calcolo si interrompe
 
   return (
     <>
-      <ArchiveCard status={status} onStatus={st => st && setStatus(st)} onAuthError={onAuthError} />
+      <div className="seg small" style={{ marginBottom: 12 }}>
+        {EX_LIST.map(e => <button key={e} className={ex === e ? 'on' : ''} disabled={busy} onClick={() => setEx(e)}>Simula su {EXCHANGES[e].name}</button>)}
+      </div>
+      <ArchiveCard key={ex} ex={ex} status={status} onStatus={st => st && setStatus(st)} onAuthError={onAuthError} />
 
       {/* Capitale */}
       <div className="lab section-title">Capitale</div>
@@ -372,20 +438,21 @@ export default function Simulation({ onAuthError }) {
             hint={<>posizione da <b className="mono" style={{ color: 'var(--text)' }}>{fmtUsd(sz.notional)} USDT</b></>} />
           <PositionsField s={s} set={set} />
           <Select label="Commissione per lato" value={s.fee} options={OPTIONS.fee} fmt={v => `${num(v)}%`} onChange={v => set('fee', v)}
-            hint="Bitunix taker 0,06%, sul valore della posizione" />
+            hint={`${X} taker 0,06%, sul valore della posizione`} />
           <Select label="Slittamento per lato" value={s.slip} options={OPTIONS.slip} fmt={v => `${num(v)}%`} onChange={v => set('slip', v)}
             hint="su entrata e uscita a mercato" />
           <Select label="Funding medio" value={s.funding} options={OPTIONS.funding} fmt={v => `${num(v)}% a periodo`} onChange={v => set('funding', v)}
-            hint="pagato a ogni orario del funding di Bitunix con la posizione aperta" />
+            hint={`pagato a ogni orario del funding di ${X} con la posizione aperta`} />
         </div>
         <label className="toggle">
-          <span>Solo titoli operabili su Bitunix<div className="note">Usa solo i titoli che oggi Bitunix accetta via API: lo stesso elenco con cui il Reale sceglie i titoli.</div></span>
+          <span>Solo titoli operabili su {X}<div className="note">Usa solo i titoli che oggi {X} accetta via API: lo stesso elenco con cui il Reale {X} sceglie i titoli.</div></span>
           <input type="checkbox" checked={!!s.onlyBitunix} onChange={e => set('onlyBitunix', e.target.checked)} />
         </label>
-        <ExposureInfo s={s} sz={sz} mins={mins} />
+        <ExposureInfo s={s} sz={sz} mins={mins} X={X} />
+        <div className="note">Il minimo per ordine di {X} vale anche qui: i trade sotto il minimo non si aprono, come nel Reale.</div>
       </div>
 
-      <RulesCard s={s} set={set} showFee={false} sim />
+      <RulesCard s={s} set={set} showFee={false} sim X={X} />
       <PresetsCard current={normalizeSettings(s)} onLoad={st => setS(normalizeSettings(st))} />
 
       {/* Periodo */}
@@ -401,20 +468,23 @@ export default function Simulation({ onAuthError }) {
           </div>
         )}
         <div className="note" style={{ marginTop: 8 }}>
-          {range ? <>dal <b className="mono" style={{ color: 'var(--text)' }}>{dShort(range.from)}</b> al <b className="mono" style={{ color: 'var(--text)' }}>{dShort(range.to)}</b>. I titoli entrano dal giorno in cui hanno abbastanza storico (5 giorni).</> : status && !status.first ? 'Prima scarica l\'archivio dei dati.' : 'Scegli le date.'}
+          {range ? <>Simulazione su {X} dal <b className="mono" style={{ color: 'var(--text)' }}>{dShort(range.from)}</b> al <b className="mono" style={{ color: 'var(--text)' }}>{dShort(range.to)}</b> (archivio {X}: {dShort(status?.first)} → {dShort(status?.last)}). I titoli entrano dal giorno in cui hanno abbastanza storico (5 giorni).</> : status && !status.first ? `Prima scarica l'archivio dei dati di ${X}.` : 'Scegli le date.'}
         </div>
         <div className="sim-actions" style={{ marginTop: 10 }}>
           <button className="btn" disabled={busy || !range || !s.symbols.length || !(+capital > 0)} onClick={run}>
             {busy ? 'Simulo…' : 'Avvia la simulazione'}
           </button>
           {busy && <button className="btn ghost" onClick={cancel}>Annulla</button>}
+          <button className="btn ghost" disabled={busy || cmpBusy || !range || !s.symbols.length || !(+capital > 0)} onClick={compare}>{cmpBusy ? 'Confronto…' : 'Confronta Bitunix e Bitget'}</button>
         </div>
         {(live || result) && <SimSphere live={live} result={result} capital={+capital} />}
         {err && <div className="note" style={{ color: 'var(--short)', marginTop: 6 }}>{err}</div>}
-        <p className="note" style={{ marginTop: 8 }}>Stesso motore di Prova e Reale, minuto per minuto, sulle candele da 1 minuto di Bitunix. Con slittamento, funding e liquidazione (margine isolato, margine di mantenimento di Bitunix): un trade liquidato perde tutto il margine.</p>
+        <p className="note" style={{ marginTop: 8 }}>Stesso motore di Prova e Reale, minuto per minuto, sulle candele da 1 minuto di {X}. Con slittamento, funding e liquidazione (margine isolato, margine di mantenimento e leva massima di {X}): un trade liquidato perde tutto il margine.</p>
       </div>
 
-      {result && <Results r={result} onTrade={setTrade} />}
+      {cmp && <CompareCard c={cmp} />}
+
+      {result && <Results r={result} onTrade={t => setTrade({ ...t, ex: result.ex || 'bitunix' })} />}
       {trade && <TradeChart trade={trade} onClose={() => setTrade(null)} />}
     </>
   )

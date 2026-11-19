@@ -154,8 +154,15 @@ export async function tickers(perps) {
   return out
 }
 
-// Ultimi n giorni di borsa prima di oggi, 9:25–10:10 di New York (volume normale minuto per minuto: shared/engine.js minuteNormals)
+// Ultimi n giorni di borsa prima di oggi (volume normale minuto per minuto: shared/engine.js minuteNormals): dall'archivio
+// di Bitget (server/archive.js) se ha abbastanza giorni, altrimenti dalle API (9:25–10:10 di New York, una richiesta per giorno)
 async function prevDays(sym, today, nDays = 10) {
+  try {
+    const { loadDays } = await import('../archive.js')
+    const d = await loadDays([sym], addDays(today, -21), addDays(today, -1), { ex: 'bitget' })
+    const arch = Object.keys(d).sort().slice(-nDays).map(x => d[x][sym]).filter(b => b?.length)
+    if (arch.length >= Math.min(nDays, 5)) return arch
+  } catch { /* archivio non disponibile: API */ }
   const perp = perpOf(sym), out = []
   for (let d = addDays(today, -1), k = 0; out.length < nDays && k < 25; d = addDays(d, -1), k++) {
     if (!isTradingDay(d, weekdayOf(d))) continue
@@ -167,10 +174,11 @@ async function prevDays(sym, today, nDays = 10) {
 }
 // Candele da 1 minuto di un giorno, 9:00–16:30 di New York (grafico della posizione)
 async function dayBars(sym, day) {
+  try { const { dayBars: arch } = await import('../archive.js'); const b = await arch(sym, day, 'bitget'); if (b.length) return b } catch { /* API */ }
   const perp = perpOf(sym), out = []
   const end = Math.min(Date.now(), nyTs(day, 990))
   for (let t = nyTs(day, 540); t < end; t += 200 * MIN) {
-    const page = await klines(perp, '1m', 200, { startTime: t, endTime: Math.min(end, t + 200 * MIN - 1) }).catch(() => [])
+    const page = await klines(perp, '1m', 200, { startTime: t, endTime: Math.min(end, t + 200 * MIN) }).catch(() => [])
     out.push(...page)
   }
   const seen = new Set()

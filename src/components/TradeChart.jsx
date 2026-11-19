@@ -16,7 +16,7 @@ export default function TradeChart({ trade, onClose }) {
   useEffect(() => {
     let alive = true
     setBars(null); setErr(null)
-    get(`/api/sim/day?symbol=${trade.symbol}&day=${trade.day}`).then(j => alive && setBars(j.bars)).catch(e => alive && setErr(e.message))
+    get(`/api/sim/day?symbol=${trade.symbol}&day=${trade.day}&ex=${trade.ex || 'bitunix'}`).then(j => alive && setBars(j.bars)).catch(e => alive && setErr(e.message))
     return () => { alive = false }
   }, [trade.symbol, trade.day])
 
@@ -86,7 +86,7 @@ export default function TradeChart({ trade, onClose }) {
           {!err && !bars && <div className="empty">Carico le candele…</div>}
           {bars && !bars.length && <div className="empty">Nessuna candela archiviata per questo giorno.</div>}
         </div>
-        <p className="note">Candele da 1 minuto del perpetual Bitunix, dalle 9:00 alle 16:30 di New York (orari in ora locale).</p>
+        <p className="note">Candele da 1 minuto del perpetual {trade.ex === 'bitget' ? 'Bitget' : 'Bitunix'}, dalle 9:00 alle 16:30 di New York (orari in ora locale).</p>
       </div>
     </div>
   )

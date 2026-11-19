@@ -5,7 +5,7 @@ Da questa versione la strategia Apertura USA può operare su più exchange. Oggi
 - **Bitunix**, quello di prima;
 - **Bitget**, che parte spento.
 
-Le regole restano quelle di `shared/engine.js`, uguali per tutti. Simulazione, pagine RSI, Range e Livelli e ordini manuali non cambiano: la Simulazione usa sempre i dati di Bitunix.
+Le regole restano quelle di `shared/engine.js`, uguali per tutti. Pagine RSI, Range e Livelli e ordini manuali non cambiano. La Simulazione ha un archivio e una scelta per exchange (sezione "Simulazione per exchange" qui sotto).
 
 ## Ogni exchange è un conto a sé
 
@@ -109,7 +109,7 @@ Le scritture sono provate solo su un Bitget finto (`tests/exchanges.test.mjs`): 
 Altri limiti:
 
 - la verifica a posteriori dello storico degli stop (`auditStops`, docs/stop-bitunix.md) c'è solo per Bitunix;
-- nel confronto serale di Bitget, la Simulazione usa le candele di Bitunix: le differenze comprendono anche quelle tra i due contratti.
+- nel confronto serale ogni exchange usa il suo archivio; il Reale e la Prova usano l'indice di attività calcolato sulle candele di Bitunix (comune a tutti).
 
 ## Titoli operabili per exchange
 
@@ -151,3 +151,77 @@ insert into wt_accounts (mode, enabled, balance, start_balance) values ('live:bi
 ```
 
 Senza questo SQL la sezione Bitget lo dice nella pagina e Bitunix funziona come sempre.
+
+## Simulazione per exchange
+
+Nella Simulazione si sceglie in alto **Simula su Bitunix** o **Simula su Bitget**. Ogni exchange usa le sue cose:
+
+- **Dati:** il suo archivio di candele da 1 minuto.
+- **Limiti dell'exchange:** leva massima, margine di mantenimento e orari del funding.
+- **Minimo per ordine:** la quantità minima e, su Bitget, i 5 USDT. Come nel Reale, un trade sotto il minimo non si apre. Con le impostazioni di partenza su Bitunix non cambia nessun trade: 1348 trade dal 9/3 al 18/11/2026, stesso risultato.
+- **Titoli operabili:** l'interruttore "Solo titoli operabili" usa la lista di quell'exchange.
+- **Volume normale minuto per minuto:** quello dell'exchange, per il filtro volume.
+- **Indice di attività del mercato:** calcolato dal suo archivio (`mindex:raw`, `mindex:raw:bitget`).
+
+Le regole sono quelle di `shared/engine.js`, uguali per tutti.
+
+**Impostazioni, capitale, periodo e ultimo risultato** sono separati per exchange e salvati nel browser:
+
+- Bitunix tiene le chiavi di prima (`simSettings` …), quindi le impostazioni già salvate non cambiano;
+- Bitget usa `simSettings:bitget` ….
+
+La pagina mostra il periodo disponibile nell'archivio dell'exchange scelto e da quando metà dei titoli ha dati.
+
+**Confronta Bitunix e Bitget** (`/api/sim/compare`) fa la stessa simulazione sui due exchange, con le stesse impostazioni e lo stesso periodo. Mostra fianco a fianco:
+
+- risultato, trade e percentuale vinta;
+- costi: commissioni, funding e slittamento;
+- peggior calo;
+- periodo con dati e titoli con dati.
+
+Anche il confronto serale (Reale · Prova · Simulazione) usa l'archivio e i limiti del suo exchange.
+
+### Archivio per exchange
+
+Le candele sono in `wt_bars`. Per Bitunix le righe di prima restano invariate, con chiave il titolo. Per Bitget la chiave è `<titolo>@bitget` (es. `NVDA@bitget`, `CATERPILLAR@bitget` scaricato da `CATUSDT`). Non serve nessun SQL.
+
+Anche le altre chiavi sono per exchange:
+
+| | Bitunix | Bitget |
+|---|---|---|
+| Primo giorno di ogni titolo | `archive:listing` | `archive:listing:bitget` |
+| Blocco dello scaricamento | `lock:archive` | `lock:archive:bitget` |
+| Archivio completo | `archive:done` | `archive:done:bitget` |
+
+**Come si riempie:**
+
+- Bitget si scarica dal primo giorno del perpetuo, con 3 richieste per giornata (`history-candles`, 200 candele per richiesta).
+- Il controllo ogni minuto lo fa fuori orario, dopo Bitunix e il confronto serale, a blocchi di al massimo 30 secondi che riprendono da dove si sono fermati.
+- Dalla pagina c'è il pulsante "Completa lo scaricamento", a blocchi di 2,5 minuti.
+- Poi si aggiorna ogni sera come Bitunix.
+
+**Spazio nel database:** l'archivio Bitunix era di circa 17.800 righe (~91 MB). Bitget ne aggiunge circa 25.000 (~125 MB).
+
+La preparazione del mattino e il grafico delle posizioni di Bitget leggono dall'archivio di Bitget quando c'è.
+
+### Storico di Bitget (verifica del 19/11/2026, API pubbliche)
+
+- **Titoli:** 172 dei 181 titoli dell'universo hanno un perpetuo azionario.
+- **Primo giorno:** per ognuno si è cercato con le candele giornaliere, all'indietro a finestre di 90 giorni (limite di `history-candles`). In tutti i 172 le candele da 1 minuto ci sono fin dai primi giorni.
+- **Data di lancio:** il campo `launchTime` del catalogo non è il primo giorno vero. Per esempio NVDA ha `launchTime` febbraio 2026 ma candele da agosto 2025.
+- **Da quanto tempo esistono i perpetui:**
+
+| Storico | Titoli |
+|---|---:|
+| più di 12 mesi | 26 |
+| 9–12 mesi | 3 |
+| 6–9 mesi | 40 |
+| 3–6 mesi | 81 |
+| 2–3 mesi | 10 |
+| meno di 2 mesi | 12 |
+
+- **Primo perpetuo:** 18/8/2025 (NVDA). La metà dei titoli c'è dal 14/6/2026.
+- **Liquidità:** sui titoli principali è bassa fino a ottobre 2025. Da novembre 2025 la mediana dei titoli principali è sopra 1 milione di USDT al giorno; i titoli con più di 1 milione al giorno passano da 12 (novembre 2025) a 66 (novembre 2026).
+- **Periodo utile:**
+  - da novembre–dicembre 2025, circa un anno, per una ventina di titoli principali;
+  - da giugno 2026 per la maggior parte dei titoli.

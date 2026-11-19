@@ -1,6 +1,6 @@
 // Confronto serale: Reale, Prova e Simulazione dello stesso giorno, trade per trade, per ogni exchange: salvato in wt_meta
-// `cmp:<giorno>` (Bitunix) o `cmp:<exchange>:<giorno>`. La Simulazione usa sempre l'archivio di Bitunix (come la scheda
-// Simulazione): per gli altri exchange il confronto con la Simulazione comprende anche la differenza tra i due contratti.
+// `cmp:<giorno>` (Bitunix) o `cmp:<exchange>:<giorno>`. La Simulazione del giorno usa l'archivio e i limiti dello stesso
+// exchange (server/archive.js per exchange).
 // Gira nel controllo ogni minuto fuori orario (dopo le 16:35 di New York, quando l'archivio ha le candele del giorno),
 // un giorno per volta, a partire dal primo giorno del Reale; i giorni già confrontati non si rifanno.
 // Prima del confronto completa la registrazione dei trade del giorno (docs/dati-dal-vivo.md):
@@ -8,11 +8,10 @@
 //  - trade senza registrazione (giorni prima di questa versione): exchange.rec ricostruito da preparazione, archivio e registri
 // Solo lettura sull'exchange e solo registrazione nel database: risultati, capitale e regole non cambiano.
 import { db, q, getMeta, setMeta } from './db.js'
-import { loadDays } from './archive.js'
+import { loadDays, barKey } from './archive.js'
 import { runSimulation, MIN, OPEN_MIN, thresholds, entryUntil } from '../shared/engine.js'
 import { settingsFor, isTradingDay } from '../shared/opening.js'
 import { addDays, weekdayOf, nyTs } from '../shared/time.js'
-import { getLimits } from './limits.js'
 import { getIndexRaw, indexOf } from './mindex.js'
 import { operable, keepOperable } from './operable.js'
 import { ASSET_MAP } from '../shared/assets.js'
@@ -99,11 +98,11 @@ export async function compareDay(day, { t0 = Date.now(), budgetMs = 30000, write
   const symbols = [...new Set(modes.flatMap(m => [...setup[m].s.symbols, ...setup[m].mine.map(p => p.symbol)]))].filter(x => ASSET_MAP[x])
 
   // archivio del giorno pronto per tutti i titoli? (aspetta fino a 2 giorni, poi confronta con quello che c'è)
-  const bars = await q(db().from('wt_bars').select('symbol').eq('day', day).in('symbol', symbols))
+  const bars = await q(db().from('wt_bars').select('symbol').eq('day', day).in('symbol', symbols.map(x => barKey(ex, x))))
   if (bars.length < symbols.length && day >= addDays(today, -2)) return { waiting: day, archive: bars.length, need: symbols.length }
 
   // 1. candele dell'archivio (40 giorni prima: preparazione come nella Simulazione)
-  const days = await loadDays(symbols, addDays(day, -40), day)
+  const days = await loadDays(symbols, addDays(day, -40), day, { ex })
   const todayBars = days[day] || {}
 
   // 2. trade senza registrazione: si ricostruisce quello che si può
@@ -122,7 +121,7 @@ export async function compareDay(day, { t0 = Date.now(), budgetMs = 30000, write
   if (bxDone.left) return { day, rebuilt, bitunix: bxDone, more: true }
 
   // 4. Simulazione del giorno per ogni modalità, con le sue impostazioni e il suo capitale di inizio giornata
-  const limits = await getLimits().catch(() => ({}))
+  const limits = await adapter(ex).limits().catch(() => ({}))
   const raw = await getIndexRaw()
   const mindex = {}
   for (const d of Object.keys(days)) { const x = indexOf(raw, d); if (x) mindex[d] = x }

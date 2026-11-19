@@ -1,6 +1,8 @@
 // Finti per le prove: database Supabase in memoria (solo le parti usate dal server) e Bitunix (risposte HTTP per fetch).
 
 // ---------- Supabase in memoria ----------
+// filtro "like" di Postgres (% = qualunque testo)
+const likeRe = pat => new RegExp('^' + String(pat).split('%').map(x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$')
 const PK = { wt_meta: ['key'], wt_accounts: ['mode'], wt_prep: ['day', 'symbol'], wt_presets: ['id'], wt_positions: ['id'] }
 export function fakeDb(seed = {}) {
   const tables = {}
@@ -23,8 +25,8 @@ export function fakeDb(seed = {}) {
       lte(k, v) { st.filters.push(r => r[k] <= v); return b },
       gt(k, v) { st.filters.push(r => r[k] > v); return b },
       lt(k, v) { st.filters.push(r => r[k] < v); return b },
-      like(k, pat) { const re = new RegExp('^' + pat.split('%').map(x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$'); st.filters.push(r => re.test(String(r[k]))); return b },
-      not() { return b },
+      like(k, pat) { const re = likeRe(pat); st.filters.push(r => re.test(String(r[k]))); return b },
+      not(k, op, v) { if (op === 'like') { const re = likeRe(v); st.filters.push(r => !re.test(String(r[k]))) } return b },
       order(k, o = {}) { st.order = { k, asc: o.ascending !== false }; return b },
       limit(n) { st.limit = n; return b },
       range(a, z) { st.range = [a, z]; return b },

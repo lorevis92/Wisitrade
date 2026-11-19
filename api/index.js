@@ -231,44 +231,71 @@ async function totalView(kind) {
 }
 
 // ---------- Simulazione ----------
-// Controlli, dati dell'archivio, limiti di Bitunix e indice di attività: comuni a /sim/run e /sim/stream
+// Controlli, dati dell'archivio, limiti dell'exchange e indice di attività: comuni a /sim/run, /sim/stream e /sim/compare.
+// body.ex = exchange simulato (Bitunix di default): archivio, commissione di liquidazione e margine di mantenimento, leva
+// massima, orari del funding, minimo per ordine, titoli operabili e indice di attività sono quelli di quell'exchange.
 async function prepareSim(body, phase = () => {}, onSymbol = null) {
+  const ex = exParam(body.ex), ad = adapter(ex), X = ad.name
   const isDate = d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
   if (!isDate(body.from) || !isDate(body.to) || body.from > body.to) throw new HttpError(400, 'Periodo non valido')
   const capital = Number(body.capital)
   if (!(capital > 0 && capital < 1e9)) throw new HttpError(400, 'Capitale iniziale non valido')
   const s0 = normalizeSettings(body.settings || {})
   if (!s0.symbols.length) throw new HttpError(400, 'Scegli almeno un titolo')
-  // opzione "Solo titoli operabili su Bitunix" (lista di oggi, la stessa di Prova e Reale)
+  // opzione "Solo titoli operabili" (campo onlyBitunix: lista di oggi dell'exchange simulato, la stessa della sua Prova e del suo Reale)
   let s = s0, apiExcluded = []
   if (s0.onlyBitunix) {
-    const op = await operable()
+    const op = await operable(Date.now(), ex)
     apiExcluded = s0.symbols.filter(x => op.check(x)).map(x => ({ symbol: x, why: op.check(x).why }))
     s = { ...s0, symbols: keepOperable(s0.symbols, op) }
-    if (!s.symbols.length) throw new HttpError(400, 'Nessuno dei titoli scelti è operabile via API su Bitunix')
+    if (!s.symbols.length) throw new HttpError(400, `Nessuno dei titoli scelti è operabile via API su ${X}`)
   }
   const t0 = Date.now()
   phase('carico le candele')
   // 40 giorni prima dell'inizio: preparazione (livelli, volatilità, volume normale) e Analisi (volatilità a 20 giorni).
   // QQQ, SPY e BTC servono solo per l'Analisi.
-  const days = await loadDays([...s.symbols, ...EXTRA_SYMBOLS], addDays(body.from, -40), body.to, { onSymbol })
-  phase("preparo i limiti di Bitunix e l'indice di mercato")
-  const limits = await getLimits().catch(() => ({})) // margine di mantenimento e orari del funding di Bitunix
-  // indice di attività del mercato di ogni giorno (calcola i giorni che mancano)
-  await ensureIndex({ budgetMs: 90000 }).catch(() => null)
-  const raw = await getIndexRaw()
+  const days = await loadDays([...s.symbols, ...EXTRA_SYMBOLS], addDays(body.from, -40), body.to, { onSymbol, ex })
+  phase(`preparo i limiti di ${X} e l'indice di mercato`)
+  const limits = await ad.limits().catch(() => ({})) // leva massima, margine di mantenimento e orari del funding dell'exchange
+  // minimo per ordine dell'exchange (quantità minima e, per Bitget, 5 USDT), come nel Reale
+  const pairs = await ad.pairs().catch(() => [])
+  const byPerp = new Map(pairs.map(x => [x.symbol, x]))
+  const minOrder = {}
+  for (const sym of s.symbols) { const pr = byPerp.get(ad.perpOf(sym)); if (pr) minOrder[sym] = { minQty: pr.minQty || 0, minNotional: pr.minNotional || 0, basePrecision: pr.basePrecision ?? 3 } }
+  // indice di attività del mercato di ogni giorno, dall'archivio dello stesso exchange (calcola i giorni che mancano)
+  await ensureIndex({ budgetMs: 90000, ex }).catch(() => null)
+  const raw = await getIndexRaw(ex)
   const mindex = {}
   for (const d of Object.keys(days)) { const x = indexOf(raw, d); if (x) mindex[d] = x }
   // giorni che il motore simulerà: di borsa, nel periodo, con almeno un titolo scelto con dati (come in runSimulation)
   const inPeriod = Object.keys(days).filter(d => d >= body.from && d <= body.to).sort()
   const simDays = inPeriod.filter(d => isTradingDay(d, weekdayOf(d)) && s.symbols.some(sym => sym in days[d])).length
-  return { body, s0, s, apiExcluded, days, inPeriod, simDays, t0, loadMs: Date.now() - t0, opts: { from: body.from, to: body.to, capital, limits, mindex, story: true } }
+  return { ex, exName: X, body, s0, s, apiExcluded, days, inPeriod, simDays, t0, loadMs: Date.now() - t0, opts: { from: body.from, to: body.to, capital, limits, mindex, story: true, minOrder } }
 }
 function simPayload(p, r) {
   const MAX_TRADES = 4000
   // titoli scelti che hanno davvero dati nel periodo (senza decomprimere niente)
   const withData = p.s.symbols.filter(sym => p.inPeriod.some(d => sym in p.days[d]))
-  return { ...r, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: p.s0, symbolsUsed: p.s.symbols, apiExcluded: p.apiExcluded, symbolsWithData: withData, ms: { load: p.loadMs, run: Date.now() - p.t0 - p.loadMs } }
+  return { ...r, ex: p.ex, exName: p.exName, trades: r.trades.slice(-MAX_TRADES), tradesCut: Math.max(0, r.trades.length - MAX_TRADES), settings: p.s0, symbolsUsed: p.s.symbols, apiExcluded: p.apiExcluded, symbolsWithData: withData, ms: { load: p.loadMs, run: Date.now() - p.t0 - p.loadMs } }
+}
+
+// Confronto: la stessa simulazione (stesse impostazioni e stesso periodo) su ogni exchange, solo i numeri principali
+async function simCompare(body) {
+  const out = []
+  for (const ex of EX_LIST) {
+    try {
+      const p = await prepareSim({ ...body, ex })
+      const r = runSimulation(p.days, p.s, { ...p.opts, story: false, analysis: false })
+      const withData = p.s.symbols.filter(sym => p.inPeriod.some(d => sym in p.days[d]))
+      out.push({
+        ex, name: p.exName, firstDay: r.firstDay, lastDay: r.lastDay, days: r.days, daysWithTrades: r.daysWithTrades,
+        n: r.n, wins: r.wins, winPct: r.n ? r.wins / r.n * 100 : null, net: r.net, pct: r.pct, final: r.final, pf: r.pf,
+        fees: r.fees, funding: r.funding, slippage: r.slippage, costs: r.costs, liquidations: r.liquidations, maxDDPct: r.maxDDPct,
+        symbols: p.s.symbols.length, withData: withData.length, excluded: p.apiExcluded.length, skips: r.skips.slice(0, 6),
+      })
+    } catch (e) { out.push({ ex, name: exName(ex), error: e.message }) }
+  }
+  return { from: body.from, to: body.to, capital: Number(body.capital), list: out }
 }
 
 // ICC Scanner · backtest in streaming NDJSON: avanzamento per mercato, poi i segnali con l'esito
@@ -652,13 +679,21 @@ async function route(req, url) {
   }
 
   // ---- Simulazione (solo con il codice di controllo) ----
-  if (path === '/sim/status' && m === 'GET') { requireAdmin(req); return archiveStatus() }
+  // archivio per exchange (?ex=bitunix|bitget)
+  if (path === '/sim/status' && m === 'GET') { requireAdmin(req); return archiveStatus(exParam(url.searchParams.get('ex'))) }
 
   if (path === '/sim/fill' && m === 'POST') {
     requireAdmin(req)
-    const r = await fillArchive({ budgetMs: 150000, source: 'manual' })
-    if (!r.busy) r.index = await ensureIndex({ budgetMs: 60000 }).catch(e => ({ error: e.message }))
-    return { ...r, status: r.busy ? null : await archiveStatus() }
+    const ex = exParam(body.ex)
+    const r = await fillArchive({ budgetMs: 150000, source: 'manual', ex })
+    if (!r.busy) r.index = await ensureIndex({ budgetMs: 60000, ex }).catch(e => ({ error: e.message }))
+    return { ...r, status: r.busy ? null : await archiveStatus(ex) }
+  }
+
+  // Bitunix e Bitget affiancati: stesse impostazioni, stesso periodo
+  if (path === '/sim/compare' && m === 'POST') {
+    requireAdmin(req)
+    return simCompare(body)
   }
 
   if (path === '/sim/run' && m === 'POST') {
@@ -746,7 +781,7 @@ async function route(req, url) {
     requireAdmin(req)
     const sym = url.searchParams.get('symbol'), day = url.searchParams.get('day') || ''
     if (!STRATEGY_SYMBOLS.includes(sym) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new HttpError(400, 'Parametri non validi')
-    return { symbol: sym, day, bars: await dayBars(sym, day) }
+    return { symbol: sym, day, bars: await dayBars(sym, day, exParam(url.searchParams.get('ex'))) }
   }
 
   // ---- Impostazioni salvate (le stesse per Prova, Reale e Simulazione) ----

@@ -12,7 +12,7 @@ import { getMeta, setMeta } from './db.js'
 import { nyInfo } from './session.js'
 import { scan, getPairs } from './scanner.js'
 import { runStrategy, strategyNeeds, strategyOpenSymbols, repairLiveClosed, auditStops } from './strategy.js'
-import { fillArchive } from './archive.js'
+import { fillArchive, ARCHIVE_EXCHANGES } from './archive.js'
 import { ensureIndex } from './mindex.js'
 import { getLimits } from './limits.js'
 import { presetLive } from './strategy.js'
@@ -141,6 +141,16 @@ export async function tick() {
           // confronto serale Reale · Prova · Simulazione (un giorno per giro, quando l'archivio ha le candele del giorno)
           const left3 = 50000 - (Date.now() - t0)
           if (!r.busy && left3 > 20000) out.compare = await eveningCompare(info, { budgetMs: left3 - 8000 }).then(x => (x?.modes ? { day: x.day, ms: x.ms } : x), e => ({ error: e.message }))
+          // archivio degli altri exchange (Bitget): con il tempo che resta, dopo Bitunix e il confronto serale.
+          // Il primo caricamento (tutto lo storico) va a pezzi e riprende da dove si è fermato.
+          for (const ex of ARCHIVE_EXCHANGES.filter(x => x !== DEFAULT_EX)) {
+            const left4 = 50000 - (Date.now() - t0)
+            if (left4 < 15000) break
+            const rx = await fillArchive({ budgetMs: Math.min(30000, left4 - 5000), source: 'auto', ex }).catch(e => ({ error: e.message, errors: [] }))
+            out[`archive_${ex}`] = rx.busy ? { busy: true } : rx.error ? { error: rx.error } : { saved: rx.saved, remaining: rx.remaining, ...(rx.errors?.length ? { errors: rx.errors.slice(0, 2) } : {}) }
+            const left5 = 50000 - (Date.now() - t0)
+            if (!rx.busy && !rx.error && left5 > 10000 && (rx.saved > 0 || info.minutes % 30 === 0)) out[`index_${ex}`] = await ensureIndex({ budgetMs: left5 - 8000, ex }).catch(e => ({ error: e.message }))
+          }
         }
       } catch (e) { out.archive = { error: e.message } }
     }

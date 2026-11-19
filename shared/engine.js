@@ -260,6 +260,8 @@ function storyPath(path) {
 // story = true registra anche, solo per l'animazione della Simulazione, l'andamento di ogni posizione aperta (tr.path, tr.kmin)
 // e i segnali rimasti fuori di ogni giorno (riga del giorno .skipped): non cambia nessuna regola né nessun risultato.
 // slipBy (facoltativo): slittamento per lato in % per singolo titolo, al posto di s.slip (per le analisi, es. dallo spread misurato)
+// minOrder (facoltativo): { SYM: { minQty, minNotional, basePrecision } } dell'exchange simulato: come nel Reale (server/live.js
+// orderQty) un trade con la quantità arrotondata sotto il minimo dell'exchange non si apre.
 export function runSimulation(days, s, opts) {
   const g = simulationSteps(days, s, opts)
   for (;;) { const x = g.next(); if (x.done) return x.value }
@@ -269,7 +271,7 @@ export function runSimulation(days, s, opts) {
 // del giorno e i trade chiusi quel giorno; prima, durante la preparazione delle candele, { prep (0–1), day };
 // alla fine restituisce (return) lo stesso risultato di runSimulation.
 // Serve alla Simulazione in streaming (la sfera si muove mentre il calcolo gira): le regole e i risultati non cambiano.
-export function* simulationSteps(days, s, { from, to, capital, limits = {}, mindex = {}, cache = null, analysis = true, slipBy = null, story = false }) {
+export function* simulationSteps(days, s, { from, to, capital, limits = {}, mindex = {}, cache = null, analysis = true, slipBy = null, story = false, minOrder = null }) {
   const slip0 = (s.slip || 0) / 100
   const slipOf = sym => (slipBy && slipBy[sym] !== undefined ? slipBy[sym] / 100 : slip0)
   const mmrFrom = {}
@@ -451,6 +453,11 @@ export function* simulationSteps(days, s, { from, to, capital, limits = {}, mind
         if (!(size.margin >= 1)) { skips['capitale insufficiente'] = (skips['capitale insufficiente'] || 0) + 1; noteSkip(sym, sig, 'capitale insufficiente'); continue }
         // entrata a mercato: slittamento contro di te; lo stop si calcola dal prezzo eseguito, come nel Reale
         const fill = sig.entry * (1 + sig.side * slipOf(sym))
+        const mo = minOrder?.[sym]
+        if (mo) {
+          const f = 10 ** (mo.basePrecision ?? 8), q = Math.floor(size.notional / fill * f + 1e-9) / f
+          if (!(q > 0) || q < (mo.minQty || 0) || (mo.minNotional > 0 && q * fill < mo.minNotional)) { skips['sotto il minimo per ordine'] = (skips['sotto il minimo per ordine'] || 0) + 1; noteSkip(sym, sig, 'sotto il minimo per ordine'); continue }
+        }
         const risk = riskFor(limits[sym], size.notional, s)
         mmrFrom[sym] = risk.fromBitunix ? 'bitunix' : 'impostato'
         const pos = newPosition({ mode: 'sim', day, symbol: sym, sig: { ...sig, entry: fill }, s, prep, size, risk })
